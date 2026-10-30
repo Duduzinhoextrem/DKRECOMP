@@ -1,0 +1,36 @@
+# Donkey Kong Country: Tropical Freeze (Nintendo Switch).
+#
+# Every value below was read from a user's dump by `dkrecomp.identify --hash` on 2026-10-30:
+# the content meta (.cnmt.xml) lists each content's SHA-256, and the tool hashed the files and found them equal.
+# Hashes identify a release; they are not game content. Do not add values that were not read this way.
+
+name = "Donkey Kong Country: Tropical Freeze"
+platform = "switch"
+application_id = "0100c1f0051b6000"   # cnmt Type=Application, ticket rights id prefix
+patch_id = "0100c1f0051b6800"         # cnmt Type=Patch, OriginalId=0100c1f0051b6000
+
+[[release]]
+label = "base v0"
+title_version = 0
+display_version = "1.0.0"   # read from control.nacp of Control NCA bc3cfae9... on 2026-10-30
+# Build ids of the ExeFS modules (NSO header, segment hashes verified by dkrecomp.identify on 2026-10-30).
+exefs_build_ids = { main = "0e7a480a50a0d3ddd935510e153d4d0c", sdk = "ba520906609c503227871a314a94fb5f", subsdk0 = "d9de423efc1512328c3c05378c7cb031", rtld = "d33817c0c763d8faf97d9a6534c19db2" }
+sdk_version = "4.4.0"       # SDK MW+Nintendo+NintendoSdk_nnSdk-4_4_0-Release (sdk), NCA header SdkAddon 4.4.0
+program_nca_id = "85b8eec9c233b6a8842ecfd00d97e265"
+program_nca_sha256 = "85b8eec9c233b6a8842ecfd00d97e2659a31987f127f463376d0f221718f9297"
+program_nca_size = 7131660288
+key_generation = 4
+required_system_version = 0x10100000   # 4.1.0
+
+[[release]]
+label = "update v131072"
+# 131072 = 2 << 16: the second update release. Whether its display version is "1.0.2" is a HYPOTHESIS until
+# control.nacp is read.
+title_version = 131072
+display_version = "unconfirmed (1.0.2 expected)"
+program_nca_id = "f63b214ebf77033fecfc1ac03e8576f9"
+program_nca_sha256 = "f63b214ebf77033fecfc1ac03e8576f988cfe12c6b0e591a616a19b247bfffaf"
+program_nca_size = 21430272
+key_generation = 4
+# The patch's RequiredSystemVersion field reads 3694008467456 in the XML, which is not a 32-bit version word.
+# Its meaning is not confirmed.

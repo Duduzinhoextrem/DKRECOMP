@@ -1,0 +1,37 @@
+# --- Proprietary game data: NEVER commit -------------------------------------
+# The user's own dump lives here (folder name chosen by the user).
+/game original meu/
+# Any other place a user may put their files.
+/user_files/
+# The user's own extraction workspace (holds keys, extraction tools and decrypted output).
+/SwitchExtract/
+*.nsp
+*.xci
+*.nca
+*.nsz
+*.xcz
+*.tik
+*.cert
+*.nso
+*.npdm
+*.nacp
+*.keys
+*keys.txt
+title.keys
+prod.keys
+
+# --- Everything derived from game data ---------------------------------------
+/build/
+/generated/
+/reports/
+
+# --- Upstream reference checkouts (read-only, recreated by tools/fetch_refs.ps1)
+/refs/
+
+# --- Local environment -------------------------------------------------------
+/.venv/
+/toolchain/
+__pycache__/
+*.pyc
+.pytest_cache/
+config.local.toml

@@ -1,0 +1,8 @@
+# Development and test dependencies (PyPI), installed into the project's .venv only.
+pytest==9.2.0
+unicorn==2.1.4      # GPL-2.0: test-only reference CPU, never linked into generated programs
+capstone==5.0.9
+ziglang==0.16.0     # Clang/LLD + MinGW-w64: builds generated C (x86-64) and ARM64 test programs
+cmake==4.4.4
+ninja==1.13.2
+lz4==4.4.5
