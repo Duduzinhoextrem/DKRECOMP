@@ -36,6 +36,10 @@ main/sdk NSO ──► decoder ARM64 ──► lifter ──► C gerado ──�
 - **Semântica que difere entre C/x86 e A64** fica em funções auxiliares testadas: divisão (A64 não gera exceção em
   x/0 nem em INT_MIN/-1), deslocamentos módulo a largura, flags de `AddWithCarry`, `CLS`, `RBIT`, `REV*`,
   multiplicação alta de 128 bits (portável MSVC/Clang).
+- **Ponto flutuante** (`runtime/include/dkr/fp.h`): valores trafegam como bits; o host calcula com SSE (IEEE 754),
+  e os auxiliares corrigem onde A64 e x86 diferem: escolha do NaN propagado (SNaN primeiro, na ordem dos operandos),
+  NaN padrão positivo para operações inválidas, conversões para inteiro com saturação e arredondamento explícito,
+  FMA fundido, `max/min` com ±0. Escritas escalares zeram o resto do registrador V. Só FPCR = 0 é modelado.
 - **Atômicos**: `LDXR/STXR` emulados com monitor por CPU e compare-and-swap no store (`rt_cas`); `STLR` seguido de
   barreira completa, porque o x86 pode antecipar um load posterior a um store.
 - **Instruções não suportadas** viram `rt_unsupported(c, pc, word)` (aborta com o endereço) e entram no relatório

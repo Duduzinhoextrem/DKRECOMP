@@ -352,19 +352,120 @@ def _ldst_simd(w, a, rt, base, size, opc):
     return Insn(a, w, "vld" if load else "vst", f)
 
 
+def vfp_expand_imm(imm8: int, n: int) -> int:
+    """VFPExpandImm(): the 8-bit FMOV immediate as single (n=4) or double (n=8) bits."""
+    sign, b6 = imm8 >> 7, (imm8 >> 6) & 1
+    if n == 4:
+        exp = ((b6 ^ 1) << 7) | ((0x1F if b6 else 0) << 2) | ((imm8 >> 4) & 3)
+        return (sign << 31) | (exp << 23) | ((imm8 & 0xF) << 19)
+    exp = ((b6 ^ 1) << 10) | ((0xFF if b6 else 0) << 2) | ((imm8 >> 4) & 3)
+    return (sign << 63) | (exp << 52) | ((imm8 & 0xF) << 48)
+
+
+FP1_OPS = {0: "fmov", 1: "fabs", 2: "fneg", 3: "fsqrt", 4: "fcvt", 5: "fcvt",
+           8: "frintn", 9: "frintp", 10: "frintm", 11: "frintz", 12: "frinta", 14: "frintx", 15: "frinti"}
+FP2_OPS = {0: "fmul", 1: "fdiv", 2: "fadd", 3: "fsub", 4: "fmax", 5: "fmin", 6: "fmaxnm", 7: "fminnm",
+           8: "fnmul"}
+
+
+def _fp_scalar(w, a, rd, rn, rm):
+    """Scalar floating-point data processing, compare, select and immediate (single and double precision).
+    Returns None when the word is not in these classes."""
+    ftype = bits(w, 22, 2)
+    klass = None
+    if w & 0xFF207C00 == 0x1E204000:
+        klass = "dp1"
+    elif w & 0xFF200C00 == 0x1E200800:
+        klass = "dp2"
+    elif w & 0xFF000000 == 0x1F000000:
+        klass = "dp3"
+    elif w & 0xFF20FC07 == 0x1E202000:
+        klass = "cmp"
+    elif w & 0xFF200C00 == 0x1E200400:
+        klass = "ccmp"
+    elif w & 0xFF200C00 == 0x1E200C00:
+        klass = "csel"
+    elif w & 0xFF201FE0 == 0x1E201000:
+        klass = "imm"
+    if klass is None:
+        return None
+    if ftype > 1:
+        return _u(a, w, f"fp {klass}: fp16 or unallocated type")
+    n = 4 << ftype
+    if klass == "dp1":
+        opcode = bits(w, 15, 6)
+        op = FP1_OPS.get(opcode)
+        if op is None:
+            return _u(a, w, "fp dp1: not in subset (fp16 conversion or unallocated)")
+        if op == "fcvt":
+            to = 4 if opcode == 4 else 8
+            if to == n:
+                return _u(a, w, "fp dp1: fcvt to the same type")
+            return Insn(a, w, "fcvt", {"rd": rd, "rn": rn, "n": n, "to": to})
+        return Insn(a, w, "fp1", {"kind": op, "rd": rd, "rn": rn, "n": n})
+    if klass == "dp2":
+        op = FP2_OPS.get(bits(w, 12, 4))
+        if op is None:
+            return _u(a, w, "fp dp2: unallocated")
+        return Insn(a, w, "fp2", {"kind": op, "rd": rd, "rn": rn, "rm": rm, "n": n})
+    if klass == "dp3":
+        kind = {(0, 0): "fmadd", (0, 1): "fmsub", (1, 0): "fnmadd", (1, 1): "fnmsub"}[(bits(w, 21, 1), bits(w, 15, 1))]
+        return Insn(a, w, "fp3", {"kind": kind, "rd": rd, "rn": rn, "rm": rm, "ra": bits(w, 10, 5), "n": n})
+    if klass == "cmp":
+        zero = bool(bits(w, 3, 1))
+        if zero and rm:
+            return _u(a, w, "fcmp #0.0 with Rm != 0")
+        return Insn(a, w, "fcmp", {"rn": rn, "rm": rm, "zero": zero, "n": n})
+    if klass == "ccmp":
+        return Insn(a, w, "fccmp", {"rn": rn, "rm": rm, "cond": bits(w, 12, 4), "nzcv": bits(w, 0, 4), "n": n})
+    if klass == "csel":
+        return Insn(a, w, "fcsel", {"rd": rd, "rn": rn, "rm": rm, "cond": bits(w, 12, 4), "n": n})
+    return Insn(a, w, "fmov_imm", {"rd": rd, "n": n, "imm": vfp_expand_imm(bits(w, 13, 8), n)})
+
+
 def _simd(w, a):
     """The register-move part of Advanced SIMD and FP: FMOV general, INS, UMOV, DUP, MOVI, vector logic.
     FP arithmetic, conversions and vector arithmetic are not lifted yet."""
     rd, rn, rm = bits(w, 0, 5), bits(w, 5, 5), bits(w, 16, 5)
+    fp = _fp_scalar(w, a, rd, rn, rm)
+    if fp is not None:
+        return fp
     if w & 0x7F20FC00 == 0x1E200000:  # conversion between FP and integer
         key = (bits(w, 31, 1), bits(w, 22, 2), bits(w, 19, 2), bits(w, 16, 3))
         forms = {(1, 1, 0, 6): ("fmov_to_gp", 0, 8), (1, 1, 0, 7): ("fmov_from_gp", 0, 8),
                  (0, 0, 0, 6): ("fmov_to_gp", 0, 4), (0, 0, 0, 7): ("fmov_from_gp", 0, 4),
                  (1, 2, 1, 6): ("fmov_to_gp", 1, 8), (1, 2, 1, 7): ("fmov_from_gp", 1, 8)}
-        if key not in forms:
-            return _u(a, w, "fp/simd: fp<->int conversion")
-        op, half, n = forms[key]
-        return Insn(a, w, op, {"rd": rd, "rn": rn, "lane": half, "nbytes": n})
+        if key in forms:
+            op, half, n = forms[key]
+            return Insn(a, w, op, {"rd": rd, "rn": rn, "lane": half, "nbytes": n})
+        ftype, rmode, opcode = bits(w, 22, 2), bits(w, 19, 2), bits(w, 16, 3)
+        if ftype > 1:
+            return _u(a, w, "fp/simd: fp<->int conversion (fp16 or unallocated)")
+        n = 4 << ftype
+        sf = bits(w, 31, 1)
+        if opcode in (0, 1) or (rmode == 0 and opcode in (4, 5)):  # FCVT{N,P,M,Z,A}{S,U}
+            mode = {0: "N", 1: "P", 2: "M", 3: "Z"}[rmode] if opcode in (0, 1) else "A"
+            return Insn(a, w, "fcvt_int", {"rd": rd, "rn": rn, "n": n, "sf": sf, "mode": mode,
+                                          "unsigned": bool(opcode & 1)})
+        if rmode == 0 and opcode in (2, 3):  # SCVTF / UCVTF from a general register
+            return Insn(a, w, "int_to_fp", {"rd": rd, "rn": rn, "n": n, "sf": sf, "unsigned": opcode == 3})
+        return _u(a, w, "fp/simd: fp<->int conversion")
+    if w & 0x7F200000 == 0x1E000000:  # conversion between FP and fixed point
+        ftype, rmode, opcode, scale = bits(w, 22, 2), bits(w, 19, 2), bits(w, 16, 3), bits(w, 10, 6)
+        sf = bits(w, 31, 1)
+        if ftype > 1 or (not sf and scale < 32):
+            return _u(a, w, "fp<->fixed: fp16, unallocated or reserved scale")
+        n, fbits = 4 << ftype, 64 - scale
+        if rmode == 3 and opcode in (0, 1):  # FCVTZS / FCVTZU
+            return Insn(a, w, "fcvt_int", {"rd": rd, "rn": rn, "n": n, "sf": sf, "mode": "Z",
+                                          "unsigned": bool(opcode), "fbits": fbits})
+        if rmode == 0 and opcode in (2, 3):  # SCVTF / UCVTF
+            return Insn(a, w, "int_to_fp", {"rd": rd, "rn": rn, "n": n, "sf": sf, "unsigned": opcode == 3,
+                                            "fbits": fbits})
+        return _u(a, w, "fp<->fixed: unallocated")
+    if w & 0xDFBFFC00 == 0x5E21D800:  # SCVTF/UCVTF (vector, integer), scalar: Sd <- Sn, Dd <- Dn
+        return Insn(a, w, "int_to_fp_v", {"rd": rd, "rn": rn, "n": 4 << bits(w, 22, 1),
+                                          "unsigned": bool(bits(w, 29, 1))})
     if w & 0x9FE08400 == 0x0E000400:  # Advanced SIMD copy
         q, op, imm5, imm4 = bits(w, 30, 1), bits(w, 29, 1), bits(w, 16, 5), bits(w, 11, 4)
         esize_log = (imm5 & -imm5).bit_length() - 1 if imm5 & 0xF else None

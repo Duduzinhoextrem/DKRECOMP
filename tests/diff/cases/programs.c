@@ -154,6 +154,42 @@ static NOINLINE uint64_t do_svc(uint64_t a) {
 static NOINLINE uint64_t do_svc(uint64_t a) { return a * 3 + 0x26; } /* native model of the test handler */
 #endif
 
+/* Scalar floating point the way game code uses it: integration steps, clamps, conversions, square roots.
+ * Built with -ffp-contract=off on both sides so the native reference does the same roundings; results stay
+ * finite, because natively generated NaNs differ from A64's (that difference is covered by insn_diff). */
+struct body { float x, y, vx, vy; };
+static struct body bodies[16];
+NOINLINE uint64_t fp_physics(uint64_t seed) {
+    float g = -9.81f, dt = 1.0f / 60.0f;
+    double energy = 0.0;
+    for (int i = 0; i < 16; i++) {
+        bodies[i].x = (float)(int32_t)(rng() & 0xFFFF) / 64.0f;
+        bodies[i].y = (float)(rng() % 1000) * 0.25f;
+        bodies[i].vx = (float)((int32_t)(rng() & 0xFF) - 128) * 0.1f;
+        bodies[i].vy = 0.0f;
+    }
+    for (int step = 0; step < 120; step++) {
+        for (int i = 0; i < 16; i++) {
+            struct body *b = &bodies[i];
+            b->vy += g * dt;
+            b->x += b->vx * dt;
+            b->y += b->vy * dt;
+            if (b->y < 0.0f) { b->y = -b->y; b->vy = -b->vy * 0.8f; }
+            float speed = __builtin_sqrtf(b->vx * b->vx + b->vy * b->vy);
+            if (speed > 50.0f) { b->vx *= 50.0f / speed; b->vy *= 50.0f / speed; }
+            energy += 0.5 * (double)speed * (double)speed + 9.81 * (double)b->y;
+        }
+    }
+    uint64_t h = (uint64_t)(int64_t)(energy * 1000.0);
+    for (int i = 0; i < 16; i++) {
+        h = h * 31 + (uint64_t)(int64_t)bodies[i].x;
+        h = h * 31 + (uint32_t)(int32_t)(bodies[i].y * 16.0f);
+        h ^= (uint64_t)(bodies[i].vx > bodies[i].vy) << (i & 31);
+        h += (uint64_t)__builtin_floorf(bodies[i].x / 3.0f) + (uint64_t)(seed & 7);
+    }
+    return h;
+}
+
 uint64_t test_entry(uint64_t which, uint64_t seed) {
     seed_rng(seed);
     for (int i = 0; i < 257; i++) arr32[i] = (uint32_t)rng();
@@ -189,10 +225,11 @@ uint64_t test_entry(uint64_t which, uint64_t seed) {
     case 9: return (uint64_t)clamp_sum(arr64, 64, -(int64_t)(seed & 0xFFFFFF), (int64_t)(seed >> 40));
     case 10: return count_runs(bytes, 1024);
     case 11: return do_svc(seed) ^ do_svc(seed >> 3) * 5;
+    case 12: return fp_physics(seed);
     default: return 0;
     }
 }
-#define TEST_COUNT 12
+#define TEST_COUNT 13
 uint64_t test_count(void) { return TEST_COUNT; }
 
 #ifdef __aarch64__

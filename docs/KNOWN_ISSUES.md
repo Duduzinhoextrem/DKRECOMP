@@ -9,9 +9,13 @@
 
 ## Limitações do recompilador
 
-- **Aritmética SIMD/FP não é suportada** (FADD, FMUL, FCVT, SCVTF, FCMP, vetores inteiros, BSL...). Só
-  loads/stores SIMD, FMOV entre registradores gerais e SIMD, INS, UMOV, DUP, MOVI 64-bit e AND/BIC/ORR/ORN/EOR
-  vetoriais. O jogo quase certamente usa muito SIMD/FP (hipótese H6).
+- **SIMD vetorial ainda não é suportado** (FP em vetores, `frecpe`/`frsqrte`, `tbl`, `zip`, comparações
+  vetoriais...). Ponto flutuante **escalar** é suportado. Isso bloqueia 287 das 57.776 funções do `main`.
+- **Só FPCR = 0 é modelado**: arredondamento ao mais próximo, sem flush-to-zero e sem modo default-NaN. Se o jogo
+  escrever outro valor em FPCR, o resultado de FP pode divergir. Ainda não há aviso em tempo de execução para isso.
+  As flags acumuladas de exceção do FPSR não são mantidas.
+- O C gerado exige **CPU com FMA** (`-mfma`, Haswell/Zen ou mais novo), porque o FMADD precisa de multiplicação-soma
+  fundida exata. É o mesmo requisito do TotK Recomp e do LAS Recomp.
 - Não suportados também: `DC ZVA` (o `DCZID_EL0` informa proibido), CRC32, LSE (ARMv8.1, não esperado no Switch),
   pares exclusivos (`LDXP/STXP`), `CAS`, instruções de sistema além de NZCV/TPIDR/TPIDRRO/FPCR/FPSR/CNTVCT/CNTFRQ.
 - Sobreposições de registradores CONSTRAINED UNPREDICTABLE em loads/stores (ex.: `ldp x0, x0`) são rejeitadas de

@@ -8,7 +8,8 @@ if(MSVC)
   add_compile_options(/W3 /utf-8)
   add_compile_definitions(_CRT_SECURE_NO_WARNINGS)
 else()
-  add_compile_options(-Wall)
+  # FMA in hardware for FMADD, no unrequested contraction, sqrt without errno (see runtime/include/dkr/fp.h).
+  add_compile_options(-Wall -mfma -ffp-contract=off -fno-math-errno)
 endif()
 
 # Runtime: what recompiled code links against.

@@ -22,9 +22,9 @@ from dkrecomp.testing import difftest as D  # noqa: E402
 from dkrecomp.testing import insn_cases as IC  # noqa: E402
 
 
-def run(seed: int, count: int, states: int, workdir: str, verbose: bool = True):
+def run(seed: int, count: int, states: int, workdir: str, verbose: bool = True, only: str = ""):
     t0 = time.time()
-    insns, cases = IC.generate(seed, count, states)
+    insns, cases = IC.generate(seed, count, states, only)
     code = b"".join(i.word.to_bytes(4, "little") for i in insns)
     rng = random.Random(seed ^ 0x5EED)
     below = bytes(rng.getrandbits(8) for _ in range(IC.CODEZONE_BELOW))
@@ -77,8 +77,9 @@ def main():
     ap.add_argument("--count", type=int, default=3000)
     ap.add_argument("--states", type=int, default=3)
     ap.add_argument("--workdir", default=os.path.join(ROOT, "build", "tests", "insn_diff"))
+    ap.add_argument("--only", default="", help="template class prefix, e.g. fp_")
     a = ap.parse_args()
-    _, failures = run(a.seed, a.count, a.states, a.workdir)
+    _, failures = run(a.seed, a.count, a.states, a.workdir, only=a.only)
     print("RESULT:", "PASS" if not failures else f"FAIL ({len(failures)} cases)")
     return 1 if failures else 0
 

@@ -33,10 +33,11 @@ RET_MAGIC = STACK  # bottom of the stack region: mapped, never executed, Unicorn
 
 def build_guest(workdir: str, opt: str) -> str:
     out = os.path.join(workdir, f"programs_{opt}.elf")
-    # FP/SIMD arithmetic is not lifted yet, so keep Clang from vectorising; Zig's driver ignores
-    # -mgeneral-regs-only. -g keeps the symbol table, which Zig strips at -Os; it does not change the code.
+    # Vector SIMD arithmetic is not lifted yet, so keep Clang from vectorising (scalar FP is fine).
+    # -ffp-contract=off matches the native build's roundings (no FMADD fusion on one side only).
+    # -g keeps the symbol table, which Zig strips at -Os; it does not change the code.
     cmd = D.zig_cc() + ["-target", "aarch64-freestanding-none", f"-{opt}", "-g", "-ffreestanding", "-fno-builtin",
-                        "-mgeneral-regs-only", "-fno-vectorize", "-fno-slp-vectorize", "-nostdlib",
+                        "-fno-vectorize", "-fno-slp-vectorize", "-ffp-contract=off", "-fno-math-errno", "-nostdlib",
                         "-fno-stack-protector", "-fno-sanitize=undefined",
                         f"-Wl,--image-base={BASE:#x}", "-Wl,-e,_start", PROGRAM, "-o", out]
     subprocess.run(cmd, check=True)
@@ -45,7 +46,8 @@ def build_guest(workdir: str, opt: str) -> str:
 
 def build_native(workdir: str, opt: str) -> str:
     out = os.path.join(workdir, f"native_{opt}.exe")
-    cmd = D.zig_cc() + ["-target", "x86_64-windows-gnu", f"-{opt}", "-fno-builtin", "-fno-sanitize=undefined", PROGRAM,
+    cmd = D.zig_cc() + ["-target", "x86_64-windows-gnu", f"-{opt}", "-fno-builtin", "-fno-sanitize=undefined",
+                        "-ffp-contract=off", PROGRAM,
                         os.path.join(ROOT, "tests", "diff", "cases", "native_main.c"), "-o", out]
     subprocess.run(cmd, check=True)
     return out
@@ -80,7 +82,7 @@ def run(opt: str, nseeds: int, workdir: str) -> int:
     print(f"[{opt}] {len(funcs)} functions lifted, {sum(mod.unsupported.values())} unsupported instruction sites "
           f"{mod.unsupported or ''}; build {time.time() - t0:.1f}s")
 
-    pairs = [(w, s) for w in range(12) for s in [0x1234 + 977 * k for k in range(nseeds)]]
+    pairs = [(w, s) for w in range(13) for s in [0x1234 + 977 * k for k in range(nseeds)]]
     regions = regions_for(elf)
     cases = []
     for w, s in pairs:
@@ -95,7 +97,7 @@ def run(opt: str, nseeds: int, workdir: str) -> int:
                              check=True).stdout.split()
     failures = 0
     names = ["fib", "sum_mix", "insertion_sort", "byte_ops", "dispatch_switch", "wide_math", "fold_ptrs",
-             "vec_add", "atomics", "clamp_sum", "count_runs", "svc"]
+             "vec_add", "atomics", "clamp_sum", "count_runs", "svc", "fp_physics"]
     per_test = {}
     for (w, s), c, r, g, n in zip(pairs, cases, ref, got, nat_out):
         msgs = []

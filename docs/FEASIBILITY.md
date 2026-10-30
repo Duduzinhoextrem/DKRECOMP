@@ -170,6 +170,10 @@ H4 confirmada (SDK 4.4.0); H6 **parcialmente**: o jogo usa muito FP, mas quase t
 6. **Python para ferramentas, C para runtime.** Rust não traz vantagem que justifique hoje: o C gerado precisa de um
    runtime C, e as referências são C.
 
+**Atualização (FP escalar implementado):** `main` em 99,89% das instruções e 99,5% das funções; `sdk` 99,65%;
+`subsdk0` 99,997%. Restam SIMD vetorial (287 funções do `main`) e, no `sdk`, AES/SHA/CRC32 e dois registradores
+de sistema.
+
 ## 7. Conclusão (atualizada com a ExeFS)
 
 A frente de CPU ficou bem menor do que se temia: com ponto flutuante escalar, cripto em hardware e alguns

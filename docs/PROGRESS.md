@@ -2,6 +2,37 @@
 
 Somente o que foi executado e verificado. Cada linha aponta para o comando que a reproduz (`docs/TESTING.md`).
 
+## 2026-10-30 (noite) — Ponto flutuante escalar
+
+Novo: `runtime/include/dkr/fp.h` e regras no decodificador/lifter para FP escalar (single e double): aritmética
+(FADD, FSUB, FMUL, FDIV, FNMUL, FMAX/FMIN/FMAXNM/FMINNM, FMADD/FMSUB/FNMADD/FNMSUB fundidos), FABS, FNEG, FSQRT,
+FMOV (registrador e imediato), FCVT entre single e double, FRINT N/P/M/Z/A/X/I, FCMP/FCMPE, FCCMP/FCCMPE, FCSEL,
+conversões FP↔inteiro em todos os modos de arredondamento (com saturação) e em ponto fixo, SCVTF/UCVTF escalares
+SIMD.
+
+| Evidência | Resultado |
+|---|---|
+| `insn_diff --only fp_`, sementes 31–33, 8.000 instr. × 4 estados | 96.000 casos, 0 falhas |
+| `insn_diff --only fp_`, semente 51 (com ponto fixo), 6.000 × 4 | 24.000 casos, 0 falhas |
+| Teste de mutação FP: NaN padrão, prioridade de SNaN, saturação, FMA não fundido | as 4 detectadas (108, 13, 37 e 19 casos) |
+| `func_diff` O0/O1/O2/Os com `fp_physics` (float/double, sqrt, floor, ponto fixo) | 416 execuções, 0 falhas (Unicorn = recompilado = nativo) |
+| `insn_diff` sementes 11–12 (regressão do conjunto inteiro) | 59.900 casos, 0 falhas |
+| `pytest` | 34 testes passam |
+
+**Cobertura no jogo (1.0.0)**, `dkrecomp.coverage`:
+
+| Módulo | Funções 100% suportadas | Instruções suportadas |
+|---|---|---|
+| `main` | 90,8% → **99,5%** (57.489 / 57.776) | 97,32% → **99,89%** |
+| `sdk` | 97,2% → 99,3% | 98,74% → 99,65% |
+| `subsdk0` | 97,9% → 99,9% | 99,76% → 99,997% |
+
+O que resta no `main` (287 funções): SIMD vetorial — `fmul`/`fadd` em vetores, `frecpe`/`frecps`/`frsqrte`/`frsqrts`,
+`dup`/`mov` de elemento, `sshll`, `tbl`, `ld1`/`st1`, `zip`, `ext`, comparações vetoriais.
+
+Bug encontrado pelo teste de função: nenhum no lifter; o Clang usa conversões em ponto fixo (`ucvtf s0, w8, #6`)
+para divisões por potência de dois, que foram então implementadas.
+
 ## 2026-10-30 (tarde) — ExeFS 1.0.0 analisada (MVP 2 concluído)
 
 O usuário extraiu a ExeFS e o `control.nacp` do jogo base com as próprias ferramentas e chaves, em

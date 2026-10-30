@@ -35,6 +35,14 @@ Compara X0–X30, SP, NZCV, TPIDR, PC, V0–V31 e os 4 KiB de memória de rascun
 .venv/Scripts/python tests/diff/insn_diff.py --seed 11 --count 10000 --states 3
 ```
 
+Para concentrar os casos numa família, use `--only` com o prefixo dos modelos (por exemplo `--only fp_` para ponto
+flutuante escalar). Os casos de FP usam valores de borda (±0, ±∞, NaN silencioso e de sinalização com payload,
+subnormais, limites de conversão para inteiro) e operandos relacionados (x−x, ∞−∞, 0×∞).
+
+```bash
+.venv/Scripts/python tests/diff/insn_diff.py --seed 31 --count 8000 --states 4 --only fp_
+```
+
 ### Funções inteiras (`tests/diff/func_diff.py`)
 
 `tests/diff/cases/programs.c` (recursão, laços, ordenação, bytes com sinal, `switch` com tabela de salto,

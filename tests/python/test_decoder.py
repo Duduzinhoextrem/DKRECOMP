@@ -23,7 +23,11 @@ KNOWN = {
     0xD4000001: ("svc", {"imm": 0}),
     0x3DC00020: ("vld", {"rt": 0, "rn": 1, "nbytes": 16}),  # ldr q0, [x1]
     0x9E670020: ("fmov_from_gp", {"rd": 0, "rn": 1, "nbytes": 8}),  # fmov d0, x1
-    0x1E202000: ("unsupported", {}),  # fcmp s0, s0: FP arithmetic not lifted
+    0x1E202000: ("fcmp", {"rn": 0, "rm": 0, "zero": False, "n": 4}),  # fcmp s0, s0
+    0x1E222820: ("fp2", {"kind": "fadd", "rd": 0, "rn": 1, "rm": 2, "n": 4}),  # fadd s0, s1, s2
+    0x1E2E1000: ("fmov_imm", {"rd": 0, "n": 4, "imm": 0x3F800000}),  # fmov s0, #1.0
+    0x1E03E900: ("int_to_fp", {"rd": 0, "rn": 8, "n": 4, "unsigned": True, "fbits": 6}),  # ucvtf s0, w8, #6
+    0x2E20DC00: ("unsupported", {}),  # fmul v0.2s, v0.2s, v0.2s: vector FP not lifted yet
 }
 
 

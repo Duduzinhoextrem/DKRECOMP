@@ -231,6 +231,8 @@ DKR_INLINE uint64_t stx(Cpu *c, uint64_t a, uint64_t v, int n) {
     return ok ? 0 : 1;
 }
 
+#include "dkr/fp.h"
+
 #ifdef __cplusplus
 }
 #endif

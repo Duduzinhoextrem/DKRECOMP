@@ -26,11 +26,10 @@ Unicorn e ao C nativo, em vários níveis de otimização; `tests/diff/insn_diff
 **Estado**: concluído para o subconjunto inteiro + movimentação SIMD/FP (2026-10-30).
 
 Próximos passos dentro da Fase 4 (ordem guiada pela cobertura medida no jogo):
-1. **FP escalar** (`fmul`, `fadd`, `fcmp`, `fsub`, `fmov`, `fcsel`, `fdiv`, `fneg`, `fcvt`, `scvtf`, `fabs`,
-   `fcvtzs`, `ucvtf`, `frecpe/frecps`, `frint*`, `fsqrt`, `fmin/fmax`, `fccmp`): sozinho deve levar o `main` para
-   perto de 100%. Testar contra o Unicorn com atenção a NaN, arredondamento (FPCR.RMode) e flush-to-zero.
-2. O pouco de SIMD vetorial que aparece (`dup`, `sshll`, `tbl`, `ld1/st1`…) e, no `sdk`, AES/SHA, CRC32,
-   `CNTPCT_EL0`, `CTR_EL0`.
+1. ~~FP escalar~~ **feito** (2026-10-30): `main` em 99,89% das instruções e 99,5% das funções.
+2. SIMD vetorial que resta no `main` (287 funções): `fmul`/`fadd` vetoriais, `frecpe`/`frecps`/`frsqrte`/`frsqrts`
+   (estimativas com tabela da Arm — precisam ser bit-exatas), `dup`/`mov` de elemento, `sshll`, `tbl`, `ld1`/`st1`,
+   `zip`, `ext`, comparações vetoriais. No `sdk`: AES/SHA, CRC32, `CNTPCT_EL0`, `CTR_EL0`.
 3. Descoberta de funções para `sdk`/`subsdk0` (os exports cobrem só ~65% do código deles): alvos de `BL`,
    `.eh_frame_hdr`, relocações, como o `gen.py` do TotK. O `main` já tem símbolos para 96,3%.
 4. Resolução estática de tabelas de salto (hoje: `switch` local, correto mas grande).

@@ -337,6 +337,10 @@ def lift_insn(i: Insn, ctx: Ctx) -> List[str]:
         hi = hx(i.imm) if i.q else "0"
         return [f"c->v[{i.rd}].d[0] = {hx(i.imm)}; c->v[{i.rd}].d[1] = {hi};"]
 
+    # --- scalar floating point (runtime/include/dkr/fp.h has the A64 semantics)
+    if op in FP_OPS:
+        return _lift_fp(i, ctx)
+
     # --- data processing, register
     if op == "addsub_reg":
         a, b = rd_(i.rn, sf), shift_(rd_(i.rm, sf), i.shift, i.amount, sf)
@@ -398,6 +402,84 @@ def lift_insn(i: Insn, ctx: Ctx) -> List[str]:
     if op in ("clz", "cls"):
         return [wr_(i.rd, sf, f"{op}{W}({rd_(i.rn, sf)})")]
     raise LiftError(f"no lifting rule for {i!r}")
+
+
+# ---- scalar floating point -----------------------------------------------------------------------------------
+
+FP_OPS = {"fp1", "fp2", "fp3", "fcvt", "fcmp", "fccmp", "fcsel", "fmov_imm", "fcvt_int", "int_to_fp", "int_to_fp_v"}
+ROUND = {"N": "DKR_RN", "P": "DKR_RP", "M": "DKR_RM", "Z": "DKR_RZ", "A": "DKR_RA"}
+
+
+def _fv(r: int, n: int) -> str:
+    """Low single (n=4) or double (n=8) of a V register, as bits."""
+    return f"c->v[{r}].s[0]" if n == 4 else f"c->v[{r}].d[0]"
+
+
+def _fset(rd: int, n: int, expr: str) -> str:
+    return f"vset_{'s' if n == 4 else 'd'}(c, {rd}, {expr});"
+
+
+def _lift_fp(i: Insn, ctx: Ctx) -> List[str]:
+    op, n = i.op, i.f.get("n", 4)
+    w = 32 if n == 4 else 64
+    sign = "F32_SIGN" if n == 4 else "F64_SIGN"
+    if op == "fp1":
+        a = _fv(i.rn, n)
+        expr = {"fmov": a, "fabs": f"({a} & ~{sign})", "fneg": f"({a} ^ {sign})", "fsqrt": f"fsqrt{w}({a})",
+                "frintn": f"frint{w}({a}, DKR_RN)", "frintp": f"frint{w}({a}, DKR_RP)",
+                "frintm": f"frint{w}({a}, DKR_RM)", "frintz": f"frint{w}({a}, DKR_RZ)",
+                "frinta": f"frint{w}({a}, DKR_RA)",
+                # X and I round with FPCR.RMode, which is round-to-nearest under the modelled FPCR = 0.
+                "frintx": f"frint{w}({a}, DKR_RN)", "frinti": f"frint{w}({a}, DKR_RN)"}[i.kind]
+        return [_fset(i.rd, n, expr)]
+    if op == "fcvt":
+        if n == 4:
+            return [_fset(i.rd, 8, f"fcvt_s2d({_fv(i.rn, 4)})")]
+        return [_fset(i.rd, 4, f"fcvt_d2s({_fv(i.rn, 8)})")]
+    if op == "fp2":
+        a, b = _fv(i.rn, n), _fv(i.rm, n)
+        if i.kind == "fnmul":
+            return [_fset(i.rd, n, f"(fmul{w}({a}, {b}) ^ {sign})")]
+        return [_fset(i.rd, n, f"{i.kind}{w}({a}, {b})")]
+    if op == "fp3":
+        ra, rn, rm = _fv(i.ra, n), _fv(i.rn, n), _fv(i.rm, n)
+        neg = lambda v: f"({v} ^ {sign})"  # FPNeg flips the sign of NaNs too, before NaN processing
+        addend, mul1 = {"fmadd": (ra, rn), "fmsub": (ra, neg(rn)), "fnmadd": (neg(ra), neg(rn)),
+                        "fnmsub": (neg(ra), rn)}[i.kind]
+        return [_fset(i.rd, n, f"fmadd{w}({addend}, {mul1}, {rm})")]
+    if op == "fcmp":
+        b = "0" if i.zero else _fv(i.rm, n)
+        return [f"c->nzcv = fcmp{w}({_fv(i.rn, n)}, {b});"]
+    if op == "fccmp":
+        return [f"c->nzcv = cond_holds(c->nzcv, {i.cond}) ? fcmp{w}({_fv(i.rn, n)}, {_fv(i.rm, n)}) "
+                f": {hx(i.nzcv << 28)};"]
+    if op == "fcsel":
+        return [_fset(i.rd, n, f"cond_holds(c->nzcv, {i.cond}) ? {_fv(i.rn, n)} : {_fv(i.rm, n)}")]
+    if op == "fmov_imm":
+        return [_fset(i.rd, n, hx(i.imm) if n == 8 else f"0x{i.imm:x}u")]
+    if op == "fcvt_int":
+        x = f"(double)f32_of({_fv(i.rn, 4)})" if n == 4 else f"f64_of({_fv(i.rn, 8)})"
+        fbits = i.f.get("fbits", 0)
+        if fbits:  # x * 2^fbits is exact in double (no underflow when scaling up; overflow saturates)
+            x = f"ldexp({x}, {fbits})"
+        return [wr_(i.rd, i.sf, f"fcvt_to_int({x}, {ROUND[i.mode]}, {int(i.unsigned)}, {64 if i.sf else 32})")]
+    if op == "int_to_fp":
+        src = rd_(i.rn, i.sf)
+        val = (f"(uint64_t){src}" if i.unsigned else
+               (f"(int64_t){src}" if i.sf else f"(int64_t)(int32_t){src}"))
+        fbits = i.f.get("fbits", 0)
+        if fbits:  # one rounding at the conversion; the scaling by 2^-fbits is exact (result stays normal)
+            fn = f"{'u' if i.unsigned else 's'}cvtfx{w}"
+            return [_fset(i.rd, n, f"{fn}({val}, {fbits})")]
+        return [_fset(i.rd, n, f"{'u' if i.unsigned else 's'}cvtf{w}({val})")]
+    if op == "int_to_fp_v":
+        src = _fv(i.rn, n)
+        if n == 4:
+            val = f"(uint64_t){src}" if i.unsigned else f"(int64_t)(int32_t){src}"
+        else:
+            val = src if i.unsigned else f"(int64_t){src}"
+        return [_fset(i.rd, n, f"{'u' if i.unsigned else 's'}cvtf{w}({val})")]
+    raise LiftError(f"no fp lifting rule for {i!r}")
 
 
 # ---- functions -----------------------------------------------------------------------------------------------

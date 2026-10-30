@@ -62,7 +62,10 @@ def build_harness(gen_c: str, workdir: str, name: str = "harness", opt: str = "-
     with open(src, "w", encoding="utf-8") as f:
         f.write(gen_c)
     exe = os.path.join(workdir, f"{name}.exe")
-    cmd = zig_cc() + ["-target", "x86_64-windows-gnu", opt, "-std=c11", "-Wall", "-Wno-unused-label",
+    # -mfma: FMADD needs a hardware fused multiply-add (libm fma may not be correctly rounded).
+    # -ffp-contract=off: no a*b+c contraction the guest did not ask for. -fno-math-errno: plain sqrt.
+    cmd = zig_cc() + ["-target", "x86_64-windows-gnu", opt, "-std=c11", "-mfma", "-ffp-contract=off",
+                      "-fno-math-errno", "-Wall", "-Wno-unused-label",
                       "-Wno-unused-variable", "-Werror=implicit-function-declaration",
                       "-I", os.path.join(ROOT, "runtime", "include"),
                       os.path.join(ROOT, "tests", "diff", "harness.c"),
