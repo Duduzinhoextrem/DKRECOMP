@@ -221,5 +221,8 @@ O teste nativo `shared_memory` usa dados sintéticos para verificar aliases reai
 duas views no mesmo bloco de reserva, permissões read-only via `VirtualQuery`, remapeamento, referências de
 handles e mappings, 100 ciclos de liberação e IPC CreateAppletResource/GetSharedMemoryHandle. O mapeamento
 permanece válido após fechar todos os handles, até encerrar o processo, como exige o contrato de shared memory.
+O mesmo teste confere configuração/getters HID, orientação inválida, slots Handheld/Other e eventos de estilo
+copiados. `kernel_sync` também espera numa cópia do evento, sinaliza o original e confere a escolha do primeiro
+índice quando dois handles no array apontam para o mesmo evento.
 
 Ver `docs/PROGRESS.md`. Regra: resultado só entra na documentação se foi produzido por um comando acima.

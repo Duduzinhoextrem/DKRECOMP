@@ -102,6 +102,18 @@ static uint8_t msg[0x100];
 static void put32(int off, uint32_t value) { memcpy(msg + off, &value, 4); }
 static uint32_t get32(int off) { uint32_t value; memcpy(&value, msg + off, 4); return value; }
 
+static void hid_request(uint32_t cmd, uint64_t a, uint64_t b, uint64_t d) {
+    memset(msg, 0, sizeof msg);
+    put32(0, 4); put32(4, 0x8000000d); put32(8, 1);
+    put32(0x20, 0x49434653); put32(0x28, cmd);
+    memcpy(msg + 0x30, &a, 8); memcpy(msg + 0x38, &b, 8); memcpy(msg + 0x40, &d, 8);
+}
+
+static uint32_t send_hid(Cpu *cpu, uint32_t session) {
+    CHECK(hos_send_sync_request(cpu, session, msg, sizeof msg) == HOS_OK);
+    return get32(0x18);
+}
+
 static void test_hid_ipc(void) {
     Cpu cpu = {0};
     Service hid = {"hid", hos_hid_handle, NULL};
@@ -123,6 +135,41 @@ static void test_hid_ipc(void) {
     CHECK(hos_map_shared_memory(shared, first, size, 1) == HOS_OK);
     host[0x123] = 77;
     CHECK(*(volatile uint8_t *)(uintptr_t)(first + 0x123) == 77);
+    hid_request(103, 0x10, 0, 0);
+    CHECK(send_hid(&cpu, session) == HOS_OK);
+    const uint8_t *guest = (const uint8_t *)(uintptr_t)first;
+    uint64_t capacity, count;
+    memcpy(&capacity, guest + 0x9a00 + 0x28 + 8, 8);
+    memcpy(&count, guest + 0x9a00 + 0x28 + 24, 8);
+    CHECK(capacity == 17 && count == 0); /* a valid empty ring, no fabricated input */
+    hid_request(100, 0x1f, 0x10, 0); CHECK(send_hid(&cpu, session) == HOS_OK);
+    hid_request(101, 0x10, 0, 0); CHECK(send_hid(&cpu, session) == HOS_OK && get32(0x20) == 0x1f);
+    hid_request(120, 0x10, 1, 0); CHECK(send_hid(&cpu, session) == HOS_OK);
+    hid_request(121, 0x10, 0, 0); CHECK(send_hid(&cpu, session) == HOS_OK && get32(0x20) == 1);
+    hid_request(120, 0x10, 2, 0); CHECK(send_hid(&cpu, session) != HOS_OK);
+    hid_request(121, 0x10, 0, 0); CHECK(send_hid(&cpu, session) == HOS_OK && get32(0x20) == 1);
+    hid_request(128, 0x10, 2, 0); CHECK(send_hid(&cpu, session) == HOS_OK);
+    hid_request(129, 0x10, 0, 0); CHECK(send_hid(&cpu, session) == HOS_OK && get32(0x20) == 2);
+    hid_request(122, 0x20, 0x10, 0); CHECK(send_hid(&cpu, session) == HOS_OK);
+    uint32_t assignment;
+    memcpy(&assignment, guest + 0x9a00 + 8 * 0x5000 + 4, 4);
+    CHECK(assignment == 1);
+    memcpy(&assignment, guest + 0x9a00 + 9 * 0x5000 + 4, 4);
+    CHECK(assignment == 0); /* Handheld 0x20 and Other 0x10 must not be swapped */
+    hid_request(106, 0, 0x10, 0); CHECK(send_hid(&cpu, session) == HOS_OK && get32(8) == 2);
+    uint32_t event = get32(12);
+    hid_request(106, 0, 0x10, 0); CHECK(send_hid(&cpu, session) == HOS_OK);
+    uint32_t event_copy = get32(12);
+    CHECK(event && event_copy != event && hos_event_state(event) == 1);
+    hos_event_set(event, 0);
+    CHECK(hos_event_state(event_copy) == 0);
+    hos_close_handle(event);
+    CHECK(hos_event_state(event_copy) == 0);
+    hos_close_handle(event_copy);
+    hid_request(203, 0, 0, 0); CHECK(send_hid(&cpu, session) == HOS_OK);
+    uint32_t vibration = get32(12);
+    hid_request(0, 0x01000003, 0, 0); CHECK(send_hid(&cpu, vibration) == HOS_OK);
+    hos_close_handle(vibration);
     CHECK(hos_unmap_shared_memory(shared, first, size) == HOS_OK);
     CHECK(hos_close_handle(shared) == HOS_OK && !hos_shared_memory_data(shared, NULL));
     hos_close_handle(applet); hos_close_handle(session);

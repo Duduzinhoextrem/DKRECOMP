@@ -188,29 +188,52 @@ static void close_session(Session *s) {
 /* ---- events ---------------------------------------------------------------------------------------------- */
 #define EVENT_BASE 0xE000u
 #define MAX_EVENTS 256
-static struct { int used, signaled; } g_events[MAX_EVENTS];
+typedef struct Event { unsigned refs; int signaled; } Event;
+static Event g_events[MAX_EVENTS];
+static Event *g_event_handles[MAX_EVENTS];
+
+static Event *event_of(uint32_t handle) {
+    uint32_t i = handle - EVENT_BASE;
+    return i < MAX_EVENTS ? g_event_handles[i] : NULL;
+}
+
+static uint32_t new_event_handle(Event *event) {
+    for (uint32_t i = 0; i < MAX_EVENTS; i++) {
+        if (g_event_handles[i]) continue;
+        g_event_handles[i] = event;
+        event->refs++;
+        return EVENT_BASE + i;
+    }
+    return 0;
+}
 
 uint32_t hos_new_event(int signaled) {
     for (int i = 0; i < MAX_EVENTS; i++)
-        if (!g_events[i].used) {
-            g_events[i].used = 1;
+        if (!g_events[i].refs) {
             g_events[i].signaled = signaled;
-            return EVENT_BASE + (uint32_t)i;
+            return new_event_handle(&g_events[i]);
         }
     return 0;
 }
 
+uint32_t hos_copy_event_handle(uint32_t handle) {
+    Event *event = event_of(handle);
+    return event ? new_event_handle(event) : 0;
+}
+
 void hos_event_set(uint32_t handle, int signaled) {
-    uint32_t i = handle - EVENT_BASE;
-    if (handle >= EVENT_BASE && i < MAX_EVENTS && g_events[i].used) {
-        g_events[i].signaled = signaled;
-        if (signaled) kern_sync_poke(handle); /* wake threads waiting on it */
+    Event *event = event_of(handle);
+    if (event) {
+        event->signaled = signaled;
+        if (signaled)
+            for (uint32_t i = 0; i < MAX_EVENTS; i++)
+                if (g_event_handles[i] == event) kern_sync_poke(EVENT_BASE + i);
     }
 }
 
 int hos_event_state(uint32_t handle) {
-    uint32_t i = handle - EVENT_BASE;
-    return handle >= EVENT_BASE && i < MAX_EVENTS && g_events[i].used ? g_events[i].signaled : -1;
+    Event *event = event_of(handle);
+    return event ? event->signaled : -1;
 }
 
 /* Transfer memory lends an existing guest range to a service; no second copy of its backing is needed. */
@@ -236,7 +259,11 @@ const HosTransferMemory *hos_transfer_memory(uint32_t handle) {
 uint32_t hos_close_handle(uint32_t handle) {
     Session *s = session_of(handle);
     if (s) close_session(s);
-    if (hos_event_state(handle) >= 0) g_events[handle - EVENT_BASE].used = 0;
+    Event *event = event_of(handle);
+    if (event) {
+        g_event_handles[handle - EVENT_BASE] = NULL;
+        event->refs--;
+    }
     if (hos_transfer_memory(handle)) g_transfers[handle - TRANSFER_BASE].used = 0;
 #ifdef _WIN32
     hos_close_shared_memory(handle);

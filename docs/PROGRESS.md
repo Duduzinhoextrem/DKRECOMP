@@ -2,6 +2,26 @@
 
 Somente o que foi executado e verificado. Cada linha aponta para o comando que a reproduz (`docs/TESTING.md`).
 
+## 2026-10-31 — Configuração HID concluída no caminho de boot; próximo serviço é VI
+
+HID passa por ActivateNpad, orientação dos Joy-Con, modo handheld, IDs e estilos suportados e criação/ativação
+da lista de dispositivos de vibração. A configuração fica armazenada; rings de Npad são válidos e vazios.
+Sem back-end de entrada conectado, nenhum botão nem rumble é gerado. Getters e eventos de estilo também têm
+tratadores para esse estado desconectado. IDs conferidos no SDK e libnx: Handheld=0x20, Other=0x10.
+
+Eventos copiados agora retêm o mesmo objeto, inclusive sinalização, reset e wakeups de waiters em outro handle.
+Quando dois handles do mesmo evento estão no array de espera, vence o primeiro índice, não o menor handle.
+
+| Evidência | Resultado |
+|---|---|
+| Build incremental e boot de 30 s | **403 SVCs**, nove threads guest iniciadas; HID aceita slots **0x1ff**, estilos **0x1f** e ativa 18 handles na lista de vibração; parada em **`vi:m:GetDisplayService` (2)** na thread `0xc008` |
+| Mesmo boot com camada Khronos + sincronização | **403 SVCs**, mesma parada, camada ativa e sem erros Vulkan |
+| `shared_memory` e `kernel_sync` | configurações/getters HID, limites, IDs dos slots, eventos copiados, reset, referências e wakeup/índice de aliases conferem |
+| CMake/ctest; pytest | **7/7 passam**; **51 passam, 1 pulado** |
+
+O próximo trabalho é o serviço de display/VI e os objetos NVN, com a entrada do host ainda pendente. Nenhum frame
+do jogo foi apresentado.
+
 ## 2026-10-31 — Memória compartilhada real do HID mapeada pelo SDK
 
 `runtime/src/shared.c` cria sections do Windows com uma view de escrita do serviço e aliases guest protegidos.

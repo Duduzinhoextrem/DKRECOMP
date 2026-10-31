@@ -243,7 +243,13 @@ void kern_sync_poke(uint32_t h) {
         KThread *t = &g_threads[i];
         if (!t->used || t->wait_kind != W_SYNC) continue;
         for (int k = 0; k < t->nsync; k++)
-            if (t->sync_handles[k] == h) { t->sync_index = k; wake(t); break; }
+            if (t->sync_handles[k] == h) {
+                /* Several handles can refer to one event. Pick the first signaled entry in the wait array,
+                 * independently of which handle the producer used or the handle-table traversal order. */
+                for (int j = 0; j < t->nsync; j++)
+                    if (object_signaled(t->sync_handles[j])) { t->sync_index = j; wake(t); break; }
+                break;
+            }
     }
 }
 

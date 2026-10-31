@@ -230,12 +230,13 @@ static void test_events(void) {
     SyncWaiter a = {.ready = CreateEventW(NULL, TRUE, FALSE, NULL), .index = -1};
     kern_lock();
     a.objects[0] = hos_new_event(0);
-    a.objects[1] = hos_new_event(0);
+    uint32_t service_event = hos_new_event(0);
+    a.objects[1] = hos_copy_event_handle(service_event);
     kern_unlock();
     uint32_t h = start(sync_worker, &a, 44);
     CHECK(WaitForSingleObject(a.ready, 2000) == WAIT_OBJECT_0);
     kern_lock();
-    hos_event_set(a.objects[1], 1);
+    hos_event_set(service_event, 1); /* waiter owns a different handle to the same event */
     kern_unlock();
     join(h);
     CHECK(a.result == HOS_OK && a.index == 1);
@@ -243,6 +244,9 @@ static void test_events(void) {
     int32_t index = -1;
     CHECK(kern_wait_sync(a.objects, 2, 0, &index) == HOS_OK && index == 1);
     hos_event_set(a.objects[1], 0);
+    CHECK(hos_event_state(service_event) == 0);
+    hos_close_handle(service_event);
+    CHECK(hos_event_state(a.objects[1]) == 0);
     CHECK(kern_wait_sync(a.objects, 2, 0, &index) == HOS_TIMED_OUT);
     CHECK(kern_wait_sync(NULL, 0, 0, &index) == HOS_TIMED_OUT);
     uint32_t invalid = 0x1234;
@@ -253,6 +257,24 @@ static void test_events(void) {
     hos_close_handle(a.objects[1]);
     kern_unlock();
     CloseHandle(a.ready);
+
+    SyncWaiter aliases = {.ready = CreateEventW(NULL, TRUE, FALSE, NULL), .index = -1};
+    kern_lock();
+    uint32_t original = hos_new_event(0);
+    aliases.objects[0] = hos_copy_event_handle(original); /* higher handle, first in the wait array */
+    aliases.objects[1] = original;
+    kern_unlock();
+    h = start(sync_worker, &aliases, 44);
+    CHECK(WaitForSingleObject(aliases.ready, 2000) == WAIT_OBJECT_0);
+    kern_lock();
+    hos_event_set(original, 1);
+    kern_unlock();
+    join(h);
+    CHECK(aliases.result == HOS_OK && aliases.index == 0);
+    kern_lock();
+    hos_close_handle(original); hos_close_handle(aliases.objects[0]);
+    kern_unlock();
+    CloseHandle(aliases.ready);
 }
 
 int main(void) {

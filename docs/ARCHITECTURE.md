@@ -117,7 +117,10 @@ main/sdk NSO ──► decoder ARM64 ──► lifter ──► C gerado ──�
   `VirtualAlloc2` e `MapViewOfFile3` substituem placeholders divididos, permitindo bases guest de 4 KiB.
   SVCs Map/UnmapSharedMemory registram/removem regiões Shared em `QueryMemory`.
 - `runtime/src/hid.c` atende CreateAppletResource e GetSharedMemoryHandle com um bloco de 256 KiB, leitura no
-  guest. A configuração e os estados de controle serão implementados conforme os comandos efetivamente usados.
+  guest. Ativação, configuração/getters de Npad e lista de dispositivos de vibração cobrem o caminho inicial.
+  Os rings permanecem vazios e os controles desconectados até existir um back-end de entrada do host.
+- Eventos têm objetos referenciados por handles; cópias compartilham sinalização e reset e acordam waiters de
+  todos os aliases. O kernel escolhe o primeiro índice sinalizado no array, inclusive para aliases do mesmo evento.
 - Contratos do host: [MapViewOfFile3](https://learn.microsoft.com/en-us/windows/win32/api/memoryapi/nf-memoryapi-mapviewoffile3)
   e [VirtualFree](https://learn.microsoft.com/en-us/windows/win32/api/memoryapi/nf-memoryapi-virtualfree).
   Protocolo: [HID](https://switchbrew.org/wiki/HID_services#IAppletResource) e

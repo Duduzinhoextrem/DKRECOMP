@@ -81,6 +81,7 @@ uint32_t hos_send_sync_request(Cpu *c, uint32_t handle, uint8_t *msg, uint32_t c
 uint32_t hos_close_handle(uint32_t handle);
 /* Kernel events (readable handles a service hands out); protected by the kernel lock. */
 uint32_t hos_new_event(int signaled);
+uint32_t hos_copy_event_handle(uint32_t handle);
 void hos_event_set(uint32_t handle, int signaled);
 int hos_event_state(uint32_t handle); /* 1 signaled, 0 clear, -1 not an event */
 typedef struct HosTransferMemory {

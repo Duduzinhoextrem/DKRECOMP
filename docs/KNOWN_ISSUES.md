@@ -58,8 +58,9 @@
 
 ## Serviços (runtime/src/services.c)
 
-- Bloqueio atual com gráficos do host: `hid:ActivateNpad` (103), após criar o contexto Vulkan e mapear os
-  256 KiB do HID. O bloco ainda não publica entrada; controles começam desconectados.
+- Bloqueio atual com gráficos do host: `vi:m:GetDisplayService` (2), após criar o contexto Vulkan, mapear os
+  256 KiB do HID e configurar Npad/vibração. Os rings ainda não publicam entrada; controles ficam desconectados.
+  A lista de vibração registra os dispositivos ativados, mas rumble do host e envio de valores ainda faltam.
   No modo legado `--no-gfx`, continua parando em `nvdrv:Initialize` (3).
 - Cada serviço implementa só os comandos que o boot pediu (e vizinhos óbvios); o resto para com relatório. Os
   valores devolvidos (usuário local "DKRecomp", idioma `en-US`, região EUA, modo TV, foco, fuso UTC, configuração de
