@@ -153,6 +153,10 @@ main/sdk NSO ──► decoder ARM64 ──► lifter ──► C gerado ──�
 
 ## Organização do repositório
 
+O serviço `audren:u` começa em `runtime/src/audio.c`, com dimensionamento do work buffer REV1–4 sobre o
+parâmetro interno de 0x34 bytes. A fórmula DSP é adaptada do nxnative MIT (origem/licença nos avisos de terceiros).
+Abertura do renderer, atualização de estado e saída de áudio permanecem pendentes.
+
 | Pasta | Conteúdo | Estado |
 |---|---|---|
 | `tools/dkrecomp/formats/` | Leitores: PFS0 (NSP), ticket (campos públicos), CNMT XML, NSO (com LZ4), NPDM, NACP, ELF | Pronto, testado com dados sintéticos |

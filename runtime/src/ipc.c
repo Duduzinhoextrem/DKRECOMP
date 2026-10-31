@@ -283,9 +283,11 @@ void hos_unimplemented(Cpu *c, const Service *s, const IpcRequest *rq) {
 
 void hos_dump_request(const IpcRequest *rq) {
     hos_log("     request: type %u cmd %u, args %u bytes:", rq->type, rq->cmd, rq->args_size);
-    for (uint32_t i = 0; i < rq->args_size && i < 64; i += 4) hos_log(" %08x", *(const uint32_t *)(rq->args + i));
+    for (uint32_t i = 0; i < rq->args_size && i < 96; i += 4) hos_log(" %08x", *(const uint32_t *)(rq->args + i));
     hos_log("\n     buffers: %d X, %d A, %d B, %d W, %d C; pid %d, %d copy, %d move handles\n", rq->nx, rq->na,
             rq->nb, rq->nw, rq->nc, rq->has_pid, rq->ncopy, rq->nmove);
+    for (int i = 0; i < rq->ncopy; i++) hos_log("       copy%d %#x\n", i, rq->copy[i]);
+    for (int i = 0; i < rq->nmove; i++) hos_log("       move%d %#x\n", i, rq->move[i]);
     for (int i = 0; i < rq->nx; i++) hos_log("       X%d %#llx +%#llx\n", i, (unsigned long long)rq->x[i].addr, (unsigned long long)rq->x[i].size);
     for (int i = 0; i < rq->na; i++) hos_log("       A%d %#llx +%#llx\n", i, (unsigned long long)rq->a[i].addr, (unsigned long long)rq->a[i].size);
     for (int i = 0; i < rq->nb; i++) hos_log("       B%d %#llx +%#llx\n", i, (unsigned long long)rq->b[i].addr, (unsigned long long)rq->b[i].size);

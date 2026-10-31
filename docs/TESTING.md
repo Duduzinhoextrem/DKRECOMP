@@ -259,5 +259,7 @@ O teste `display_service` verifica as permissões entre vi:u/s/m, interfaces fil
 aberturas/fechamentos, bounds do NativeWindow, layers distintos, refcounts Binder e cópias do evento 0xf.
 Inclui Connect/Disconnect do produtor por X/C e A/B, canaries, duplicação de conexão/API incorreta e rejeição
 de parcels malformados (offsets/tamanho, token UTF-16, campos truncados) sem mutação da conexão.
+`audio_renderer` compara a fórmula REV4 com a fixture 0x308000 do serviço, testa o pedido/resposta por IPC e
+rejeita revisão futura, valores negativos/grandes, sample count inválido e campos truncados, sem alterar a saída.
 
 Ver `docs/PROGRESS.md`. Regra: resultado só entra na documentação se foi produzido por um comando acima.

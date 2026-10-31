@@ -58,8 +58,12 @@
 
 ## Serviços (runtime/src/services.c)
 
-- Bloqueio atual com gráficos do host: **`audren:u` comando 1** (GetWorkBufferSize), depois da inicialização
-  gráfica NVN completa (2876 SVCs). O renderizador de áudio ainda não existe.
+- Parada atual: `audren:u:OpenAudioRenderer` (0). GetWorkBufferSize (1) aceita REV1–4 e execução DSP/automática;
+  REV5+, CPU/manual, IAudioRenderer, RequestUpdate, evento periódico e saída de som ainda faltam.
+  O SDK aceitou 0x9e000 de work buffer; isso não comprova processamento de áudio.
+
+- Bloqueio atual com gráficos do host: **`audren:u` comando 0** (OpenAudioRenderer), depois da inicialização
+  dos recursos NVN sem renderização (3102 SVCs na execução mais recente). O objeto de áudio ainda não existe.
   Os rings HID ainda não publicam entrada; controles ficam desconectados.
   A lista de vibração registra os dispositivos ativados, mas rumble do host e envio de valores ainda faltam.
 - VI expõe somente Default 1280×720. Há limite de 64 layers; as identidades gerenciadas ainda duram até o fim

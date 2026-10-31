@@ -145,6 +145,8 @@ void hos_save_open(Cpu *c, const IpcRequest *rq, IpcReply *rp);
 void hos_hid_handle(Cpu *c, Service *s, const IpcRequest *rq, IpcReply *rp);
 void hos_vi_handle(Cpu *c, Service *s, const IpcRequest *rq, IpcReply *rp);
 uint64_t hos_vi_create_managed_layer(void);
+void hos_audren_handle(Cpu *c, Service *s, const IpcRequest *rq, IpcReply *rp);
+uint32_t hos_audio_work_size(const uint8_t *parameter, uint32_t length, uint64_t *out);
 
 /* Helpers for service implementations. */
 #define RP_PUT(rp, type, value) do { type v_ = (value); memcpy((rp)->data + (rp)->data_size, &v_, sizeof v_); \

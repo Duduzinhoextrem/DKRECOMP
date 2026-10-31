@@ -2,6 +2,23 @@
 
 Somente o que foi executado e verificado. Cada linha aponta para o comando que a reproduz (`docs/TESTING.md`).
 
+## 2026-10-31 — Work buffer do áudio REV4 aceito; próximo é OpenAudioRenderer
+
+`runtime/src/audio.c` atende `audren:u:GetWorkBufferSize` (1), com parâmetro interno de 0x34 bytes, revisão em
++0x30 e voice-drop de um byte. Fórmula REV1–4 adaptada da referência MIT nxnative, com origem/licença preservadas;
+não usa a necessidade maior do servidor CPU interno do SDK como se fosse a necessidade do serviço DSP.
+
+| Evidência | Resultado |
+|---|---|
+| Boot incremental | SDK aceita **0x9e000 bytes**, cria transfer memory e pede **OpenAudioRenderer (0)**; parada mais recente em **3102 SVCs** (primeira execução, 2829) |
+| Parâmetro do jogo | REV4, 48 kHz, 240 samples, 54 mix buffers, 2 submixes, 128 vozes, 2 sinks, 12 efeitos, 12 frames de performance |
+| Próximo pedido | 72 bytes úteis (parâmetro, padding, work size, ARUID 0x10), PID, copy0=transfer memory, copy1=processo; buffers ausentes |
+| `audio_renderer` | fixture REV4 do serviço **0x308000**, IPC e rejeição de revisão, campos negativos, limites e truncamento; padding do voice-drop tratado separadamente |
+| CMake/ctest; pytest | **11/11 passam**; **52 passam, 1 pulado** |
+
+O áudio ainda não foi aberto, processado nem reproduzido. Etapa A continua com Open/RequestUpdate, progresso
+silencioso das vozes e evento periódico. O diagnóstico IPC agora inclui os handles e até 96 bytes de argumentos.
+
 ## 2026-10-31 — Estado NVN atual revalidado e builders comparados com o SDK
 
 Após a integração dos objetos NVN, build incremental + boot confirmam a parada posterior em **`audren:u`

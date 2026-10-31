@@ -79,6 +79,9 @@ comandos restantes, instruções ainda não suportadas se executadas e demais su
 
 ## MVP 6 — Gameplay
 
+Etapa A do plano em andamento: work buffer do áudio aceito em 0x9e000 bytes; próximo comando é
+`audren:u:OpenAudioRenderer` (0). Ainda não há processamento/som, controles publicados ou imagem do jogo.
+
 Avaliação da integração gráfica: `docs/GRAPHICS_PORT.md`. O back-end próprio do host passa no teste de
 clear/apresentação, resize e readback, inclusive validação de sincronização. Ainda não há frame do jogo nem NVN.
 

@@ -484,6 +484,7 @@ static const Known g_known[] = {
     {"vi:u", hos_vi_handle},
     {"vi:s", hos_vi_handle},
     {"vi:m", hos_vi_handle},
+    {"audren:u", hos_audren_handle},
 };
 
 Service *hos_get_service(const char *name) {
