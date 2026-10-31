@@ -3,7 +3,7 @@
 Estado em 2026-10-31: existe um **back-end Vulkan próprio de janela/clear/apresentação**, testado sem o jogo,
 e uma ponte de entrada NVN ligada ao SDK por overrides. A lista MIT de nomes públicos foi incorporada;
 implementações de objetos/comandos da referência ainda não foram portadas. No modo gráfico o boot cria
-device/swapchain do host em `nv::InitializeGraphics` e chega a `hid:CreateAppletResource` (0). O modo legado
+device/swapchain do host em `nv::InitializeGraphics`, mapeia a memória HID e chega a `hid:ActivateNpad` (103). O modo legado
 continua parando em `nvdrv:Initialize`. Nenhum frame do jogo foi submetido.
 
 ## Referência examinada

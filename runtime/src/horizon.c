@@ -52,7 +52,7 @@ extern const uint64_t dkr_sym_init_start, dkr_sym_nn_main, dkr_main_thread_stack
 #define R_INVALID_ENUM 0xF001
 
 /* MemoryState values of firmware 4.x (switchbrew "SVC#MemoryState"), lower byte only. */
-enum { MS_FREE = 0, MS_CODE = 3, MS_CODEDATA = 4, MS_NORMAL = 5, MS_STACK = 11, MS_THREADLOCAL = 12 };
+enum { MS_FREE = 0, MS_CODE = 3, MS_CODEDATA = 4, MS_NORMAL = 5, MS_SHARED = 6, MS_STACK = 11, MS_THREADLOCAL = 12 };
 
 typedef struct Region {
     uint64_t base, size;
@@ -280,6 +280,25 @@ static void svc_dispatch(Cpu *c, uint32_t n, uint64_t pc) {
     case 0x10: c->x[0] = (uint64_t)kern_current_core(); return; /* GetCurrentProcessorNumber */
     case 0x11: hos_event_set((uint32_t)c->x[0], 1); c->x[0] = R_OK; return;          /* SignalEvent */
     case 0x12: case 0x17: hos_event_set((uint32_t)c->x[0], 0); c->x[0] = R_OK; return; /* ClearEvent, ResetSignal */
+    case 0x13: { /* MapSharedMemory(handle w0, addr x1, size x2, permission w3) */
+        uint64_t addr = c->x[1], size = c->x[2];
+        for (int i = 0; i < g_nregions; i++) {
+            Region *r = &g_regions[i];
+            if (size && addr < r->base + r->size && r->base < addr + size) {
+                c->x[0] = HOS_KERNEL(106);
+                return;
+            }
+        }
+        c->x[0] = hos_map_shared_memory((uint32_t)c->x[0], addr, size, (uint32_t)c->x[3]);
+        if (c->x[0] == HOS_OK) region_add(addr, size, MS_SHARED, (uint32_t)c->x[3]);
+        return;
+    }
+    case 0x14: { /* UnmapSharedMemory(handle w0, addr x1, size x2) */
+        uint64_t addr = c->x[1], size = c->x[2];
+        c->x[0] = hos_unmap_shared_memory((uint32_t)c->x[0], addr, size);
+        if (c->x[0] == HOS_OK) region_set(addr, size, 0, 0, 0);
+        return;
+    }
     case 0x15: { /* CreateTransferMemory(-, addr x1, size x2, perm w3) -> w1 handle */
         uint64_t addr = c->x[1], size = c->x[2];
         uint32_t perm = (uint32_t)c->x[3];

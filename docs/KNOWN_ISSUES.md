@@ -44,6 +44,10 @@
   CancelSynchronization, suspensão/contexto de thread e arbitragem por endereço ainda não estão completos.
 - Transfer memory registra o backing guest, tamanho e permissão, mas ainda não altera proteção de páginas nem
   os atributos apresentados por QueryMemory; MapTransferMemory/UnmapTransferMemory não foram implementados.
+- Shared memory usa aliases reais e permissões de página. O alocador de placeholders aceita várias views em uma
+  reserva, mas não substitui reservas privadas anteriores nem atravessa duas reservas de placeholders distintas.
+  As sobras de reserva compartilhada também não podem ser commitadas por `rt_map_fixed`; isso exige unificar os
+  alocadores se um futuro endereço escolhido pelo SDK usar esse caso. Falhas retornam erro, sem cópia de dados.
 - O espaço de endereços (regiões de heap, alias, pilha, ASLR) e o tamanho de memória informados ao jogo foram
   escolhidos pelo DKRecomp; a memória total (`0xCD500000`) é uma aproximação.
 - A entropia de `GetInfo(11)` é fixa, para que as execuções sejam reproduzíveis.
@@ -54,8 +58,9 @@
 
 ## Serviços (runtime/src/services.c)
 
-- Bloqueio atual com gráficos do host: `hid:CreateAppletResource` (0), após `nv::InitializeGraphics` criar o
-  contexto Vulkan. No modo legado `--no-gfx`, continua parando em `nvdrv:Initialize` (3).
+- Bloqueio atual com gráficos do host: `hid:ActivateNpad` (103), após criar o contexto Vulkan e mapear os
+  256 KiB do HID. O bloco ainda não publica entrada; controles começam desconectados.
+  No modo legado `--no-gfx`, continua parando em `nvdrv:Initialize` (3).
 - Cada serviço implementa só os comandos que o boot pediu (e vizinhos óbvios); o resto para com relatório. Os
   valores devolvidos (usuário local "DKRecomp", idioma `en-US`, região EUA, modo TV, foco, fuso UTC, configuração de
   desempenho) são escolhas do DKRecomp, não lidas de um console.

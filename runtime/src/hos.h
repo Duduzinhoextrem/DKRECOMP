@@ -89,6 +89,14 @@ typedef struct HosTransferMemory {
 } HosTransferMemory;
 uint32_t hos_new_transfer_memory(uint64_t addr, uint64_t size, uint32_t perm);
 const HosTransferMemory *hos_transfer_memory(uint32_t handle);
+/* Shared section objects: service writes through the host view, guest maps its own protected alias.
+ * Handles and mappings each retain the object. All calls expect the kernel lock, as with IPC. */
+uint32_t hos_new_shared_memory(uint64_t size, uint32_t remote_perm);
+uint32_t hos_copy_shared_memory_handle(uint32_t handle);
+void *hos_shared_memory_data(uint32_t handle, uint64_t *size);
+int hos_close_shared_memory(uint32_t handle);
+uint32_t hos_map_shared_memory(uint32_t handle, uint64_t addr, uint64_t size, uint32_t perm);
+uint32_t hos_unmap_shared_memory(uint32_t handle, uint64_t addr, uint64_t size);
 /* ---- kernel (kernel.c): threads and synchronisation; every call below expects the kernel lock held ------- */
 void kern_lock(void);
 void kern_unlock(void);
@@ -132,6 +140,7 @@ void hos_fs_set_romfs(const char *path);
 void hos_fsp_handle(Cpu *c, Service *s, const IpcRequest *rq, IpcReply *rp);
 void hos_save_configure(const char *root, uint64_t program_id);
 void hos_save_open(Cpu *c, const IpcRequest *rq, IpcReply *rp);
+void hos_hid_handle(Cpu *c, Service *s, const IpcRequest *rq, IpcReply *rp);
 
 /* Helpers for service implementations. */
 #define RP_PUT(rp, type, value) do { type v_ = (value); memcpy((rp)->data + (rp)->data_size, &v_, sizeof v_); \

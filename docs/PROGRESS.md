@@ -2,6 +2,27 @@
 
 Somente o que foi executado e verificado. Cada linha aponta para o comando que a reproduz (`docs/TESTING.md`).
 
+## 2026-10-31 — Memória compartilhada real do HID mapeada pelo SDK
+
+`runtime/src/shared.c` cria sections do Windows com uma view de escrita do serviço e aliases guest protegidos.
+Placeholders divididos permitem endereços alinhados a 4 KiB, preservando a granularidade de reserva de 64 KiB.
+Handles copiados e mappings retêm o objeto; unmap devolve o intervalo e fechar um handle não invalida aliases.
+SVCs 0x13/0x14 atualizam também o estado Shared e as permissões de `QueryMemory`.
+
+HID implementa `CreateAppletResource` (0) e `IAppletResource:GetSharedMemoryHandle` (0). O bloco de 256 KiB
+começa zerado, com controles desconectados. Ativação e publicação dos estados de entrada ainda estão pendentes.
+
+| Evidência | Resultado |
+|---|---|
+| `tools/boot.sh 30` com `DKR_GFX_HIDDEN=1` | **329 SVCs**; SDK mapeia HID em **`0x7c70a04000`**, tamanho **0x40000**, permissão de leitura; próximo comando **`hid:ActivateNpad` (103)** |
+| `shared_memory` | aliases reais no mesmo bloco de 64 KiB, propagação nos dois sentidos, read-only, limites/alinhamento, handles, remapeamento, 100 ciclos e IPC HID |
+| CMake/ctest; pytest | **7/7 passam**; **51 passam, 1 pulado** |
+
+O alocador de shared memory não substitui reservas privadas preexistentes nem atravessa duas reservas
+independentes de placeholders. Uma escolha guest que exija isso falha explicitamente; não há cópia silenciosa.
+As páginas de guarda restantes de uma reserva compartilhada não são commitadas pelo alocador privado atual.
+Nenhum frame do jogo foi submetido.
+
 ## 2026-10-31 — Fronteira NVN ligada ao boot: próximo serviço é HID
 
 O gerador permite overrides por símbolo, inclusive aliases: substitui o corpo da função recompilada para que

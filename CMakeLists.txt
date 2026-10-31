@@ -15,6 +15,9 @@ endif()
 # Runtime: what recompiled code links against.
 add_library(dkr_runtime STATIC runtime/src/core.c)
 target_include_directories(dkr_runtime PUBLIC runtime/include)
+if(WIN32)
+  target_sources(dkr_runtime PRIVATE runtime/src/shared.c)
+endif()
 
 # Known-answer tests of the CPU helpers in runtime/include/dkr/cpu.h. No game files.
 add_executable(dkr_selftest tests/native/selftest.c)
@@ -28,8 +31,10 @@ if(WIN32)
   # Exercise the actual kernel and event objects with synthetic guest entry points.
   add_executable(dkr_kernel_test tests/native/kernel_test.c runtime/src/kernel.c runtime/src/ipc.c)
   target_link_libraries(dkr_kernel_test PRIVATE dkr_runtime)
-  add_executable(dkr_fs_test tests/native/fs_test.c runtime/src/fs.c runtime/src/save.c runtime/src/ipc.c runtime/src/services.c)
+  add_executable(dkr_fs_test tests/native/fs_test.c runtime/src/fs.c runtime/src/save.c runtime/src/ipc.c runtime/src/services.c runtime/src/hid.c)
   target_link_libraries(dkr_fs_test PRIVATE dkr_runtime)
+  add_executable(dkr_shared_test tests/native/shared_test.c runtime/src/hid.c runtime/src/ipc.c)
+  target_link_libraries(dkr_shared_test PRIVATE dkr_runtime)
 endif()
 
 enable_testing()
@@ -39,6 +44,7 @@ if(WIN32)
   add_test(NAME kernel_sync COMMAND dkr_kernel_test)
   set_tests_properties(kernel_sync PROPERTIES TIMEOUT 30)
   add_test(NAME romfs_storage COMMAND dkr_fs_test)
+  add_test(NAME shared_memory COMMAND dkr_shared_test)
 endif()
 
 # The optional host graphics target uses only pinned headers and the Windows Vulkan loader, no system SDK.

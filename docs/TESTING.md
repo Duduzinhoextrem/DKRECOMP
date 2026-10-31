@@ -217,4 +217,9 @@ os frames guest acessíveis por frame pointer. Esses frames ajudam a localizar u
 
 ## Resultados registrados
 
+O teste nativo `shared_memory` usa dados sintéticos para verificar aliases reais host/guest, bases de 4 KiB,
+duas views no mesmo bloco de reserva, permissões read-only via `VirtualQuery`, remapeamento, referências de
+handles e mappings, 100 ciclos de liberação e IPC CreateAppletResource/GetSharedMemoryHandle. O mapeamento
+permanece válido após fechar todos os handles, até encerrar o processo, como exige o contrato de shared memory.
+
 Ver `docs/PROGRESS.md`. Regra: resultado só entra na documentação se foi produzido por um comando acima.

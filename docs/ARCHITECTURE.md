@@ -110,6 +110,19 @@ main/sdk NSO ──► decoder ARM64 ──► lifter ──► C gerado ──�
   das threads, cria o contexto Vulkan em `nv::InitializeGraphics` e fornece o lookup de procs. Funções ainda
   ausentes param com seu nome; objetos e comandos de desenho NVN ainda não foram portados.
 
+## Memória compartilhada e HID
+
+- `runtime/src/shared.c` mantém sections do Windows, handles com referências e views guest com permissões reais.
+  Uma view host permanece gravável para o serviço; aliases guest veem as mesmas páginas sem cópia periódica.
+  `VirtualAlloc2` e `MapViewOfFile3` substituem placeholders divididos, permitindo bases guest de 4 KiB.
+  SVCs Map/UnmapSharedMemory registram/removem regiões Shared em `QueryMemory`.
+- `runtime/src/hid.c` atende CreateAppletResource e GetSharedMemoryHandle com um bloco de 256 KiB, leitura no
+  guest. A configuração e os estados de controle serão implementados conforme os comandos efetivamente usados.
+- Contratos do host: [MapViewOfFile3](https://learn.microsoft.com/en-us/windows/win32/api/memoryapi/nf-memoryapi-mapviewoffile3)
+  e [VirtualFree](https://learn.microsoft.com/en-us/windows/win32/api/memoryapi/nf-memoryapi-virtualfree).
+  Protocolo: [HID](https://switchbrew.org/wiki/HID_services#IAppletResource) e
+  [SVC](https://switchbrew.org/wiki/SVC#MapSharedMemory). Implementação própria.
+
 ## RomFS
 
 - `tools/dkrecomp/romfs.py` converte uma pasta já extraída em uma imagem RomFS crua: header de 0x50 bytes,
@@ -138,7 +151,7 @@ main/sdk NSO ──► decoder ARM64 ──► lifter ──► C gerado ──�
 | `tools/dkrecomp/testing/` | Infra de testes diferenciais (Unicorn × harness) e gerador de casos | Pronto |
 | `runtime/include/dkr/` | `cpu.h` (estado e auxiliares para o código gerado), `rt.h` (API do host) | Pronto |
 | `runtime/src/core.c` | Despacho, CAS, barreiras, mapeamento fixo, contador de sistema, tratadores de trap | Pronto |
-| `runtime/src/horizon.c`, `kernel.c`, `ipc.c`, `services.c`, `fs.c`, `save.c` | Boot, SVCs, threads, sincronização, IPC, serviços, RomFS e montagem de save | Parcial, guiado pelo boot |
+| `runtime/src/horizon.c`, `kernel.c`, `ipc.c`, `services.c`, `fs.c`, `save.c`, `shared.c`, `hid.c` | Boot, SVCs, threads, sincronização, IPC, serviços, RomFS, save e shared memory/HID | Parcial, guiado pelo boot |
 | `runtime/gfx/` | Janela/apresentação Vulkan próprias verificadas; adaptação NVN pendente | Parcial, independente do jogo |
 | `runtime/audio/`, `runtime/input/`, `runtime/config/` | Áudio (SDL3), entrada, configuração | *(planejado)* |
 | `tests/python/` | Testes unitários (formatos, decodificador × Capstone) | Pronto |

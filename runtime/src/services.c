@@ -475,6 +475,7 @@ static const Known g_known[] = {
     {"time:u", time_handle},
     {"time:s", time_handle},
     {"fsp-srv", hos_fsp_handle},
+    {"hid", hos_hid_handle},
 };
 
 Service *hos_get_service(const char *name) {

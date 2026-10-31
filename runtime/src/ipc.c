@@ -238,6 +238,9 @@ uint32_t hos_close_handle(uint32_t handle) {
     if (s) close_session(s);
     if (hos_event_state(handle) >= 0) g_events[handle - EVENT_BASE].used = 0;
     if (hos_transfer_memory(handle)) g_transfers[handle - TRANSFER_BASE].used = 0;
+#ifdef _WIN32
+    hos_close_shared_memory(handle);
+#endif
     return HOS_OK; /* other handle kinds are not tracked yet */
 }
 
