@@ -54,12 +54,17 @@ main/sdk NSO ──► decoder ARM64 ──► lifter ──► C gerado ──�
 - **Ligação estática** (`tools/dkrecomp/link.py`): os módulos (`main`, `subsdk*`, `sdk`; o `rtld` não é carregado)
   recebem bases fixas a partir de `0x800000000`, alinhadas a 2 MiB; relocações e símbolos importados são resolvidos
   na geração, e cada módulo vira uma imagem pronta (`<módulo>.img`).
+- **Descoberta de funções** (`tools/dkrecomp/gen.py`): símbolos, destinos de desvios, ponteiros relocados,
+  endereços materializados por ADR/ADRP+ADD e tabelas de busca de `.eh_frame_hdr`. As tabelas unwind usam os
+  endereços relativos ao header (sdata4), incluindo callbacks que não são destinos de BL. `chunks.json`, dentro
+  da saída ignorada pelo Git, conserva os limites dos arquivos C entre gerações.
 - **Loader** (`runtime/src/loader.c`): mapeia cada módulo na sua base (endereço guest = host), copia a imagem, deixa
   o `.bss` zerado e registra a tabela de despacho do módulo.
 - **Boot** (`runtime/src/horizon.c`): cria a pilha e a região local da thread principal (TLR, via `TPIDRRO_EL0`),
   registra os callbacks do `rtld` como funções do host com endereço guest (`rt_hostfn_register`) e chama
   `nn::init::Start` como o `rtld` faz. Cada SVC é registrada no log; o que não está implementado encerra a execução
   com relatório.
+- O corpo recompilado de `nnMain` registra sua entrada no log, inclusive se for chamado diretamente pelo SDK.
 
 ## IPC e serviços
 
@@ -68,6 +73,31 @@ main/sdk NSO ──► decoder ARM64 ──► lifter ──► C gerado ──�
 - `runtime/src/services.c` registra os serviços por nome; `sm:GetService` de um nome desconhecido entrega uma
   sessão que registra o primeiro comando e para. Interfaces devolvidas viram handle numa sessão comum ou objeto
   num domínio (`hos_reply_interface`).
+- Uma trava do kernel serializa as SVCs, inclusive o tratamento de IPC. As sessões clonadas de um domínio
+  compartilham sua tabela de objetos, liberada quando a última sessão é fechada.
+
+## Threads e sincronização
+
+- `runtime/src/kernel.c` associa uma thread do Windows a cada thread guest, com `Cpu`, pilha guest e TLR
+  próprios. A pilha C do host tem 8 MiB nas threads criadas e 16 MiB na thread principal.
+- Cada thread bloqueada espera em uma condição do Windows que libera a trava do kernel. A liberação de um
+  mutex entrega sua palavra ao waiter de maior prioridade; empates seguem a ordem de chegada. Uma condição
+  sinalizada primeiro re-adquire o mutex, sem continuar aplicando o timeout da espera pela condição.
+- Eventos permanecem sinalizados até serem limpos. Threads encerradas são objetos sinalizados. O vigia informa
+  a última SVC e a espera de cada thread. O escalonamento continua sendo do Windows; núcleos e prioridades do
+  Horizon não têm preempção própria nem herança de prioridade.
+
+## RomFS
+
+- `tools/dkrecomp/romfs.py` converte uma pasta já extraída em uma imagem RomFS crua: header de 0x50 bytes,
+  dados a partir de 0x200, arquivos alinhados a 16 bytes e tabelas de diretórios, arquivos e hashes ao final.
+  Usa streaming e publica a saída somente depois de terminar. Rejeita links e saída dentro da pasta de entrada.
+- `runtime/src/fs.c` implementa `fsp-srv:OpenDataStorageByCurrentProcess` e `IStorage:Read/GetSize/Flush`.
+  Lê a imagem no disco por offsets de 64 bits; o próprio SDK guest procura os arquivos nas tabelas RomFS.
+- A imagem padrão é `user_files/romfs.bin`, relativa ao layout gerado. `DKR_ROMFS` ou o terceiro argumento do
+  executável seleciona outra imagem. Nenhuma imagem ou arquivo do jogo faz parte do código versionado.
+- Formato conferido com os [tipos de RomFS do libnx](https://github.com/switchbrew/libnx/blob/master/nx/include/switch/runtime/devices/romfs_dev.h),
+  o [leitor do libnx](https://github.com/switchbrew/libnx/blob/master/nx/source/runtime/devices/romfs_dev.c) e o parser local `nstool`.
 
 ## Organização do repositório
 
@@ -82,7 +112,7 @@ main/sdk NSO ──► decoder ARM64 ──► lifter ──► C gerado ──�
 | `tools/dkrecomp/testing/` | Infra de testes diferenciais (Unicorn × harness) e gerador de casos | Pronto |
 | `runtime/include/dkr/` | `cpu.h` (estado e auxiliares para o código gerado), `rt.h` (API do host) | Pronto |
 | `runtime/src/core.c` | Despacho, CAS, barreiras, mapeamento fixo, contador de sistema, tratadores de trap | Pronto |
-| `runtime/services/` | SVCs, IPC, serviços do Horizon | *(planejado)* |
+| `runtime/src/horizon.c`, `kernel.c`, `ipc.c`, `services.c`, `fs.c` | Boot, SVCs, threads, sincronização, IPC, serviços e RomFS | Parcial, guiado pelo boot |
 | `runtime/gfx/` | NVN → Vulkan | *(planejado)* |
 | `runtime/audio/`, `runtime/input/`, `runtime/config/` | Áudio (SDL3), entrada, configuração | *(planejado)* |
 | `tests/python/` | Testes unitários (formatos, decodificador × Capstone) | Pronto |

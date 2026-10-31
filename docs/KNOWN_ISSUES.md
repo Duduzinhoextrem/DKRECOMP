@@ -4,7 +4,7 @@
 
 | # | Problema | Impacto | Saída |
 |---|---|---|---|
-| B1 | O código do jogo está em NCAs criptografados e o DKRecomp não decripta | Sem análise do `main`; MVP 2b+ bloqueados | O usuário fornece a ExeFS/RomFS extraídas por conta própria (`docs/REQUIRED_FILES.md`) |
+| B1 | Extração dos arquivos proprietários | Resolvido para o alvo **base 1.0.0**: ExeFS e RomFS disponíveis localmente | Outras versões exigem seus próprios arquivos extraídos; DKRecomp não decripta |
 | B2 | O Visual Studio 2026 desta máquina não tem o Windows SDK (falta `kernel32.lib` e os headers da UCRT) | MSVC não compila nem liga; a compatibilidade MSVC do C gerado não foi verificada | Instalar o componente "Windows 11 SDK" pelo Visual Studio Installer (mudança no sistema: **requer autorização do usuário**). Enquanto isso, Clang do Zig |
 
 ## Limitações do recompilador
@@ -26,17 +26,22 @@
   retornar a outro lugar (raro, ex.: `longjmp`) não é suportado ainda.
 - `BR` com alvo desconhecido dentro da função usa um `switch` sobre todos os endereços da função: correto, mas gera
   muito código. Falta resolver tabelas de salto estaticamente.
-- Funções são conhecidas só por símbolos (ELF de teste). Descoberta de funções em NSO sem símbolos ainda não existe.
+- A descoberta de funções NSO combina símbolos, desvios, ponteiros relocados, endereços materializados e unwind.
+  Os limites de funções sem símbolo são inferidos e podem ser imprecisos.
+- O leitor de `.eh_frame_hdr` aceita o formato observado nos três módulos: versão 1, ponteiro pcrel/sdata4,
+  contagem udata4 e tabela datarel/sdata4. Outros encodings geram erro explícito na geração.
 - O monitor exclusivo guarda um endereço por CPU e usa compare-and-swap no `STXR`; isso tem o problema ABA em
-  teoria (o mesmo do TotK/LAS). Não testado com várias threads.
+  teoria (o mesmo do TotK/LAS). O teste de mutex com várias threads exercita CAS do runtime, mas não prova ausência de ABA no código guest.
 - O contador `CNTVCT_EL0` usa 19,2 MHz (frequência do contador do Switch documentada no switchbrew), escalado do
   `QueryPerformanceCounter`; não foi comparado com hardware.
-- Floating point de host: nada de FPCR/arredondamento é aplicado ainda (não há aritmética FP).
 
 ## Boot (runtime/src/horizon.c)
 
-- Uma única thread; SVCs de sincronização respondem como se não houvesse disputa. Basta para o boot atual, não para
-  o jogo.
+- Threads guest executam em paralelo em threads do Windows; o kernel serializa as SVCs. Não há escalonador
+  de núcleos virtuais, preempção por prioridades Horizon nem herança de prioridade. A seleção dos waiters de
+  mutex/condição respeita prioridade e FIFO, mas isso não equivale ao escalonador do console.
+- Handles de threads e suas regiões locais ainda não são reciclados; há limite de 256 threads por execução.
+  CancelSynchronization, suspensão/contexto de thread e arbitragem por endereço ainda não estão completos.
 - O espaço de endereços (regiões de heap, alias, pilha, ASLR) e o tamanho de memória informados ao jogo foram
   escolhidos pelo DKRecomp; a memória total (`0xCD500000`) é uma aproximação.
 - A entropia de `GetInfo(11)` é fixa, para que as execuções sejam reproduzíveis.
@@ -47,12 +52,17 @@
 
 ## Serviços (runtime/src/services.c)
 
+- Bloqueio atual do boot: `PopLaunchParameter(2)` ainda não fornece o usuário pré-selecionado. O SDK monta
+  a RomFS, mas `OpenPreselectedUser` aborta quando o jogo abre o usuário. Resultado e frames estão no log.
 - Cada serviço implementa só os comandos que o boot pediu (e vizinhos óbvios); o resto para com relatório. Os
   valores devolvidos (usuário local "DKRecomp", idioma `en-US`, região EUA, modo TV, foco, fuso UTC, configuração de
   desempenho) são escolhas do DKRecomp, não lidas de um console.
 - Os ids de comando vêm do switchbrew para o firmware 4.x; um id errado aparece no log como comando inesperado.
 - `QueryPointerBufferSize` responde 0x8000 para todo serviço; respostas por buffer de ponteiro (C) ainda não são
   escritas pelo IPC, só pelos serviços que as usam diretamente.
+- O filesystem implementa a RomFS somente leitura. Save data, SD card e outros tipos de IFileSystem/IFile ainda
+  faltam. A imagem tem que ser regenerada se os arquivos extraídos mudarem; ela não é o NCA original nem contém
+  suas camadas de integridade. A abertura verifica tamanho e header, sem auditoria completa de todos os metadados.
 
 ## Módulo gerado
 
@@ -61,12 +71,12 @@
 - 5.725 funções usam o despacho local por `switch` em `BR` (tabelas de salto não resolvidas estaticamente) e
   37.249 chamadas passam por `rt_dispatch`: correto, mas pesa no tamanho e no desempenho.
 - As 830 funções descobertas por alvo de `BL` vão até o próximo início conhecido; uma delas pode ter fim impreciso.
-- Nada do código gerado foi executado ainda; a correção dele só é garantida instrução a instrução pelos testes
-  diferenciais.
+- O boot executa código gerado dos três módulos e inicia uma segunda thread. Isso e os testes diferenciais não
+  comprovam todo o comportamento do jogo; gráficos, áudio e gameplay continuam pendentes.
 
 ## Testes
 
-- O teste de função usa `-fno-vectorize` e evita `__builtin_popcountll`, porque o Clang gera NEON para eles.
+- O teste de função usa `-fno-vectorize` por padrão e oferece `--vectorize` para também testar NEON.
 - O Unicorn mantém o monitor exclusivo entre execuções; o runner executa `CLREX` antes de cada caso para começar do
   mesmo estado que o harness. (Sem isso, 1 caso em ~60 mil falhava por vazamento de estado do Unicorn.)
 - No Windows o Unicorn provoca uma exceção de acesso tratada internamente durante `mem_map`; o `faulthandler` do

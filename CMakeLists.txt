@@ -24,9 +24,22 @@ target_link_libraries(dkr_selftest PRIVATE dkr_runtime)
 add_executable(dkr_ipc_test tests/native/ipc_test.c runtime/src/ipc.c)
 target_link_libraries(dkr_ipc_test PRIVATE dkr_runtime)
 
+if(WIN32)
+  # Exercise the actual kernel and event objects with synthetic guest entry points.
+  add_executable(dkr_kernel_test tests/native/kernel_test.c runtime/src/kernel.c runtime/src/ipc.c)
+  target_link_libraries(dkr_kernel_test PRIVATE dkr_runtime)
+  add_executable(dkr_fs_test tests/native/fs_test.c runtime/src/fs.c runtime/src/ipc.c)
+  target_link_libraries(dkr_fs_test PRIVATE dkr_runtime)
+endif()
+
 enable_testing()
 add_test(NAME cpu_helpers COMMAND dkr_selftest)
 add_test(NAME ipc_format COMMAND dkr_ipc_test)
+if(WIN32)
+  add_test(NAME kernel_sync COMMAND dkr_kernel_test)
+  set_tests_properties(kernel_sync PROPERTIES TIMEOUT 30)
+  add_test(NAME romfs_storage COMMAND dkr_fs_test)
+endif()
 
 # Optional: the differential-test harness built around a lifted C file (tests/diff/func_diff.py --msvc).
 set(DKR_LIFTED_C "" CACHE FILEPATH "Lifted C file to build into dkr_harness")

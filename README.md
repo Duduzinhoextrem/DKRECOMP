@@ -3,8 +3,9 @@
 Ferramenta de **recompilação estática** que, a longo prazo, deve converter a versão Nintendo Switch de
 *Donkey Kong Country: Tropical Freeze* num programa nativo para Windows x86-64, sem emulador durante a execução.
 
-> **O jogo não roda.** O projeto está no início: ferramentas, identificação de arquivos e um recompilador
-> ARM64 → C validado em programas de teste próprios. Veja o estado real em [docs/PROGRESS.md](docs/PROGRESS.md).
+> **Ainda não há gráficos nem gameplay.** O executável nativo já inicializa o SDK, chega ao `nnMain`, executa
+> uma segunda thread e lê a RomFS. O boot para com relatório no primeiro recurso pendente.
+> Veja o estado medido em [docs/PROGRESS.md](docs/PROGRESS.md).
 
 > **Nenhum arquivo do jogo está incluído**, e o DKRecomp não decripta nem baixa nada. Você precisa da sua própria
 > cópia legítima. Veja [docs/LEGAL.md](docs/LEGAL.md) e [docs/REQUIRED_FILES.md](docs/REQUIRED_FILES.md).
@@ -13,8 +14,10 @@ Ferramenta de **recompilação estática** que, a longo prazo, deve converter a 
 
 - `dkrecomp.identify`: lê NSPs (contêiner PFS0, ticket, metadados), confere o SHA-256 de cada conteúdo e reconhece
   a versão; lê ExeFS extraídas (NSO, NPDM, imports, SVCs, middleware).
-- Decodificador e recompilador ARM64 → C (inteiros, desvios, loads/stores, atômicos exclusivos, movimentação
-  SIMD/FP), com runtime mínimo em C.
+- Decodificador e recompilador ARM64 → C (inteiros, desvios, memória, atômicos, FP escalar e SIMD vetorial),
+  cobrindo as instruções das funções com símbolo de `main` e `subsdk0` da versão base 1.0.0.
+- Ligação estática dos módulos, loader e boot do código recompilado, threads do Windows, sincronização, IPC e
+  serviços iniciais do Horizon. Imagem RomFS gerada por streaming a partir dos arquivos já extraídos do usuário.
 - Testes diferenciais: o mesmo código ARM64 roda no Unicorn e recompilado, e precisa dar o mesmo resultado
   (dezenas de milhares de instruções aleatórias e programas C inteiros em O0/O1/O2/Os).
 

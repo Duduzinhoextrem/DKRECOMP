@@ -92,6 +92,30 @@ Feito manualmente em 2026-10-30 numa cópia do projeto: dois bugs plantados no l
 `dkr_selftest` verifica valores conhecidos dos auxiliares do `cpu.h` (divisão, flags, condições, CLZ/CLS, REV,
 multiplicação alta).
 
+No Windows, `kernel_sync` usa 6 threads sintéticas para disputar um mutex (12.000 incrementos), condições
+(sinal, broadcast, prioridade, timeout e espera pela reaquisição do mutex), eventos e espera pela saída de
+threads. `romfs_storage` passa mensagens IPC reais ao `fsp-srv`/`IStorage` usando um arquivo sintético: tamanho,
+leituras, fim do arquivo, offsets negativos, overflow e buffer insuficiente. Nenhum desses testes usa o jogo.
+
+## Preparar a RomFS já extraída
+
+O gerador recebe uma pasta de arquivos, sem chaves nem NCAs. Recusa sobrescrever a saída sem `--force` e recusa
+links ou saída dentro da árvore de entrada. Usa um arquivo temporário e só publica a imagem ao concluir.
+
+```bash
+PYTHONPATH=tools .venv/Scripts/python -m dkrecomp.romfs user_files/romfs user_files/romfs.bin
+```
+
+Os testes Python verificam hashes, colisões, diretórios, irmãos, UTF-8, arquivos vazios e geração determinística.
+O caso de symlink é pulado se o Windows não permitir criá-lo. Na máquina do usuário o parser independente também
+foi executado:
+
+```bash
+SwitchExtract/nstool.exe -t romfs --fstree user_files/romfs.bin
+```
+
+Esse comando não exige chaves para uma imagem crua; o aviso de ausência de keyfile não impede a leitura da RomFS.
+
 ## Identificação dos arquivos do usuário
 
 ```bash
@@ -132,14 +156,21 @@ Executar o boot (o argumento é a pasta com os `.img`; o log também vai para `d
 cd generated/dkctf_v0 && ./dkctf.exe .
 ```
 
+O segundo argumento limita o boot em segundos. O terceiro pode selecionar uma imagem RomFS; também é possível
+usar `DKR_ROMFS`. O padrão procura `user_files/romfs.bin` a partir da pasta de módulos gerados.
+
 Ou tudo de uma vez (regenera só o que mudou, compila e roda; ~45 s quando só o runtime mudou):
 
 ```bash
 tools/boot.sh 180
 ```
 
-Saída esperada hoje: cada SVC e cada comando IPC, até `boot: STOP after 220 SVCs: SVC 0x08 CreateThread is not
-implemented yet`. O teste do formato das mensagens IPC roda no `ctest` (`dkr_ipc_test`).
+O log mostra cada SVC e comando IPC até a primeira função pendente. O vigia encerra o processo se houver uma
+espera prolongada e relata o estado de cada thread. `DKR_LOG_SYNC=1` também registra as SVCs de sincronização.
+O ponto de parada medido mais recente fica em `docs/PROGRESS.md`; a contagem pode variar com o escalonamento.
+O Ninja usa depfiles de Clang para recompilar objetos afetados por alterações em headers.
+O boot também registra a entrada em `nnMain`, o resultado passado a `SetTerminateResult` e, numa parada,
+os frames guest acessíveis por frame pointer. Esses frames ajudam a localizar um abort do SDK sem desativá-lo.
 
 ## Resultados registrados
 

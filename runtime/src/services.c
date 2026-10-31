@@ -141,7 +141,11 @@ static void am_app_handle(Cpu *c, Service *s, const IpcRequest *rq, IpcReply *rp
         RP_PUT(rp, uint64_t, code);
         return;
     }
-    case 22: return;                               /* SetTerminateResult */
+    case 22: {                                     /* SetTerminateResult */
+        uint32_t result = RQ_GET(rq, uint32_t, 0);
+        hos_log("     SetTerminateResult: %#x (%u-%04u)\n", result, 2000 + (result & 0x1ff), result >> 9);
+        return;
+    }
     case 40: RP_PUT(rp, uint8_t, 1); return;       /* NotifyRunning */
     case 50: RP_PUT(rp, uint64_t, 0x0123456789ABCDEFull); RP_PUT(rp, uint64_t, 0xFEDCBA9876543210ull); return; /* GetPseudoDeviceId */
     case 66: case 67: return;                      /* InitializeGamePlayRecording, SetGamePlayRecordingState */
@@ -425,6 +429,7 @@ static const Known g_known[] = {
     {"acc:u0", acc_handle},
     {"time:u", time_handle},
     {"time:s", time_handle},
+    {"fsp-srv", hos_fsp_handle},
 };
 
 Service *hos_get_service(const char *name) {

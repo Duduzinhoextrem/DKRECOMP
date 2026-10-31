@@ -27,10 +27,62 @@ void hos_stop(Cpu *c, const char *fmt, ...) {
     exit(2);
 }
 Service *hos_get_service(const char *name) { (void)name; return NULL; }
+void kern_sync_poke(uint32_t handle) { (void)handle; }
 
 static uint8_t msg[0x100];
 static void put32(int off, uint32_t v) { memcpy(msg + off, &v, 4); }
 static uint32_t get32(int off) { uint32_t v; memcpy(&v, msg + off, 4); return v; }
+
+static void request(uint32_t type, uint32_t cmd, uint32_t object) {
+    memset(msg, 0, sizeof msg);
+    put32(0, type);
+    put32(4, object ? 0x10 : 0xc);
+    int p = 0x10;
+    if (object) {
+        msg[p] = 1;
+        msg[p + 2] = 0x10;
+        put32(p + 4, object);
+        p += 16;
+    }
+    put32(p, 0x49434653);
+    put32(p + 8, cmd);
+}
+
+static void leaf_handle(Cpu *c, Service *s, const IpcRequest *rq, IpcReply *rp) {
+    (void)c; (void)s;
+    CHECK(rq->cmd == 7);
+    RP_PUT(rp, uint32_t, 0xcafe);
+}
+
+static void root_handle(Cpu *c, Service *s, const IpcRequest *rq, IpcReply *rp) {
+    (void)c; (void)s;
+    static Service leaf = {"leaf", leaf_handle, NULL};
+    CHECK(rq->cmd == 5);
+    hos_reply_interface(rp, &leaf);
+}
+
+static void test_domain_clones(void) {
+    Cpu cpu = {0};
+    Service root = {"root", root_handle, NULL};
+    uint32_t session = hos_new_session(&root);
+    request(5, 0, 0); /* convert to domain */
+    CHECK(hos_send_sync_request(&cpu, session, msg, sizeof msg) == HOS_OK);
+    CHECK(get32(0x20) == 1);
+    request(4, 5, 1); /* root creates a child object */
+    CHECK(hos_send_sync_request(&cpu, session, msg, sizeof msg) == HOS_OK);
+    uint32_t child = get32(0x30);
+    CHECK(child > 1 && get32(0x10) == 1);
+    request(5, 2, 0); /* clone shares the domain, including already-created child objects */
+    CHECK(hos_send_sync_request(&cpu, session, msg, sizeof msg) == HOS_OK);
+    uint32_t clone = get32(12);
+    CHECK(clone && clone != session);
+    CHECK(hos_close_handle(session) == HOS_OK);
+    request(4, 7, child);
+    CHECK(hos_send_sync_request(&cpu, clone, msg, sizeof msg) == HOS_OK);
+    CHECK(get32(0x28) == HOS_OK && get32(0x30) == 0xcafe);
+    CHECK(hos_close_handle(clone) == HOS_OK);
+    CHECK(hos_send_sync_request(&cpu, clone, msg, sizeof msg) == HOS_INVALID_HANDLE);
+}
 
 int main(void) {
     IpcRequest r;
@@ -98,6 +150,7 @@ int main(void) {
     ipc_write_reply(msg, sizeof msg, 1, &rp);
     CHECK(get32(0x10) == 1 && get32(0x20) == 0x4F434653 && get32(0x30) == 2);
 
+    test_domain_clones();
     printf("%s (%d failures)\n", failures ? "FAIL" : "PASS", failures);
     return failures != 0;
 }

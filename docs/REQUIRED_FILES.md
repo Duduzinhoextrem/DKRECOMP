@@ -18,7 +18,14 @@ porque o código está dentro de NCAs criptografados.
 - `user_files/exefs/` do **jogo base 1.0.0** (`main`, `main.npdm`, `rtld`, `sdk`, `subsdk0`), íntegra.
 - `control.nacp` do jogo base (em `SwitchExtract/control/`).
 
-Ainda faltam: a ExeFS e o `control.nacp` da atualização (para confirmar 1.0.2) e a RomFS combinada (MVP 5).
+Também fornecida em 2026-10-31, com extração local autorizada pelo usuário:
+
+- `user_files/romfs/` da **base 1.0.0**: 83 arquivos, 7.097.569.430 bytes.
+- `user_files/romfs.bin`: imagem crua gerada pelo DKRecomp (7.097.575.296 bytes), aceita pelo parser de RomFS
+  do `nstool`. Reproduzir com `dkrecomp.romfs` (`docs/TESTING.md`). Para a base 1.0.0 não é necessário combinar update.
+
+Ainda faltam a ExeFS, o `control.nacp` e a RomFS combinada **da atualização**, se ela virar um alvo separado.
+Esses arquivos não bloqueiam o trabalho com a base 1.0.0.
 
 ## Necessários para a Fase 3 (análise do executável) e seguintes
 

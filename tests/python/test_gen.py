@@ -29,3 +29,21 @@ def test_write_if_changed_keeps_mtime(tmp_path):
     assert gen.write_if_changed(str(p), "int a;\n")
     assert not gen.write_if_changed(str(p), "int a;\n")
     assert gen.write_if_changed(str(p), "int b;\n")
+
+
+def test_added_functions_keep_unrelated_chunks_stable(tmp_path):
+    funcs = [(i, i + 4, f'f{i}') for i in range(0, 40, 8)]
+    original = gen.partition_functions(funcs, str(tmp_path), 2)
+    expanded = sorted(funcs + [(4, 8, 'callback')])
+    updated = gen.partition_functions(expanded, str(tmp_path), 2)
+    assert updated[1:] == original[1:]
+    assert updated[0] == [funcs[0], (4, 8, 'callback'), funcs[1]]
+
+
+def test_existing_c_chunks_migrate_to_stable_layout(tmp_path):
+    # Older output has no chunks.json; use its first function definition, ignoring prototypes.
+    (tmp_path / 'f_0000.c').write_text('void f_800000010(Cpu *c);\nvoid f_800000000(Cpu *c) {}\n')
+    (tmp_path / 'f_0001.c').write_text('void f_800000010(Cpu *c) {}\n')
+    funcs = [(i, i + 4, f'f{i}') for i in (0, 4, 8, 16, 24)]
+    chunks = gen.partition_functions(funcs, str(tmp_path), 2, 0x800000000)
+    assert chunks == [funcs[:3], funcs[3:]]

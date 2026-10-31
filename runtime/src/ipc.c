@@ -12,6 +12,7 @@
 #include "hos.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #define SFCI 0x49434653u
@@ -130,11 +131,14 @@ uint32_t ipc_write_reply(uint8_t *msg, uint32_t cap, int session_is_domain, cons
 #define HANDLE_BASE 0xD000u
 #define MAX_SESSIONS 1024
 #define MAX_OBJECTS 128
+typedef struct Domain {
+    Service *objs[MAX_OBJECTS]; /* object ids; 1 is the service the session was opened on */
+    int refs;                   /* sessions sharing this domain */
+} Domain;
 typedef struct Session {
     int used;
     Service *root;
-    int domain;
-    Service *objs[MAX_OBJECTS]; /* domain objects; id 1 is the session's own service */
+    Domain *dom; /* non-NULL once converted to a domain; clones of a domain session share it */
 } Session;
 static Session g_sess[MAX_SESSIONS];
 static Session *g_current; /* the session of the request being handled */
@@ -153,8 +157,8 @@ uint32_t hos_new_session(Service *svc) {
 
 uint32_t hos_new_domain_object(Service *svc) {
     for (uint32_t id = 1; id < MAX_OBJECTS; id++)
-        if (!g_current->objs[id]) {
-            g_current->objs[id] = svc;
+        if (!g_current->dom->objs[id]) {
+            g_current->dom->objs[id] = svc;
             return id;
         }
     return 0;
@@ -163,6 +167,11 @@ uint32_t hos_new_domain_object(Service *svc) {
 static Session *session_of(uint32_t handle) {
     uint32_t i = handle - HANDLE_BASE;
     return handle >= HANDLE_BASE && i < MAX_SESSIONS && g_sess[i].used ? &g_sess[i] : NULL;
+}
+
+static void close_session(Session *s) {
+    if (s->dom && --s->dom->refs == 0) free(s->dom);
+    memset(s, 0, sizeof *s);
 }
 
 /* ---- events ---------------------------------------------------------------------------------------------- */
@@ -182,7 +191,10 @@ uint32_t hos_new_event(int signaled) {
 
 void hos_event_set(uint32_t handle, int signaled) {
     uint32_t i = handle - EVENT_BASE;
-    if (handle >= EVENT_BASE && i < MAX_EVENTS && g_events[i].used) g_events[i].signaled = signaled;
+    if (handle >= EVENT_BASE && i < MAX_EVENTS && g_events[i].used) {
+        g_events[i].signaled = signaled;
+        if (signaled) kern_sync_poke(handle); /* wake threads waiting on it */
+    }
 }
 
 int hos_event_state(uint32_t handle) {
@@ -192,13 +204,13 @@ int hos_event_state(uint32_t handle) {
 
 uint32_t hos_close_handle(uint32_t handle) {
     Session *s = session_of(handle);
-    if (s) s->used = 0;
+    if (s) close_session(s);
     if (hos_event_state(handle) >= 0) g_events[handle - EVENT_BASE].used = 0;
     return HOS_OK; /* other handle kinds are not tracked yet */
 }
 
 void hos_reply_interface(IpcReply *rp, Service *svc) {
-    if (g_current && g_current->domain) rp->out_objects[rp->nout_objects++] = hos_new_domain_object(svc);
+    if (g_current && g_current->dom) rp->out_objects[rp->nout_objects++] = hos_new_domain_object(svc);
     else rp->move[rp->nmove++] = hos_new_session(svc);
 }
 
@@ -228,25 +240,35 @@ uint32_t hos_send_sync_request(Cpu *c, uint32_t handle, uint8_t *msg, uint32_t c
     IpcReply rp;
     char err[96];
     memset(&rp, 0, sizeof rp);
-    if (ipc_parse(msg, s->domain, &rq, err, sizeof err)) hos_stop(c, "ipc: malformed request to %s: %s", s->root->name, err);
+    if (ipc_parse(msg, s->dom != NULL, &rq, err, sizeof err)) hos_stop(c, "ipc: malformed request to %s: %s", s->root->name, err);
     g_current = s;
     if (rq.type == 2) { /* close session */
-        s->used = 0;
+        close_session(s);
         return HOS_OK;
     }
     if (rq.type == 5 || rq.type == 7) { /* control */
         hos_log("     control %u on %s\n", rq.cmd, s->root->name);
         switch (rq.cmd) {
         case 0: /* ConvertCurrentObjectToDomain -> object id */
-            s->domain = 1;
-            s->objs[1] = s->root;
+            if (!s->dom) {
+                s->dom = calloc(1, sizeof *s->dom);
+                s->dom->refs = 1;
+                s->dom->objs[1] = s->root;
+            }
             RP_PUT(&rp, uint32_t, 1);
             ipc_write_reply(msg, cap, 0, &rp);
             return HOS_OK;
-        case 2: case 4: /* CloneCurrentObject(Ex) -> move handle */
-            rp.move[rp.nmove++] = hos_new_session(s->root);
+        case 2: case 4: { /* CloneCurrentObject(Ex) -> move handle; a clone of a domain session is the same domain */
+            uint32_t h = hos_new_session(s->root);
+            Session *n = session_of(h);
+            if (n && s->dom) {
+                n->dom = s->dom;
+                s->dom->refs++;
+            }
+            rp.move[rp.nmove++] = h;
             ipc_write_reply(msg, cap, 0, &rp);
             return HOS_OK;
+        }
         case 3: /* QueryPointerBufferSize -> u16 */
             RP_PUT(&rp, uint16_t, 0x8000);
             ipc_write_reply(msg, cap, 0, &rp);
@@ -258,11 +280,11 @@ uint32_t hos_send_sync_request(Cpu *c, uint32_t handle, uint8_t *msg, uint32_t c
     }
     Service *target = s->root;
     if (rq.domain) {
-        if (rq.object_id >= MAX_OBJECTS || !s->objs[rq.object_id])
+        if (rq.object_id >= MAX_OBJECTS || !s->dom->objs[rq.object_id])
             hos_stop(c, "ipc: domain object %u of %s does not exist", rq.object_id, s->root->name);
-        target = s->objs[rq.object_id];
+        target = s->dom->objs[rq.object_id];
         if (rq.domain_cmd == 2) { /* close object */
-            s->objs[rq.object_id] = NULL;
+            s->dom->objs[rq.object_id] = NULL;
             ipc_write_reply(msg, cap, 1, &rp);
             return HOS_OK;
         }
@@ -273,6 +295,6 @@ uint32_t hos_send_sync_request(Cpu *c, uint32_t handle, uint8_t *msg, uint32_t c
         hos_stop(c, "service \"%s\" is not implemented (first command %u)", target->name, rq.cmd);
     }
     target->handle(c, target, &rq, &rp);
-    ipc_write_reply(msg, cap, s->domain, &rp);
+    ipc_write_reply(msg, cap, s->dom != NULL, &rp);
     return HOS_OK;
 }

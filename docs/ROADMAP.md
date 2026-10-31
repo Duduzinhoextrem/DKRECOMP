@@ -31,8 +31,8 @@ Próximos passos dentro da Fase 4 (ordem guiada pela cobertura medida no jogo):
    AES/SHA/PMULL, CRC32, `CNTPCT_EL0`, `CTR_EL0`, formas saturadas. Antes, a lista era: `fmul`/`fadd` vetoriais, `frecpe`/`frecps`/`frsqrte`/`frsqrts`
    (estimativas com tabela da Arm — precisam ser bit-exatas), `dup`/`mov` de elemento, `sshll`, `tbl`, `ld1`/`st1`,
    `zip`, `ext`, comparações vetoriais. No `sdk`: AES/SHA, CRC32, `CNTPCT_EL0`, `CTR_EL0`.
-3. Descoberta de funções para `sdk`/`subsdk0` (os exports cobrem só ~65% do código deles): alvos de `BL`,
-   `.eh_frame_hdr`, relocações, como o `gen.py` do TotK. O `main` já tem símbolos para 96,3%.
+3. **Descoberta implementada**: alvos de desvios, `.eh_frame_hdr`, relocações e ADR/ADRP+ADD complementam os
+   símbolos, inclusive para callbacks indiretos. Validar novos destinos conforme aparecerem no boot.
 4. Resolução estática de tabelas de salto (hoje: `switch` local, correto mas grande).
 5. Escala: geração paralela e particionada em vários `.c`; flags e registradores em variáveis locais.
 
@@ -46,27 +46,27 @@ aplicado no Unicorn por um hook de interrupção. Os SVCs reais do Horizon perte
 
 ## MVP 5 — Primeiro boot
 
-**Estado (2026-10-31): tentativa verificável alcançada.** O `dkctf.exe` carrega os três módulos ligados, chama
-`nn::init::Start` e o SDK inicializa com 18 SVCs atendidas até a primeira mensagem IPC (ao `sm:`), onde para com
-relatório. Próximos passos, nesta ordem:
+**Estado (2026-10-31): tentativa verificável alcançada; `nnMain` é chamado.** O `dkctf.exe` carrega os três módulos
+ligados, roda os construtores e inicializa o SDK. Há uma segunda thread em execução e leituras reais da RomFS.
+Continuar guiado pelo primeiro comando ou salto pendente do log:
 1. ~~IPC do Horizon (HIPC/CMIF)~~ **feito** (2026-10-31), com domínios e mensagens de controle.
-2. ~~`sm:` e registro de serviços~~ **feito**; 11 serviços atendem o boot até `CreateThread`. Continua conforme o
-   log pedir.
-3. **Próximo:** threads (CreateThread/StartThread) com threads do host, sincronização real (mutex, condição, eventos) e o
-   modelo de núcleos/prioridades.
-4. Os callbacks de inicialização dos módulos (`DT_INIT`) e a chegada ao `nnMain`.
-5. Sistema de arquivos (RomFS combinada) e saves.
+2. ~~`sm:` e registro de serviços~~ **feito**; os serviços iniciais já atendem o boot. Continua conforme o log pedir.
+3. **Threads/sincronização implementadas e testadas** (2026-10-31): CreateThread/StartThread, mutex, condição,
+   eventos e espera pela saída. A segunda thread já executa no boot. Modelo de núcleos/prioridades ainda pendente.
+4. Os callbacks de inicialização dos módulos (`DT_INIT`) **rodam e retornam**; a entrada em **`nnMain` é registrada**.
+5. **RomFS base 1.0.0 extraída e reempacotada**: 83 arquivos, parser independente aceita a imagem. IStorage
+   validado com dados sintéticos e a leitura do header real no boot; implementar saves e demais comandos conforme o log.
+6. **Próximo:** parâmetro de lançamento com usuário pré-selecionado (`PopLaunchParameter(2)`), necessário para
+   o jogo abrir o usuário após montar a RomFS; parada atual medida em 250 SVCs.
 
 Critério original:
 
 **Critério**: tentativa verificável de iniciar o jogo real: o `main` recompilado roda a partir do ponto de entrada,
 com log de cada SVC/serviço até o primeiro ponto em que falta implementação.
 **Pré-requisitos**: ~~MVP 2b~~, ~~cobertura SIMD/FP~~, ~~gerar e compilar o `main` inteiro~~ (feitos em
-2026-10-31); falta: loader NSO no runtime (mapear segmentos no endereço base, aplicar relocações `R_AARCH64_RELATIVE`
-e as de símbolo, zerar `.bss`), layout definitivo dos módulos (hoje base provisória `0x800000000`), gerar e compilar
-`sdk`/`subsdk0` (com descoberta de funções além dos exports e o que falta de cripto/CRC), ligação entre módulos por
-símbolo no lugar do `rtld`, TLS/TLR por thread, SVCs básicos (memória, threads, sincronização, tempo), `sm:` e os
-primeiros serviços. Nenhum gráfico ainda.
+2026-10-31). Loader, layout dos módulos, relocações, descoberta, compilação de sdk/subsdk0, ligação estática,
+TLR por thread, SVCs básicos e os primeiros serviços também estão implementados. A continuação depende dos
+comandos restantes, instruções ainda não suportadas se executadas e demais subsistemas. Nenhum gráfico ainda.
 
 ## MVP 6 — Gameplay
 

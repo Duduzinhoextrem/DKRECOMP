@@ -6,7 +6,7 @@
  * cb_flag stores 1 in an rtld variable; cb_module_inits runs every module's DT_INIT in load order. Start then
  * initialises the SDK and calls nnMain. rtld is not loaded: tools/dkrecomp/link.py did its linking at build time.
  *
- * SVCs are implemented only as far as a single-threaded boot needs them. Anything else stops the run with a
+ * SVCs are implemented as the boot needs them. Anything else stops the run with a
  * report, so each attempt shows exactly where the next piece of work is. Register conventions follow switchbrew
  * (SVC page): outputs come back in w0 (result) and x1.. as the libnx wrappers expect. */
 #include "hos.h"
@@ -102,6 +102,19 @@ void hos_stop(Cpu *c, const char *fmt, ...) {
     hos_log("boot: lr=%s sp=%#llx x0=%#llx x1=%#llx x2=%#llx x3=%#llx\n", rt_describe(c->x[30], a, sizeof a),
           (unsigned long long)c->sp, (unsigned long long)c->x[0], (unsigned long long)c->x[1],
           (unsigned long long)c->x[2], (unsigned long long)c->x[3]);
+#ifdef _WIN32
+    uint64_t fp = c->x[29];
+    for (int depth = 0; depth < 20 && fp && !(fp & 7); depth++) {
+        uint64_t frame[2];
+        SIZE_T read = 0;
+        if (!ReadProcessMemory(GetCurrentProcess(), (const void *)(uintptr_t)fp, frame, sizeof frame, &read) ||
+            read != sizeof frame) break;
+        hos_log("boot: frame %d fp=%#llx lr=%s\n", depth, (unsigned long long)fp,
+                rt_describe(frame[1], a, sizeof a));
+        if (frame[0] <= fp) break;
+        fp = frame[0];
+    }
+#endif
     if (g_log) fclose(g_log);
     exit(3);
 }
@@ -154,13 +167,25 @@ static uint64_t get_info(uint32_t id0, uint32_t handle, uint64_t id1, int *ok) {
     }
 }
 
-static void svc_handler(Cpu *c, uint32_t n, uint64_t pc) {
+/* Synchronisation SVCs are frequent and not logged unless DKR_LOG_SYNC is set; everything else is. */
+static int quiet_svc(uint32_t n) {
+    static int verbose = -1;
+    if (verbose < 0) verbose = getenv("DKR_LOG_SYNC") != NULL;
+    if (verbose) return 0;
+    return n == 0x0B || n == 0x10 || n == 0x18 || n == 0x1A || n == 0x1B || n == 0x1C || n == 0x1D || n == 0x1E;
+}
+
+static void svc_dispatch(Cpu *c, uint32_t n, uint64_t pc) {
     char where[96];
     g_svc_count++;
-    rt_describe(pc, where, sizeof where);
-    hos_log("svc %4llu  %-26s 0x%02x at %-18s x0=%#llx x1=%#llx x2=%#llx x3=%#llx\n", (unsigned long long)g_svc_count,
-          svc_name(n), n, where, (unsigned long long)c->x[0], (unsigned long long)c->x[1],
-          (unsigned long long)c->x[2], (unsigned long long)c->x[3]);
+    kern_note_svc(svc_name(n), pc);
+    if (!quiet_svc(n)) {
+        rt_describe(pc, where, sizeof where);
+        hos_log("svc %5llu t%x %-26s 0x%02x at %-18s x0=%#llx x1=%#llx x2=%#llx x3=%#llx\n",
+                (unsigned long long)g_svc_count, kern_current_handle(), svc_name(n), n, where,
+                (unsigned long long)c->x[0], (unsigned long long)c->x[1], (unsigned long long)c->x[2],
+                (unsigned long long)c->x[3]);
+    }
     switch (n) {
     case 0x01: { /* SetHeapSize(size x1) -> x1 address */
         uint64_t size = c->x[1];
@@ -222,38 +247,47 @@ static void svc_handler(Cpu *c, uint32_t n, uint64_t pc) {
         c->x[1] = 0;
         return;
     }
-    case 0x0B: /* SleepThread(ns x0) */
-#ifdef _WIN32
-        Sleep((DWORD)(c->x[0] / 1000000));
-#endif
-        c->x[0] = R_OK;
+    case 0x08: { /* CreateThread(-, entry x1, arg x2, stack top x3, priority w4, core w5) -> w1 handle */
+        uint32_t h = 0;
+        uint64_t entry = c->x[1];
+        char e[96];
+        c->x[0] = kern_create_thread(entry, c->x[2], c->x[3], (int)(int32_t)c->x[4], (int)(int32_t)c->x[5], &h);
+        c->x[1] = h;
+        hos_log("     thread %#x: entry %s, priority %d, core %d\n", h, rt_describe(entry, e, sizeof e),
+                (int)(int32_t)c->x[4], (int)(int32_t)c->x[5]);
         return;
-    case 0x0C: c->x[0] = R_OK; c->x[1] = 44; return;          /* GetThreadPriority: main.npdm priority */
-    case 0x0D: c->x[0] = R_OK; return;                        /* SetThreadPriority */
-    case 0x0E: c->x[0] = R_OK; c->x[1] = 0; c->x[2] = 0xF; return; /* GetThreadCoreMask */
-    case 0x0F: c->x[0] = R_OK; return;                        /* SetThreadCoreMask */
-    case 0x10: c->x[0] = 0; return;                           /* GetCurrentProcessorNumber: core 0 */
-    case 0x16: c->x[0] = hos_close_handle((uint32_t)c->x[0]); return; /* CloseHandle */
+    }
+    case 0x09: c->x[0] = kern_start_thread((uint32_t)c->x[0]); return; /* StartThread(handle) */
+    case 0x0A: /* ExitThread */
+        kern_exit_current();
+        kern_unlock();
+        ExitThread(0);
+    case 0x0B: kern_sleep((int64_t)c->x[0]); c->x[0] = R_OK; return; /* SleepThread(ns) */
+    case 0x0C: { int p = 0; c->x[0] = kern_thread_prio((uint32_t)c->x[1], 0, 0, &p); c->x[1] = (uint32_t)p; return; }
+    case 0x0D: c->x[0] = kern_thread_prio((uint32_t)c->x[0], 1, (int)(int32_t)c->x[1], NULL); return;
+    case 0x0E: { /* GetThreadCoreMask(-, -, handle w2) -> w1 core, x2 mask */
+        int core = 0;
+        c->x[0] = kern_thread_core((uint32_t)c->x[2], 0, 0, &core);
+        c->x[1] = (uint32_t)core;
+        c->x[2] = 0xF;
+        return;
+    }
+    case 0x0F: c->x[0] = kern_thread_core((uint32_t)c->x[0], 1, (int)(int32_t)c->x[1], NULL); return;
+    case 0x10: c->x[0] = (uint64_t)kern_current_core(); return; /* GetCurrentProcessorNumber */
     case 0x11: hos_event_set((uint32_t)c->x[0], 1); c->x[0] = R_OK; return;          /* SignalEvent */
     case 0x12: case 0x17: hos_event_set((uint32_t)c->x[0], 0); c->x[0] = R_OK; return; /* ClearEvent, ResetSignal */
-    case 0x19: c->x[0] = R_OK; return;                                                  /* CancelSynchronization */
+    case 0x16: c->x[0] = hos_close_handle((uint32_t)c->x[0]); return;                  /* CloseHandle */
     case 0x18: { /* WaitSynchronization(-, handles x1, count w2, timeout x3) -> w1 index */
-        const uint32_t *h = (const uint32_t *)(uintptr_t)c->x[1];
-        int64_t timeout = (int64_t)c->x[3];
-        for (uint32_t i = 0; i < (uint32_t)c->x[2]; i++) {
-            int st = hos_event_state(h[i]);
-            hos_log("     wait handle %#x: %s\n", h[i], st < 0 ? "not an event" : st ? "signaled" : "clear");
-            if (st == 1) { c->x[0] = R_OK; c->x[1] = i; return; }
-        }
-        if (timeout == 0) { c->x[0] = 0xEA01; return; } /* timed out */
-        hos_stop(c, "WaitSynchronization would block (one thread only, nothing can signal)");
-    }
-    case 0x1A: c->x[0] = R_OK; return; /* ArbitrateLock: one thread, so the owner released the lock already */
-    case 0x1B: /* ArbitrateUnlock(mutex x0): no waiters, so the mutex word becomes 0 */
-        st32(c->x[0], 0);
-        c->x[0] = R_OK;
+        int32_t index = -1;
+        c->x[0] = kern_wait_sync((const uint32_t *)(uintptr_t)c->x[1], (int)(int32_t)c->x[2], (int64_t)c->x[3], &index);
+        c->x[1] = (uint32_t)index;
         return;
-    case 0x1D: c->x[0] = R_OK; return; /* SignalProcessWideKey: nobody waits */
+    }
+    case 0x19: c->x[0] = R_OK; return; /* CancelSynchronization */
+    case 0x1A: c->x[0] = kern_arbitrate_lock((uint32_t)c->x[0], c->x[1], (uint32_t)c->x[2]); return;
+    case 0x1B: c->x[0] = kern_arbitrate_unlock(c->x[0]); return;
+    case 0x1C: c->x[0] = kern_wait_cv(c->x[0], c->x[1], (uint32_t)c->x[2], (int64_t)c->x[3]); return;
+    case 0x1D: c->x[0] = kern_signal_cv(c->x[0], (int32_t)c->x[1]); return;
     case 0x1E: c->x[0] = rt_cntvct(); return;
     case 0x1F: { /* ConnectToNamedPort(-, name x1) -> w1 handle */
         char name[16] = {0};
@@ -271,8 +305,8 @@ static void svc_handler(Cpu *c, uint32_t n, uint64_t pc) {
         c->x[0] = hos_send_sync_request(c, (uint32_t)c->x[2], (uint8_t *)(uintptr_t)c->x[0], (uint32_t)c->x[1]);
         return;
     case 0x24: c->x[0] = R_OK; c->x[1] = 0x51; return; /* GetProcessId */
-    case 0x25: c->x[0] = R_OK; c->x[1] = 1; return;    /* GetThreadId */
-    case 0x26: hos_stop(c, "the guest called Break");
+    case 0x25: { uint64_t id = 0; c->x[0] = kern_thread_id((uint32_t)c->x[1], &id); c->x[1] = id; return; }
+    case 0x26: hos_stop(c, "the guest called Break (reason %#llx)", (unsigned long long)c->x[0]);
     case 0x27: { /* OutputDebugString(ptr x0, len x1) */
         uint64_t len = c->x[1] > 4096 ? 4096 : c->x[1];
         hos_log("     debug: %.*s\n", (int)len, (const char *)(uintptr_t)c->x[0]);
@@ -282,26 +316,30 @@ static void svc_handler(Cpu *c, uint32_t n, uint64_t pc) {
     case 0x29: { /* GetInfo(-, id0 w1, handle w2, id1 x3) -> x1 */
         int ok;
         uint64_t v = get_info((uint32_t)c->x[1], (uint32_t)c->x[2], c->x[3], &ok);
-        if (!ok) {
-            char why[96];
-            snprintf(why, sizeof why, "GetInfo id %llu is not implemented", (unsigned long long)(uint32_t)c->x[1]);
-            hos_stop(c, why);
-        }
+        if (!ok) hos_stop(c, "GetInfo id %llu is not implemented", (unsigned long long)(uint32_t)c->x[1]);
         hos_log("     GetInfo(%u, %llu) = %#llx\n", (unsigned)c->x[1], (unsigned long long)c->x[3], (unsigned long long)v);
         c->x[0] = R_OK;
         c->x[1] = v;
         return;
     }
     case 0x5F: c->x[0] = R_OK; return; /* FlushProcessDataCache */
-    default: {
-        char why[96];
-        snprintf(why, sizeof why, "SVC 0x%02x %s is not implemented yet", n, svc_name(n));
-        hos_stop(c, why);
-    }
+    default: hos_stop(c, "SVC 0x%02x %s is not implemented yet", n, svc_name(n));
     }
 }
 
+static void svc_handler(Cpu *c, uint32_t n, uint64_t pc) {
+    kern_lock();
+    svc_dispatch(c, n, pc);
+    kern_unlock();
+}
+
 /* ---- rtld callbacks and boot -------------------------------------------------------------------------------- */
+void dkr_boot_entry(Cpu *c, uint64_t entry) {
+    (void)c;
+    char where[96];
+    hos_log("boot: entered nnMain at %s on thread %#x\n", rt_describe(entry, where, sizeof where), kern_current_handle());
+}
+
 static void cb_flag(Cpu *c) {
     (void)c;
     hos_log("boot: rtld callback 1 (sets rtld's ready flag)\n");
@@ -321,10 +359,26 @@ static void cb_module_inits(Cpu *c) {
     c->sp = saved.sp;
 }
 
-static void cb_returned(Cpu *c) { hos_stop(c, "guest code returned to the host return address"); }
+static void cb_returned(Cpu *c) { hos_stop(c, "the guest main thread returned to the host"); }
+static void cb_thread_returned(Cpu *c) { (void)c; } /* a thread's entry returned: kernel.c ends the thread */
+
+/* Ends the run after `seconds` with every thread's state: hangs and deadlocks become a report, not silence. */
+static DWORD WINAPI watchdog(void *p) {
+    Sleep((DWORD)(uintptr_t)p * 1000);
+    hos_log("\nboot: watchdog after %u s, %llu SVCs; threads:\n", (unsigned)(uintptr_t)p, (unsigned long long)g_svc_count);
+    kern_report();
+    if (g_log) fclose(g_log);
+    ExitProcess(4);
+    return 0;
+}
 
 int main(int argc, char **argv) {
     const char *dir = argc > 1 ? argv[1] : ".";
+    unsigned seconds = argc > 2 ? (unsigned)atoi(argv[2]) : 60;
+    char default_romfs[4096];
+    snprintf(default_romfs, sizeof default_romfs, "%s/../../user_files/romfs.bin", dir);
+    const char *romfs_path = argc > 3 ? argv[3] : getenv("DKR_ROMFS");
+    hos_fs_set_romfs(romfs_path ? romfs_path : default_romfs);
     g_log = fopen("dkctf_boot.log", "w");
     if (rt_load_modules(dkr_modules, dkr_module_count, dir)) return 2;
     for (size_t i = 0; i < dkr_module_count; i++) {
@@ -332,30 +386,31 @@ int main(int argc, char **argv) {
         region_add(m->base, m->text_hi - m->base, MS_CODE, 5);
         region_add(m->text_hi, m->base + m->size - m->text_hi, MS_CODEDATA, 3);
     }
-    /* main thread: stack at the bottom of the stack region, thread local region (0x200 bytes) in its own page */
+    /* main thread: stack at the bottom of the stack region; thread local regions (0x200 bytes per thread) */
     uint64_t stack = dkr_main_thread_stack_size;
-    if (rt_map_fixed(STACK_BASE, stack) || rt_map_fixed(TLR_BASE, 0x1000)) {
-        fprintf(stderr, "boot: cannot map the main thread's stack or TLS\n");
+    if (rt_map_fixed(STACK_BASE, stack) || rt_map_fixed(TLR_BASE, TLR_REGION_SIZE)) {
+        fprintf(stderr, "boot: cannot map the main thread's stack or the thread local regions\n");
         return 2;
     }
     region_add(STACK_BASE, stack, MS_STACK, 3);
-    region_add(TLR_BASE, 0x1000, MS_THREADLOCAL, 3);
-    g_fixed_used = stack + 0x1000;
+    region_add(TLR_BASE, TLR_REGION_SIZE, MS_THREADLOCAL, 3);
+    g_fixed_used = stack + TLR_REGION_SIZE;
     for (size_t i = 0; i < dkr_module_count; i++) g_fixed_used += dkr_modules[i].size;
     dkr_svc_hook = svc_handler;
 
-    static Cpu cpu;
-    Cpu *c = &cpu;
-    c->sp = STACK_BASE + stack;
-    c->tpidrro = TLR_BASE;
-    c->x[0] = MAIN_THREAD_HANDLE;
+    Cpu *c;
+    uint32_t main_handle = kern_init(&c, STACK_BASE + stack, TLR_BASE, 44, 0,
+                                     rt_hostfn_register("thread returned", cb_thread_returned));
+    c->x[0] = main_handle;
     c->x[1] = dkr_modules[0].base; /* rtld passes the address right after itself: the first module's base */
     c->x[2] = rt_hostfn_register("rtld flag callback", cb_flag);
     c->x[3] = rt_hostfn_register("rtld module initializers", cb_module_inits);
     c->x[30] = rt_hostfn_register("return to host", cb_returned);
-    char a[96];
-    hos_log("boot: calling nn::init::Start at %s (nnMain at %s)\n", rt_describe(dkr_sym_init_start, a, sizeof a),
-          rt_describe(dkr_sym_nn_main, a + 48, 48));
+    CreateThread(NULL, 0, watchdog, (void *)(uintptr_t)seconds, 0, NULL);
+    char a[96], b[96];
+    hos_log("boot: calling nn::init::Start at %s (nnMain at %s), main thread %#x, watchdog %u s\n",
+            rt_describe(dkr_sym_init_start, a, sizeof a), rt_describe(dkr_sym_nn_main, b, sizeof b), main_handle,
+            seconds);
     rt_call(c, dkr_sym_init_start);
     hos_stop(c, "nn::init::Start returned");
     return 0;

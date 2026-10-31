@@ -2,6 +2,47 @@
 
 Somente o que foi executado e verificado. Cada linha aponta para o comando que a reproduz (`docs/TESTING.md`).
 
+## 2026-10-31 — Threads do host e RomFS extraída
+
+`runtime/src/kernel.c` executa cada thread guest em uma thread do Windows, com CPU/TLR próprios, uma trava
+do kernel e esperas que liberam essa trava. Implementa transferência de mutex por prioridade/FIFO, condições,
+eventos, espera pela saída de threads, sleep e relatório das threads pelo vigia. Clones de uma sessão IPC
+compartilham os objetos do domínio; fechar uma sessão mantém o domínio enquanto houver outro clone.
+
+| Evidência | Resultado |
+|---|---|
+| Boot antes de ligar a RomFS | **237 SVCs**; a thread `0xc001` executa código do SDK em paralelo; `fsp-srv` atende 1 e 1005; parada no comando **200**, `OpenDataStorageByCurrentProcess` |
+| `ctest --test-dir build/zig --output-on-failure` | **4/4 passam**: auxiliares da CPU, IPC (inclui clone de domínio), kernel e IStorage com arquivo sintético |
+| `kernel_sync` | 6 threads fazem **12.000 incrementos** protegidos por mutex; condições testam prioridade, sinal individual, broadcast, timeout e aquisição do mutex após sinal; eventos e espera pela saída de threads passam |
+| Extração local com `nstool`, seção `/1/` do NCA de programa base | **83 arquivos**, **7.097.569.430 bytes**, em `user_files/romfs/` |
+| `dkrecomp.romfs user_files/romfs user_files/romfs.bin --force` | **13 diretórios contando a raiz**, 83 arquivos; imagem de **7.097.575.296 bytes** |
+| `nstool -t romfs --fstree user_files/romfs.bin` | parser independente aceita a imagem e lista os **83 arquivos**, com 12 diretórios além da raiz |
+| Comparação por SHA-256 das regiões de dados da imagem com os arquivos extraídos (Python; `reports/romfs_verify.json`) | **83/83 arquivos conferem**, 7.097.569.430 bytes comparados |
+| `pytest` | **50 passam, 1 pulado** (criação de symlink indisponível neste Windows) |
+
+O teste de kernel reproduziu e orientou duas correções: uma condição sinalizada não pode expirar enquanto
+re-adquire o mutex; `WaitSynchronization` deve rejeitar os pseudo-handles de thread/processo. A aquisição do
+mutex ao sinalizar uma condição também usa CAS para não perder uma liberação feita simultaneamente pelo guest.
+
+`runtime/src/fs.c` fornece o armazenamento somente leitura da RomFS, com offsets de 64 bits e validação dos
+limites da leitura. `tools/dkrecomp/romfs.py` monta uma imagem crua a partir de arquivos já extraídos, sem
+decriptação, e escreve por streaming. Os metadados ficam depois dos dados, como nas imagens do Switch. Os
+arquivos extraídos, a imagem e os relatórios continuam ignorados pelo Git. O Ninja gerado agora acompanha
+dependências de headers para evitar um executável com partes do runtime desatualizadas.
+
+Primeiro boot com IStorage: o log registra **`boot: entered nnMain at main+0x254`**, abre a imagem e lê os
+0x50 bytes do header; na SVC 239 aparece um salto indireto não descoberto para `main+0x3960`. O endereço está
+na tabela `.eh_frame_hdr`; o gerador passou a usá-la como fonte de inícios de função, com teste sintético de
+callback alcançável somente por ponteiro. Os chunks C mantêm seus limites entre gerações para evitar recompilar
+todos os arquivos quando surgem novas funções. O teste também cobre a migração da saída anterior para esse layout.
+
+**Boot após a correção de descoberta**: **250 SVCs**, `nnMain` confirmado, header e quatro tabelas da RomFS
+lidos (offsets `0x1a70c52c8` a `0x1a70c55f4`, acima de 4 GiB). O próprio guest chama `Break`, após
+`SetTerminateResult(0x2a2)` (`2162-0001`). Os frames guest localizam a parada em `CUser::Open` →
+`nn::account::OpenPreselectedUser`: o UID pré-selecionado está vazio, pois `PopLaunchParameter(2)` ainda devolve
+ausência de parâmetro. Próximo passo: fornecer esse parâmetro de lançamento pelo applet manager. A RomFS já
+foi montada; não há gráfico nem gameplay. Geração atual: main 59.655, subsdk0 13.329, sdk 28.224 funções.
+
 ## 2026-10-31 — IPC e serviços: o boot passa pelos construtores e chega à primeira thread
 
 Novo: `runtime/src/ipc.c` (mensagens HIPC/CMIF: cabeçalho, PID e handles, descritores X/A/B/W/C, `SFCI`/`SFCO`,

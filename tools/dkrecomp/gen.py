@@ -37,7 +37,7 @@ from .recomp.lifter import C_PRELUDE, Function, fname, lift_function
 CALL_RE = re.compile(r"\bf_([0-9a-f]+)\(c\)")
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 BOOT_SYMBOLS = {"init_start": "_ZN2nn4init5StartEmmPFvvES2_", "nn_main": "nnMain"}
-RUNTIME_SOURCES = ["core.c", "loader.c", "horizon.c", "ipc.c", "services.c"]
+RUNTIME_SOURCES = ["core.c", "loader.c", "horizon.c", "ipc.c", "services.c", "kernel.c", "fs.c"]
 
 
 def write_if_changed(path: str, text: str) -> bool:
@@ -90,10 +90,32 @@ def materialised_code_addresses(text: bytes, t_lo: int, t_hi: int) -> Set[int]:
     return out
 
 
+def unwind_code_addresses(m: nso_fmt.Nso) -> Set[int]:
+    """Function starts in the standard .eh_frame_hdr search table (DW_EH_PE_datarel | sdata4).
+
+    Nintendo's modules use version 1, a PC-relative sdata4 EH-frame pointer, a udata4 count and pairs of
+    header-relative sdata4 addresses. Unwind metadata also covers callbacks which no BL or nearby ADR finds.
+    """
+    if m.eh_frame_hdr is None:
+        return set()
+    lo, hi = m.eh_frame_hdr
+    if lo < 0 or hi > len(m.image) or hi - lo < 12:
+        raise nso_fmt.NsoError("truncated .eh_frame_hdr")
+    if m.image[lo:lo + 4] != bytes((1, 0x1B, 3, 0x3B)):
+        raise nso_fmt.NsoError("unsupported .eh_frame_hdr encoding")
+    count, = struct.unpack_from("<I", m.image, lo + 8)
+    if count > (hi - lo - 12) // 8:
+        raise nso_fmt.NsoError("truncated .eh_frame_hdr search table")
+    text = m.seg("text")
+    end = text.mem_off + text.size
+    return {lo + relative for relative, _fde in struct.iter_unpack("<ii", m.image[lo + 12:lo + 12 + count * 8])
+            if text.mem_off <= lo + relative < end and (lo + relative) % 4 == 0}
+
+
 def discover(m: nso_fmt.Nso, extra_starts: Set[int]) -> List[Tuple[int, int, str]]:
     """(start, end, name) as module offsets.
 
-    Starts: exported functions, `extra_starts` (relocated code pointers), code addresses built by ADR/ADRP+ADD,
+    Starts: exported functions, `extra_starts` (relocated code pointers), unwind metadata, ADR/ADRP+ADD,
     and, to a fixpoint, every direct branch target that lies outside the function the branch is in. After the
     fixpoint each direct branch lands inside its own function or on a known start, so the lifter never needs
     rt_dispatch for a direct branch. Unnamed functions run to the next start (or the next named function);
@@ -110,7 +132,7 @@ def discover(m: nso_fmt.Nso, extra_starts: Set[int]) -> List[Tuple[int, int, str
         for k in range((s - t_lo) // 4, min((e - t_lo) // 4, len(words))):
             covered[k] = 1
             container[k] = max(container.get(k, 0), e)
-    extra = ({a for a in extra_starts if t_lo <= a < t_hi and a % 4 == 0} |
+    extra = ({a for a in extra_starts if t_lo <= a < t_hi and a % 4 == 0} | unwind_code_addresses(m) |
              materialised_code_addresses(text, t_lo, t_hi)) - named_starts
 
     def ranges():
@@ -150,6 +172,44 @@ def discover(m: nso_fmt.Nso, extra_starts: Set[int]) -> List[Tuple[int, int, str
     return sorted(ranges())
 
 
+def partition_functions(funcs: List[Tuple[int, int, str]], out_dir: str, per_file: int, base: int = 0):
+    """Keep chunk boundaries stable when discovery adds functions, so unrelated files do not all rebuild."""
+    if per_file <= 0:
+        raise ValueError("per_file must be positive")
+    if not funcs:
+        return []
+    layout_path = os.path.join(out_dir, "chunks.json")
+    anchors = []
+    if os.path.exists(layout_path):
+        with open(layout_path, encoding="utf-8") as stream:
+            layout = json.load(stream)
+        if layout.get("per_file") == per_file:
+            anchors = layout["anchors"]
+    else:
+        # Migrate already-generated files without moving their existing functions into different chunks.
+        for name in sorted(os.listdir(out_dir)):
+            if not re.fullmatch(r"f_[0-9]{4}\.c", name):
+                continue
+            with open(os.path.join(out_dir, name), encoding="utf-8") as stream:
+                for line in stream:
+                    match = re.match(r"void f_([0-9a-f]+)\(Cpu \*c\) \{", line)
+                    if match:
+                        # Generated C uses absolute addresses; functions here use module offsets.
+                        anchors.append(int(match.group(1), 16))
+                        break
+        if anchors:
+            anchors = [a - base for a in anchors]
+    if not anchors:
+        anchors = [s for s, _e, _name in funcs[::per_file]]
+    if anchors != sorted(set(anchors)):
+        raise ValueError("invalid generated chunk layout")
+    chunks = [[] for _ in anchors]
+    for fn in funcs:
+        chunks[max(0, bisect.bisect_right(anchors, fn[0]) - 1)].append(fn)
+    write_if_changed(layout_path, json.dumps({"per_file": per_file, "anchors": anchors}, indent=2) + "\n")
+    return chunks
+
+
 def lift_module(lm: linker.LinkedModule, out_dir: str, per_file: int) -> Dict:
     t0 = time.time()
     m = lm.nso
@@ -162,13 +222,17 @@ def lift_module(lm: linker.LinkedModule, out_dir: str, per_file: int) -> Dict:
     reasons = collections.Counter()
     files, written, lifted_words = [], 0, 0
     image = bytes(lm.nso.image)  # code is never relocated, so the unrelocated image serves for lifting
-    for chunk_i in range(0, len(funcs), per_file):
-        chunk = funcs[chunk_i:chunk_i + per_file]
+    processed = 0
+    for chunk_i, chunk in enumerate(partition_functions(funcs, out_dir, per_file, base)):
         body: List[str] = []
         defined = set()
         for s, e, name in chunk:
             fn = Function(base + s, base + e, name[:80].replace("*/", ""))
             lines, unsup = lift_function(image, base, fn, {"is_function": is_fn})
+            if name == BOOT_SYMBOLS["nn_main"]:
+                # Direct calls bypass rt_dispatch, so report the application entry inside its lifted body.
+                lines[1:1] = ["    extern void dkr_boot_entry(Cpu *, uint64_t);",
+                              f"    dkr_boot_entry(c, 0x{base + s:x}ull);"]
             body += lines
             body.append("")
             defined.add(base + s)
@@ -176,11 +240,12 @@ def lift_module(lm: linker.LinkedModule, out_dir: str, per_file: int) -> Dict:
             for i in unsup:
                 reasons[i.f["reason"]] += 1
         called = {int(x, 16) for x in CALL_RE.findall("\n".join(body))} - defined
-        name = f"f_{chunk_i // per_file:04d}.c"
+        name = f"f_{chunk_i:04d}.c"
         text = C_PRELUDE + "".join(f"void {fname(a)}(Cpu *c);\n" for a in sorted(called | defined)) + "\n".join(body)
         written += write_if_changed(os.path.join(out_dir, name), text)
         files.append(name)
-        print(f"\r  {lm.name}: lifted {min(chunk_i + per_file, len(funcs))}/{len(funcs)} functions", end="",
+        processed += len(chunk)
+        print(f"\r  {lm.name}: lifted {processed}/{len(funcs)} functions", end="",
               file=sys.stderr, flush=True)
     print(file=sys.stderr)
     uniq = sorted(starts)
@@ -229,10 +294,14 @@ def write_ninja(out: str, modules: List[Dict]) -> None:
         "cflags = -O1 -std=c11 -mfma -ffp-contract=off -fno-math-errno -w",
         f"inc = -I{inc}",
         "rule cc",
-        "  command = $cc $cflags $inc -c $in -o $out",
+        "  command = $cc $cflags $inc -MMD -MF $out.d -c $in -o $out",
+        "  depfile = $out.d",
+        "  deps = gcc",
         "  description = CC $out",
         "rule link",
-        "  command = $cc $in -o $out",
+        # 16 MiB host stack for the process's main thread, which runs the guest main thread (lifted code nests as
+        # deep as guest calls); threads the guest creates get 8 MiB in kernel.c.
+        "  command = $cc $in -o $out -Wl,--stack,16777216",
         "  description = LINK $out",
     ]
     objs = []

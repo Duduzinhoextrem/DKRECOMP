@@ -5,7 +5,10 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "tools"))
 
-from dkrecomp.gen import branch_target, materialised_code_addresses  # noqa: E402
+import pytest
+
+from dkrecomp.formats.nso import Nso, NsoError, Segment, Symbol  # noqa: E402
+from dkrecomp.gen import branch_target, discover, materialised_code_addresses, unwind_code_addresses  # noqa: E402
 
 
 def test_branch_targets():
@@ -30,3 +33,28 @@ def test_materialised_addresses():
     ]
     text = b"".join(struct.pack("<I", w) for w in words) + bytes(0x10000 - 4 * len(words))
     assert materialised_code_addresses(text, t_lo, t_hi) == {0x10008, 0x11040}
+
+
+def unwind_module():
+    image = bytearray(0x180)
+    image[:0x80] = struct.pack('<I', 0xD65F03C0) * 32
+    # The addresses are negative relative to the header, as in modules whose tables follow their text.
+    struct.pack_into('<4BiI', image, 0x100, 1, 0x1b, 3, 0x3b, 0x40, 2)
+    struct.pack_into('<4i', image, 0x10c, 0x20 - 0x100, 0x140 - 0x100, 0x40 - 0x100, 0x150 - 0x100)
+    return Nso('', 0, [Segment('text', 0, 0x80, None)], 0, bytes(image),
+               symbols=[Symbol('named', 0, 0x80, 1, 2, 1)], eh_frame_hdr=(0x100, 0x11c))
+
+
+def test_unwind_table_finds_indirect_only_callbacks():
+    module = unwind_module()
+    assert unwind_code_addresses(module) == {0x20, 0x40}
+    funcs = discover(module, set())
+    assert (0x20, 0x80, 'sub_20') in funcs
+    assert (0x40, 0x80, 'sub_40') in funcs
+
+
+def test_truncated_unwind_table_is_reported():
+    module = unwind_module()
+    module.eh_frame_hdr = (0x100, 0x118)
+    with pytest.raises(NsoError, match='truncated'):
+        unwind_code_addresses(module)
