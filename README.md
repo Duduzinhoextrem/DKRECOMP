@@ -58,8 +58,8 @@ Mais comandos em [docs/TESTING.md](docs/TESTING.md).
 
 ## Créditos e licença
 
-Projetos estudados como referência (nenhum código copiado até agora): TotK Recomp, LAS Recomp, SwitchRecomp,
-N64Recomp. Ferramentas de terceiros: [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+Projetos de referência: TotK Recomp, LAS Recomp, SwitchRecomp, N64Recomp. A lista MIT de nomes públicos NVN foi
+incorporada; atribuição, licenças e ferramentas em [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
 Licença do código do DKRecomp: **a definir pelo mantenedor** (MIT é a opção compatível com os projetos de
 referência). Nenhuma licença do projeto cobre o jogo.

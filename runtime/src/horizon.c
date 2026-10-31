@@ -10,6 +10,9 @@
  * report, so each attempt shows exactly where the next piece of work is. Register conventions follow switchbrew
  * (SVC page): outputs come back in w0 (result) and x1.. as the libnx wrappers expect. */
 #include "hos.h"
+#ifdef DKR_ENABLE_GFX
+#include "dkr/nvn.h"
+#endif
 
 #include <stdarg.h>
 #include <stdio.h>
@@ -413,6 +416,9 @@ int main(int argc, char **argv) {
     g_fixed_used = stack + TLR_REGION_SIZE;
     for (size_t i = 0; i < dkr_module_count; i++) g_fixed_used += dkr_modules[i].size;
     dkr_svc_hook = svc_handler;
+#ifdef DKR_ENABLE_GFX
+    dkr_nvn_register();
+#endif
 
     Cpu *c;
     uint32_t main_handle = kern_init(&c, STACK_BASE + stack, TLR_BASE, 44, 0,

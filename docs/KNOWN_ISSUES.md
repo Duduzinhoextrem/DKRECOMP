@@ -54,8 +54,8 @@
 
 ## Serviços (runtime/src/services.c)
 
-- Bloqueio atual do boot: `nvdrv:Initialize` (3), dentro de `nv::InitializeGraphics`, após abrir o save e criar
-  transfer memory. `PopLaunchParameter(2)` já fornece o usuário pré-selecionado e o abort anterior deixou de ocorrer.
+- Bloqueio atual com gráficos do host: `hid:CreateAppletResource` (0), após `nv::InitializeGraphics` criar o
+  contexto Vulkan. No modo legado `--no-gfx`, continua parando em `nvdrv:Initialize` (3).
 - Cada serviço implementa só os comandos que o boot pediu (e vizinhos óbvios); o resto para com relatório. Os
   valores devolvidos (usuário local "DKRecomp", idioma `en-US`, região EUA, modo TV, foco, fuso UTC, configuração de
   desempenho) são escolhas do DKRecomp, não lidas de um console.
@@ -79,8 +79,10 @@
 
 ## Gráficos
 
-- O back-end do host apresenta e captura clears Vulkan, mas ainda não está ligado ao jogo e não implementa
-  geometria, shaders, texturas ou NVN. O boot real ainda para em `nvdrv:Initialize`.
+- O back-end do host apresenta e captura clears Vulkan. A inicialização gráfica já está ligada ao boot, mas
+  ainda não há geometria, shaders, texturas ou implementação dos objetos/comandos NVN. O jogo não submeteu frames.
+- A lista MIT de nomes NVN não representa cobertura de implementação: procs reconhecidos recebem um endereço,
+  mas os ausentes encerram a execução quando chamados; nomes desconhecidos devolvem NULL.
 - A janela atual é Win32 e usa uma fila com graphics+present, Vulkan 1.1 e swapchain RGBA/BGRA UNORM com suporte
   a transferência/readback. Outros formatos e plataformas ainda não foram implementados.
 - A camada de validação é opcional no build, mas foi usada localmente com sincronização ativa. A ferramenta

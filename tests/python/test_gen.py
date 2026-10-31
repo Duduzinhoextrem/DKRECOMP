@@ -2,10 +2,13 @@
 import os
 import subprocess
 import sys
+import struct
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "tools"))
 
 from dkrecomp import gen  # noqa: E402
+from dkrecomp.formats.nso import Nso, Segment, Symbol  # noqa: E402
+from dkrecomp.link import LinkedModule  # noqa: E402
 
 
 def test_ninja_file_escapes_drive_colons_and_parses(tmp_path):
@@ -47,3 +50,48 @@ def test_existing_c_chunks_migrate_to_stable_layout(tmp_path):
     funcs = [(i, i + 4, f'f{i}') for i in (0, 4, 8, 16, 24)]
     chunks = gen.partition_functions(funcs, str(tmp_path), 2, 0x800000000)
     assert chunks == [funcs[:3], funcs[3:]]
+
+
+def test_host_override_executes_for_direct_and_indirect_calls(tmp_path):
+    # caller: bl target; ret. Original target: add x0, x0, #1; ret. The host replacement must win both ways.
+    code = struct.pack('<4I', 0x94000002, 0xd65f03c0, 0x91000400, 0xd65f03c0)
+    module = Nso('', 0, [Segment('text', 0, len(code), None)], 0, code,
+                 symbols=[Symbol('caller', 0, 8, 1, 2, 1), Symbol('canonical_target', 8, 8, 1, 2, 1),
+                          Symbol('host_target', 8, 4, 1, 2, 1)])
+    linked = LinkedModule('test', module, 0x800000000, len(code), bytearray(code))
+    report = gen.lift_module(linked, str(tmp_path), 10, {'host_target': 'test_override'})
+    assert len(report['host_overrides']) == 1
+    assert report['lifted_words'] == 2
+    harness = tmp_path / 'driver.c'
+    harness.write_text('''
+#include "dkr/rt.h"
+#include <stdio.h>
+extern void f_800000000(Cpu *);
+extern const DkrFnEntry dkr_fn_table_test[];
+extern const size_t dkr_fn_count_test;
+static int called;
+void test_override(Cpu *c) { called++; c->x[0] = c->x[0] * c->x[1] + 17; }
+int main(void) {
+    Cpu cpu = {0};
+    cpu.x[0] = 5; cpu.x[1] = 7; cpu.x[19] = 0x12345678; cpu.nzcv = 0x60000000;
+    f_800000000(&cpu);
+    if (called != 1 || cpu.x[0] != 52 || cpu.x[19] != 0x12345678 || cpu.nzcv != 0x60000000) return 1;
+    rt_register_table(dkr_fn_table_test, dkr_fn_count_test, 0x800000000ull, 0x800000010ull);
+    cpu.x[0] = 2; cpu.x[1] = 3;
+    rt_call(&cpu, 0x800000008ull);
+    if (called != 2 || cpu.x[0] != 23 || cpu.x[19] != 0x12345678) return 2;
+    puts("PASS: direct and indirect host overrides");
+    return 0;
+}
+''')
+    root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
+    executable = tmp_path / ('driver.exe' if os.name == 'nt' else 'driver')
+    command = [sys.executable, '-m', 'ziglang', 'cc', '-O1', '-mfma', '-ffp-contract=off', '-fno-math-errno',
+               '-I' + os.path.join(root, 'runtime', 'include'), str(harness), str(tmp_path / 'f_0000.c'),
+               str(tmp_path / 'table.c'), os.path.join(root, 'runtime', 'src', 'core.c'), '-o', str(executable)]
+    if os.name == 'nt':
+        command[4:4] = ['-target', 'x86_64-windows-gnu']
+    built = subprocess.run(command, capture_output=True, text=True, timeout=60)
+    assert built.returncode == 0, built.stdout + built.stderr
+    run = subprocess.run([str(executable)], capture_output=True, text=True, timeout=10)
+    assert run.returncode == 0, run.stdout + run.stderr

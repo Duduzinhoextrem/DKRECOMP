@@ -19,6 +19,8 @@ usado para compilar o C gerado (x86-64) e os programas de teste (ARM64).
 ```
 
 Inclui testes unitários (formatos, decodificador × Capstone) e versões reduzidas dos testes diferenciais.
+O teste do gerador também compila/executa um módulo sintético para verificar overrides por alias em chamadas
+diretas e indiretas, preservando a passagem de argumentos/resultados e registradores não alterados pelo host.
 
 ## Testes diferenciais
 
@@ -179,6 +181,10 @@ Gera o C de todos os módulos da ExeFS, as imagens já ligadas, o `layout.c` e u
 PYTHONIOENCODING=utf-8 PYTHONPATH=tools .venv/Scripts/python -m dkrecomp.gen user_files/exefs --out generated/dkctf_v0
 ```
 
+Adicionar `--gfx` para ligar os overrides NVN e o back-end Vulkan ao executável. Sem essa opção, a geração
+conserva o caminho original do SDK até os serviços/SVCs (`nvdrv` ainda não implementado). O modo gráfico exige
+os headers obtidos com `tools/fetch_gfx_deps.py`; no manifesto, `graphics_hle` identifica o modo escolhido.
+
 ```bash
 .venv/Scripts/ninja -C generated/dkctf_v0 -j 12
 ```
@@ -197,6 +203,10 @@ Ou tudo de uma vez (regenera só o que mudou, compila e roda; ~45 s quando só o
 ```bash
 tools/boot.sh 180
 ```
+
+O helper usa `--gfx` por padrão. `tools/boot.sh 30 --no-gfx` reproduz o caminho legado; `--gfx` explícito
+também é aceito. `DKR_GFX_HIDDEN=1` cria a janela oculta durante diagnóstico do boot. No modo gráfico,
+`nv::InitializeGraphics` cria o device/swapchain do host; procs NVN não implementados param por nome.
 
 O log mostra cada SVC e comando IPC até a primeira função pendente. O vigia encerra o processo se houver uma
 espera prolongada e relata o estado de cada thread. `DKR_LOG_SYNC=1` também registra as SVCs de sincronização.

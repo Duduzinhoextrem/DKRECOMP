@@ -65,6 +65,9 @@ main/sdk NSO ──► decoder ARM64 ──► lifter ──► C gerado ──�
   `nn::init::Start` como o `rtld` faz. Cada SVC é registrada no log; o que não está implementado encerra a execução
   com relatório.
 - O corpo recompilado de `nnMain` registra sua entrada no log, inclusive se for chamado diretamente pelo SDK.
+- Overrides de host são resolvidos pelos endereços dos símbolos, incluindo aliases, e substituem o corpo C
+  da função. Assim chamadas diretas e indiretas chegam ao mesmo tratador. O manifesto identifica as funções
+  substituídas e não conta suas instruções como recompiladas. A opção `--gfx` habilita os overrides gráficos.
 
 ## IPC e serviços
 
@@ -102,7 +105,10 @@ main/sdk NSO ──► decoder ARM64 ──► lifter ──► C gerado ──�
 - Capturas copiam os pixels da imagem da swapchain para memória host-visible, esperam a conclusão e invalidam
   caches se a memória não for coerente. O BMP permite testar o conteúdo que a GPU produziu.
 - O build gráfico é ativado com `DKR_BUILD_GFX=ON`. Os headers e a camada de validação opcional ficam na pasta
-  local `toolchain/`, com revisão/digest e avisos em `THIRD_PARTY_NOTICES.md`. O contexto ainda não é ligado ao boot.
+  local `toolchain/`, com revisão/digest e avisos em `THIRD_PARTY_NOTICES.md`.
+- `runtime/gfx/nvn.c` liga o SDK ao host no boot com `--gfx`: registra endereços para nomes públicos NVN antes
+  das threads, cria o contexto Vulkan em `nv::InitializeGraphics` e fornece o lookup de procs. Funções ainda
+  ausentes param com seu nome; objetos e comandos de desenho NVN ainda não foram portados.
 
 ## RomFS
 

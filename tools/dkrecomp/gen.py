@@ -38,6 +38,13 @@ CALL_RE = re.compile(r"\bf_([0-9a-f]+)\(c\)")
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 BOOT_SYMBOLS = {"init_start": "_ZN2nn4init5StartEmmPFvvES2_", "nn_main": "nnMain"}
 RUNTIME_SOURCES = ["core.c", "loader.c", "horizon.c", "ipc.c", "services.c", "kernel.c", "fs.c", "save.c"]
+GFX_OVERRIDES = {
+    "_ZN2nv18InitializeGraphicsEPvm": "dkr_nvn_graphics_init",
+    "_ZN2nv16FinalizeGraphicsEv": "dkr_nvn_graphics_finalize",
+    "_ZN2nv26InitializeGraphicsDevtoolsEPvm": "dkr_nvn_devtools_init",
+    "_ZN2nv24FinalizeGraphicsDevtoolsEv": "dkr_nvn_devtools_finalize",
+    "nvnBootstrapLoader": "dkr_nvn_bootstrap",
+}
 
 
 def write_if_changed(path: str, text: str) -> bool:
@@ -210,17 +217,27 @@ def partition_functions(funcs: List[Tuple[int, int, str]], out_dir: str, per_fil
     return chunks
 
 
-def lift_module(lm: linker.LinkedModule, out_dir: str, per_file: int) -> Dict:
+def lift_module(lm: linker.LinkedModule, out_dir: str, per_file: int, overrides=None) -> Dict:
     t0 = time.time()
     m = lm.nso
+    overrides = overrides or {}
+    override_sites = {}
+    for symbol in m.symbols:
+        if symbol.defined and symbol.type == 2 and symbol.name in overrides:
+            host = overrides[symbol.name]
+            previous = override_sites.get(symbol.value)
+            if previous and previous != host:
+                raise ValueError(f"conflicting host overrides at {symbol.value:#x}")
+            override_sites[symbol.value] = host
     seeds = {a - lm.base for a in lm.code_pointer_targets}
-    funcs = discover(m, seeds)
+    funcs = discover(m, seeds | set(override_sites))
     os.makedirs(out_dir, exist_ok=True)
     base = lm.base
     starts = {base + s for s, _, _ in funcs}
     is_fn = starts.__contains__
     reasons = collections.Counter()
     files, written, lifted_words = [], 0, 0
+    overridden = []
     image = bytes(lm.nso.image)  # code is never relocated, so the unrelocated image serves for lifting
     processed = 0
     for chunk_i, chunk in enumerate(partition_functions(funcs, out_dir, per_file, base)):
@@ -228,7 +245,18 @@ def lift_module(lm: linker.LinkedModule, out_dir: str, per_file: int) -> Dict:
         defined = set()
         for s, e, name in chunk:
             fn = Function(base + s, base + e, name[:80].replace("*/", ""))
-            lines, unsup = lift_function(image, base, fn, {"is_function": is_fn})
+            host = override_sites.get(s)
+            if host:
+                if not re.fullmatch(r"[A-Za-z_][A-Za-z_0-9]*", host):
+                    raise ValueError(f"invalid host override identifier: {host}")
+                # Replace the lifted body itself: both C direct calls and table dispatch reach the override.
+                lines = [f"void {fname(base + s)}(Cpu *c) {{ /* {fn.name} */",
+                         f"    extern void {host}(Cpu *);", f"    {host}(c);", "}"]
+                unsup = []
+                overridden.append({"name": name, "address": hex(base + s), "host": host, "guest_words": (e - s) // 4})
+            else:
+                lines, unsup = lift_function(image, base, fn, {"is_function": is_fn})
+                lifted_words += (e - s) // 4
             if name == BOOT_SYMBOLS["nn_main"]:
                 # Direct calls bypass rt_dispatch, so report the application entry inside its lifted body.
                 lines[1:1] = ["    extern void dkr_boot_entry(Cpu *, uint64_t);",
@@ -236,7 +264,6 @@ def lift_module(lm: linker.LinkedModule, out_dir: str, per_file: int) -> Dict:
             body += lines
             body.append("")
             defined.add(base + s)
-            lifted_words += (e - s) // 4
             for i in unsup:
                 reasons[i.f["reason"]] += 1
         called = {int(x, 16) for x in CALL_RE.findall("\n".join(body))} - defined
@@ -258,7 +285,7 @@ def lift_module(lm: linker.LinkedModule, out_dir: str, per_file: int) -> Dict:
     return {"module": lm.name, "base": hex(base), "size": hex(lm.size), "functions": len(funcs),
             "named": sum(1 for f in funcs if not f[2].startswith("sub_")),
             "discovered": sum(1 for f in funcs if f[2].startswith("sub_")), "lifted_words": lifted_words,
-            "files": files, "files_rewritten": written, "unsupported_sites": dict(reasons),
+            "files": files, "files_rewritten": written, "unsupported_sites": dict(reasons), "host_overrides": overridden,
             "unresolved_symbols": lm.unresolved, "relocations": lm.reloc_counts,
             "lift_seconds": round(time.time() - t0, 1)}
 
@@ -284,7 +311,7 @@ def write_layout(mods: List[linker.LinkedModule], syms: Dict[str, int], npdm_sta
     write_if_changed(os.path.join(out, "layout.c"), "\n".join(lines) + "\n")
 
 
-def write_ninja(out: str, modules: List[Dict]) -> None:
+def write_ninja(out: str, modules: List[Dict], gfx: bool = False) -> None:
     py = sys.executable.replace("\\", "/")
     inc = os.path.join(ROOT, "runtime", "include").replace("\\", "/")
     esc = lambda p: p.replace("\\", "/").replace(":", "$:")  # ':' must be escaped in build statements
@@ -293,15 +320,28 @@ def write_ninja(out: str, modules: List[Dict]) -> None:
         f"cc = {py} -m ziglang cc -target x86_64-windows-gnu",
         "cflags = -O1 -std=c11 -mfma -ffp-contract=off -fno-math-errno -w",
         f"inc = -I{inc}",
+        f"runtime_flags = {'-DDKR_ENABLE_GFX' if gfx else ''}",
+        f"gfx_inc = -I{os.path.join(ROOT, 'toolchain', 'vulkan-headers', 'include').replace(chr(92), '/')}",
+        f"libs = {'-luser32 -lgdi32' if gfx else ''}",
         "rule cc",
         "  command = $cc $cflags $inc -MMD -MF $out.d -c $in -o $out",
+        "  depfile = $out.d",
+        "  deps = gcc",
+        "  description = CC $out",
+        "rule cc_runtime",
+        "  command = $cc $cflags $inc $runtime_flags -MMD -MF $out.d -c $in -o $out",
+        "  depfile = $out.d",
+        "  deps = gcc",
+        "  description = CC $out",
+        "rule cc_gfx",
+        "  command = $cc $cflags $inc $gfx_inc -MMD -MF $out.d -c $in -o $out",
         "  depfile = $out.d",
         "  deps = gcc",
         "  description = CC $out",
         "rule link",
         # 16 MiB host stack for the process's main thread, which runs the guest main thread (lifted code nests as
         # deep as guest calls); threads the guest creates get 8 MiB in kernel.c.
-        "  command = $cc $in -o $out -Wl,--stack,16777216",
+        "  command = $cc $in -o $out -Wl,--stack,16777216 $libs",
         "  description = LINK $out",
     ]
     objs = []
@@ -313,7 +353,12 @@ def write_ninja(out: str, modules: List[Dict]) -> None:
     for src in RUNTIME_SOURCES:
         o = f"obj/rt/{src[:-2]}.o"
         objs.append(o)
-        lines.append(f"build {o}: cc {esc(os.path.join(ROOT, 'runtime', 'src', src))}")
+        lines.append(f"build {o}: cc_runtime {esc(os.path.join(ROOT, 'runtime', 'src', src))}")
+    if gfx:
+        for src in ("vk.c", "nvn.c"):
+            o = f"obj/gfx/{src[:-2]}.o"
+            objs.append(o)
+            lines.append(f"build {o}: cc_gfx {esc(os.path.join(ROOT, 'runtime', 'gfx', src))}")
     objs.append("obj/layout.o")
     lines.append("build obj/layout.o: cc layout.c")
     lines.append(f"build dkctf.exe: link {' '.join(objs)}")
@@ -321,24 +366,30 @@ def write_ninja(out: str, modules: List[Dict]) -> None:
     write_if_changed(os.path.join(out, "build.ninja"), "\n".join(lines) + "\n")
 
 
-def generate(exefs: str, out: str, per_file: int) -> Dict:
+def generate(exefs: str, out: str, per_file: int, gfx: bool = False) -> Dict:
     from .formats import npdm
     t0 = time.time()
     mods = linker.load_layout(exefs)
     syms = linker.link(mods)
+    if gfx:
+        if not os.path.isfile(os.path.join(ROOT, "toolchain", "vulkan-headers", "include", "vulkan", "vulkan.h")):
+            raise SystemExit("run .venv/Scripts/python tools/fetch_gfx_deps.py before --gfx")
+        for symbol in ("_ZN2nv18InitializeGraphicsEPvm", "nvnBootstrapLoader"):
+            if symbol not in syms:
+                raise SystemExit(f"--gfx requires exported SDK symbol {symbol}")
     os.makedirs(out, exist_ok=True)
     stack = npdm.parse(open(os.path.join(exefs, "main.npdm"), "rb").read()).main_thread_stack_size
     results = []
     for lm in mods:
-        results.append(lift_module(lm, os.path.join(out, lm.name), per_file))
+        results.append(lift_module(lm, os.path.join(out, lm.name), per_file, GFX_OVERRIDES if gfx else None))
         img = os.path.join(out, f"{lm.name}.img")
         if not os.path.exists(img) or open(img, "rb").read() != bytes(lm.image):
             with open(img, "wb") as fh:
                 fh.write(lm.image)
     write_layout(mods, syms, stack, out)
-    write_ninja(out, results)
+    write_ninja(out, results, gfx)
     manifest = {"modules": [{k: v for k, v in r.items() if k != "files"} for r in results],
-                "seconds": round(time.time() - t0, 1)}
+                "seconds": round(time.time() - t0, 1), "graphics_hle": gfx}
     with open(os.path.join(out, "manifest.json"), "w") as fh:
         json.dump(manifest, fh, indent=2)
     return manifest
@@ -349,8 +400,9 @@ def main(argv=None) -> int:
     ap.add_argument("exefs")
     ap.add_argument("--out", required=True)
     ap.add_argument("--per-file", type=int, default=600)
+    ap.add_argument("--gfx", action="store_true", help="route the SDK graphics boundary to the host NVN/Vulkan layer")
     a = ap.parse_args(argv)
-    print(json.dumps(generate(a.exefs, a.out, a.per_file), indent=2))
+    print(json.dumps(generate(a.exefs, a.out, a.per_file, a.gfx), indent=2))
     return 0
 
 

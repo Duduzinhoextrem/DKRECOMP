@@ -2,19 +2,18 @@
 
 ## Código copiado ou adaptado
 
-Nenhum. Todo o código do DKRecomp até agora foi escrito para o projeto. Os projetos de referência em `refs/`
-(TotK Recomp, LAS Recomp, SwitchRecomp, N64Recomp) foram lidos para entender a arquitetura; nenhum trecho foi
-copiado. Se algum for, ele entra nesta tabela com origem, commit, licença e arquivos de destino, e mantém seu
-cabeçalho original.
+O código do DKRecomp é próprio, salvo os componentes listados abaixo. Os checkouts de referência em `refs/`
+permanecem somente leitura. Arquivos adaptados preservam origem e avisos; cópias das licenças ficam junto a eles.
 
 | Componente | Origem e commit | Licença | Usado em |
 |---|---|---|---|
-| — | — | — | — |
+| Lista de nomes públicos NVN | [TotK Recomp](https://github.com/valentderah/totk-pc-recomp), `c3b9a4e7f6ec3d1f0a8c84b66b1703b15639a784`, `runtime/nvn_procs.inc`, Copyright (c) 2026 Valiantsin Dzerakh; a referência atribui a lista a [MacNativeGames](https://github.com/ly05010419/MacNativeGames), `b75be8cfa704df3701e86130c8ced268e79d6b11`, Copyright (c) 2026 MacNativeGames contributors | MIT; textos em `runtime/gfx/third_party/LICENSE-*.txt` | `runtime/gfx/third_party/nvn_procs.inc`: nomes de API para o registro de procs; nenhum código ou asset do jogo |
 
 ## Dependências gráficas locais
 
 Obtidas por `tools/fetch_gfx_deps.py` em `toolchain/` (ignorada pelo Git). Não há instalação no sistema.
-O código do back-end Vulkan foi escrito para o DKRecomp; ainda não foi copiado código gráfico dos projetos de referência.
+O código do back-end Vulkan foi escrito para o DKRecomp; da referência foi incorporada apenas a lista de nomes
+NVN registrada acima, sem as implementações gráficas.
 
 | Componente | Origem e revisão | Licença | Usado em |
 |---|---|---|---|

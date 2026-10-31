@@ -1,9 +1,10 @@
 # Integração gráfica: avaliação inicial
 
-Estado em 2026-10-31: existe um **back-end Vulkan próprio de janela/clear/apresentação**, testado sem o jogo.
-Nenhum front-end NVN ou back-end da referência foi incorporado. O boot chega a
-`nv::InitializeGraphics` (`sdk+0x264dac`) e para em `nvdrv:Initialize` (comando 3), depois de criar transfer memory
-de 8 MiB. A análise abaixo é um roteiro de integração, não evidência de renderização.
+Estado em 2026-10-31: existe um **back-end Vulkan próprio de janela/clear/apresentação**, testado sem o jogo,
+e uma ponte de entrada NVN ligada ao SDK por overrides. A lista MIT de nomes públicos foi incorporada;
+implementações de objetos/comandos da referência ainda não foram portadas. No modo gráfico o boot cria
+device/swapchain do host em `nv::InitializeGraphics` e chega a `hid:CreateAppletResource` (0). O modo legado
+continua parando em `nvdrv:Initialize`. Nenhum frame do jogo foi submetido.
 
 ## Referência examinada
 
@@ -56,12 +57,13 @@ exigiriam um interpretador/driver próprio. Esse desvio não é necessário para
 
 1. **Feito:** janela e teste Vulkan independentes do jogo, com dependências locais e atribuição.
 2. Adaptar o registro de procs e um conjunto inicial de builders/objetos, com validação da ABI alvo.
-3. Criar overrides explícitos por símbolo no gerador para os pontos de entrada NVN necessários. Manter uma
-   parada identificável para procs ainda ausentes; não anunciar inicialização de GPU antes de existir um back-end.
+3. **Entrada implementada:** overrides explícitos por símbolo/alias no gerador, criação de device/swapchain
+   reais e lookup de procs NVN. Os ausentes param por nome. Avançar os objetos e comandos após atender HID.
 4. Integrar o front-end com memória, texturas, sincronização e comandos do back-end. Adaptar o tradutor de
    shaders e validar casos próprios antes de carregar os shaders do usuário.
 5. Voltar ao boot real, registrar os nomes pedidos e seguir até a primeira apresentação. Depois vêm imagem
    correta, áudio/entrada, gameplay e só então medições de desempenho.
 
-`refs/` permanece somente leitura. Nenhum código ou binário da referência foi copiado. As dependências de teste
-ficam no workspace; nenhum SDK foi instalado no sistema. O teste de apresentação não conclui a integração gráfica do jogo.
+`refs/` permanece somente leitura. Apenas a lista de nomes públicos NVN foi copiada, com os avisos MIT em
+`runtime/gfx/third_party/` e `THIRD_PARTY_NOTICES.md`. As dependências de teste ficam no workspace; nenhum SDK
+foi instalado no sistema. O teste de apresentação não conclui a integração gráfica do jogo.

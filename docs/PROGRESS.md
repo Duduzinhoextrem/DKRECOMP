@@ -2,6 +2,29 @@
 
 Somente o que foi executado e verificado. Cada linha aponta para o comando que a reproduz (`docs/TESTING.md`).
 
+## 2026-10-31 — Fronteira NVN ligada ao boot: próximo serviço é HID
+
+O gerador permite overrides por símbolo, inclusive aliases: substitui o corpo da função recompilada para que
+chamadas C diretas e despacho pela tabela alcancem o mesmo tratador do host. O manifesto separa os overrides
+das instruções efetivamente recompiladas. `--gfx` liga essa fronteira e o back-end Vulkan ao executável.
+
+`runtime/gfx/nvn.c` registra 537 nomes públicos de API antes das threads; a lista MIT da referência foi copiada
+com atribuição/licenças. Há lookup e `nvnDeviceGetProcAddress`; operações ainda não implementadas param por
+nome quando chamadas. `nv::InitializeGraphics` cria o device/swapchain Vulkan reais e registra a memória guest.
+Não devolve um falso frame nem executa comandos de GPU ainda ausentes.
+
+| Evidência | Resultado |
+|---|---|
+| Teste `test_host_override_executes_for_direct_and_indirect_calls` | C ARM64 sintético recompilado chama o override por BL e por tabela; argumentos/resultados e registradores preservados conferem, inclusive quando o símbolo configurado é alias |
+| `tools/boot.sh 30 --gfx` | **321 SVCs**, sete threads guest iniciadas; device/swapchain Vulkan 1280×720 criados na RTX 5060 Ti; parada em **`hid:CreateAppletResource` (0)** |
+| Helper padrão, com camada Khronos e sincronização ativadas no ambiente do processo | **323 SVCs**, mesma parada HID, sem mensagens de erro de validação; a contagem varia com o escalonamento |
+| `tools/boot.sh 30 --no-gfx` | caminho legado recompilado e executado: **292 SVCs**, parada em `nvdrv:Initialize` |
+| `pytest`; CMake/ctest gráfico | **51 passam, 1 pulado**; **6/6 passam** |
+
+O jogo ainda não submeteu frames. O próximo trabalho do boot é HID/memória compartilhada, seguido dos objetos e
+comandos NVN à medida que forem chamados. `tools/boot.sh` passa a usar gráficos por padrão; `--no-gfx` mantém o
+caminho SVC/nvdrv anterior para diagnóstico. A geração direta de módulos continua exigindo `--gfx` explicitamente.
+
 ## 2026-10-31 — Janela e apresentação Vulkan verificadas na GPU
 
 Novo back-end próprio em `runtime/gfx/vk.c`, com API `dkr/gfx.h`: loader dinâmico do Windows, instância/device,

@@ -58,8 +58,9 @@ Continuar guiado pelo primeiro comando ou salto pendente do log:
    validado com dados sintéticos e a leitura do header real no boot; implementar saves e demais comandos conforme o log.
 6. **Usuário pré-selecionado implementado e validado** (`PopLaunchParameter(2)`): boot chega a 267 SVCs.
 7. **Montagem do save de conta implementada** (`fsp-srv` 51); IFileSystem/IFile ainda sem operações de arquivo.
-   **Próximo:** `nvdrv:Initialize` (3), pedido pela inicialização gráfica após criar transfer memory de 8 MiB.
-   Boot medido em **292 SVCs**, com quatro threads guest iniciadas no total.
+8. **Fronteira gráfica do host ligada** com overrides e lookup NVN: cria contexto Vulkan real, sem frames do jogo.
+   **Próximo:** `hid:CreateAppletResource` (0), memória compartilhada e entrada. Boot gráfico medido em
+   **321–323 SVCs**, com sete threads guest iniciadas. Modo legado revalidado em `nvdrv` (292 SVCs).
 
 Critério original:
 
