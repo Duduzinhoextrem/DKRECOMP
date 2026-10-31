@@ -2,6 +2,24 @@
 
 Somente o que foi executado e verificado. Cada linha aponta para o comando que a reproduz (`docs/TESTING.md`).
 
+## 2026-10-31 — Binder Connect aceito; primeira chamada NVN alcançada
+
+O parser de parcels valida limites/offsets e o token UTF-16 `android.gui.IGraphicBufferProducer`. Aceita os
+buffers X/C de TransactParcelAuto e A/B do formato legado. Connect registra API/controle do produtor e devolve
+o modo lógico e status Android; uma segunda conexão retorna BAD_VALUE. Disconnect confere a API antes de liberar.
+SetLayerScalingMode guarda o valor solicitado para a futura adaptação de apresentação.
+
+| Evidência | Resultado |
+|---|---|
+| Build incremental + boot de 30 s | **416 SVCs**; SDK aceita Connect **API=2**, app-controlled=0 e escala **2**; jogo carrega **475 nomes NVN conhecidos** e chega à primeira chamada **`nvnDeviceBuilderSetDefaults`**, ainda não implementada |
+| Mesmo boot com camada Khronos + sincronização | **416 SVCs**, mesma parada e sem erros Vulkan |
+| `display_service` | Connect/Disconnect por X/C e A/B, conexão duplicada/API errada, bounds/canaries de saída, offsets/tamanho inválidos, token UTF-16 inválido e argumentos truncados; entradas rejeitadas não alteram a conexão |
+| CMake/ctest | **8/8 passam**; último pytest integral permanece **51 passam, 1 pulado**, sem novas mudanças Python neste passo |
+
+O carregamento consultou também `nvnDeviceApplyDeferredFinalizes` e `nvnQueueAcquireTexture`, ausentes da lista
+de nomes mais nova: retornaram NULL. Ainda não foram chamados no caminho medido. Próximo: conferir/adaptar
+layouts e semântica dos builders/objetos ao NVN do alvo. Dequeue, QueueBuffer e apresentação do jogo continuam pendentes.
+
 ## 2026-10-31 — Display e NativeWindow aceitos pelo SDK; próximo é Binder Connect
 
 `runtime/src/vi.c` atende as raízes `vi:u/s/m`, os privilégios dos serviços de display, a abertura/fechamento

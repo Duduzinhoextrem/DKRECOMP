@@ -10,9 +10,10 @@
 
 typedef struct ViApplication { int privilege; unsigned display_opens; } ViApplication;
 typedef struct ViLayer {
-    uint64_t id;
+    uint64_t id, scaling_mode;
     uint32_t binder_id, opens, available_event;
     int32_t weak_refs, strong_refs;
+    uint32_t connected_api, producer_controlled;
 } ViLayer;
 static ViLayer g_layers[MAX_LAYERS];
 static uint64_t g_next_layer = 1;
@@ -31,11 +32,110 @@ static ViLayer *layer_of(uint64_t id) {
     return NULL;
 }
 
+typedef struct ParcelReader { const uint8_t *data; uint32_t size, position; } ParcelReader;
+static uint32_t read_u32(const uint8_t *p) { uint32_t v; memcpy(&v, p, 4); return v; }
+static void put_u32(uint8_t *dst, uint32_t value) { memcpy(dst, &value, 4); }
+
+static const IpcBuf *single_buffer(const IpcBuf *a, int na, const IpcBuf *b, int nb) {
+    const IpcBuf *found = NULL;
+    for (int set = 0; set < 2; set++) {
+        const IpcBuf *buffers = set ? b : a;
+        int count = set ? nb : na;
+        for (int i = 0; i < count; i++) {
+            if (!buffers[i].size) continue;
+            if (found || !buffers[i].addr) return NULL;
+            found = &buffers[i];
+        }
+    }
+    return found;
+}
+
+static int open_parcel(const IpcBuf *buffer, ParcelReader *reader) {
+    if (!buffer || buffer->size < 16) return 0;
+    const uint8_t *p = (const uint8_t *)(uintptr_t)buffer->addr;
+    uint32_t size = read_u32(p), offset = read_u32(p + 4);
+    uint32_t objects_size = read_u32(p + 8), objects_offset = read_u32(p + 12);
+    if (offset < 16 || (offset & 3) || (size & 3) || offset > buffer->size || size > buffer->size - offset) return 0;
+    if (objects_size && (objects_offset < 16 || (objects_offset & 3) || (objects_size & 3) ||
+        objects_offset > buffer->size || objects_size > buffer->size - objects_offset)) return 0;
+    *reader = (ParcelReader){p + offset, size, 0};
+    return 1;
+}
+
+static int parcel_u32(ParcelReader *reader, uint32_t *value) {
+    if (reader->position > reader->size || reader->size - reader->position < 4) return 0;
+    *value = read_u32(reader->data + reader->position);
+    reader->position += 4;
+    return 1;
+}
+
+static int producer_token(ParcelReader *reader) {
+    static const char token[] = "android.gui.IGraphicBufferProducer";
+    uint32_t policy, length;
+    if (!parcel_u32(reader, &policy) || !parcel_u32(reader, &length) || length != sizeof token - 1) return 0;
+    uint32_t bytes = (uint32_t)((sizeof token * 2 + 3) & ~3u);
+    if (reader->size - reader->position < bytes) return 0;
+    const uint8_t *str = reader->data + reader->position;
+    for (unsigned i = 0; i < sizeof token; i++)
+        if (str[i * 2] != (uint8_t)token[i] || str[i * 2 + 1] != 0) return 0;
+    reader->position += bytes;
+    (void)policy; /* Android StrictMode policy is transported but does not affect this native host service. */
+    return 1;
+}
+
+static void write_parcel(const IpcBuf *buffer, const uint32_t *words, unsigned count) {
+    uint8_t *p = (uint8_t *)(uintptr_t)buffer->addr;
+    put_u32(p, count * 4); put_u32(p + 4, 16);
+    put_u32(p + 8, 0); put_u32(p + 12, 16 + count * 4);
+    memcpy(p + 16, words, count * 4);
+}
+
+static void transact_parcel(Cpu *c, Service *s, ViLayer *layer, const IpcRequest *rq, IpcReply *rp) {
+    if (rq->args_size < 12) { rp->result = VI_INVALID_ARGUMENT; return; }
+    uint32_t code = RQ_GET(rq, uint32_t, 4);
+    const IpcBuf *input = single_buffer(rq->x, rq->nx, rq->a, rq->na);
+    const IpcBuf *output = single_buffer(rq->c, rq->nc, rq->b, rq->nb);
+    ParcelReader reader;
+    if (!output || !open_parcel(input, &reader) || !producer_token(&reader)) {
+        rp->result = VI_INVALID_ARGUMENT; return;
+    }
+    switch (code) {
+    case 10: { /* IGraphicBufferProducer::connect(NULL listener, API, producerControlledByApp) */
+        uint32_t listener, api, controlled;
+        if (!parcel_u32(&reader, &listener) || !parcel_u32(&reader, &api) || !parcel_u32(&reader, &controlled) ||
+            output->size < 0x24 || !api || api > 4 || controlled > 1) { rp->result = VI_INVALID_ARGUMENT; return; }
+        if (listener) hos_stop(c, "vi: Binder Connect with a listener is not implemented");
+        int32_t status = layer->connected_api ? -22 : 0; /* Android BAD_VALUE on a second connection */
+        if (!status) { layer->connected_api = api; layer->producer_controlled = controlled; }
+        uint32_t reply[] = {1280, 720, 0, 0, (uint32_t)status}; /* BqBufferOutput followed by status_t */
+        write_parcel(output, reply, sizeof reply / sizeof *reply);
+        hos_log("vi: Binder %u Connect API=%u app-controlled=%u status=%d\n", layer->binder_id, api, controlled, status);
+        return;
+    }
+    case 11: { /* IGraphicBufferProducer::disconnect(API) */
+        uint32_t api;
+        if (!parcel_u32(&reader, &api) || output->size < 20) { rp->result = VI_INVALID_ARGUMENT; return; }
+        uint32_t status = (uint32_t)-22;
+        if (api && layer->connected_api == api) {
+            layer->connected_api = 0; layer->producer_controlled = 0; status = 0;
+        }
+        write_parcel(output, &status, 1);
+        return;
+    }
+    default:
+        hos_dump_request(rq);
+        hos_stop(c, "%s transaction %u is not implemented", s->name, code);
+    }
+}
+
 static void binder_handle(Cpu *c, Service *s, const IpcRequest *rq, IpcReply *rp) {
     uint32_t id = rq->args_size >= 4 ? RQ_GET(rq, uint32_t, 0) : 0;
     ViLayer *layer = id && id <= MAX_LAYERS && g_layers[id - 1].id ? &g_layers[id - 1] : NULL;
     if (!layer) { rp->result = VI_INVALID_ARGUMENT; return; }
     switch (rq->cmd) {
+    case 0: case 3: /* TransactParcel / TransactParcelAuto */
+        transact_parcel(c, s, layer, rq, rp);
+        return;
     case 1: { /* AdjustRefcount(s32 binder id, s32 delta, s32 type: 0 weak, 1 strong) */
         if (rq->args_size < 12 || RQ_GET(rq, uint32_t, 8) > 1) { rp->result = VI_INVALID_ARGUMENT; return; }
         int32_t *refs = RQ_GET(rq, uint32_t, 8) ? &layer->strong_refs : &layer->weak_refs;
@@ -60,8 +160,6 @@ static void binder_handle(Cpu *c, Service *s, const IpcRequest *rq, IpcReply *rp
     default: hos_unimplemented(c, s, rq);
     }
 }
-
-static void put_u32(uint8_t *dst, uint32_t value) { memcpy(dst, &value, 4); }
 
 /* Public NativeWindow wire format: a 0x28-byte flattened Binder and one object-offset entry.
  * NativeWindow is parsed by the original SDK; it is not a pointer to a guessed SDK object layout. */
@@ -150,6 +248,14 @@ static void vi_application(Cpu *c, Service *s, const IpcRequest *rq, IpcReply *r
         ViLayer *layer = rq->args_size >= 8 ? layer_of(RQ_GET(rq, uint64_t, 0)) : NULL;
         if (!layer || !layer->opens) { rp->result = VI_INVALID_ARGUMENT; return; }
         layer->opens--;
+        return;
+    }
+    case 2101: { /* SetLayerScalingMode(u64 mode, u64 layer id): retained for the presentation adapter. */
+        ViLayer *layer = rq->args_size >= 16 ? layer_of(RQ_GET(rq, uint64_t, 8)) : NULL;
+        if (!layer || !layer->opens) { rp->result = VI_INVALID_ARGUMENT; return; }
+        layer->scaling_mode = RQ_GET(rq, uint64_t, 0);
+        hos_log("vi: layer %llu scaling mode %llu\n", (unsigned long long)layer->id,
+                (unsigned long long)layer->scaling_mode);
         return;
     }
     default: hos_unimplemented(c, s, rq);

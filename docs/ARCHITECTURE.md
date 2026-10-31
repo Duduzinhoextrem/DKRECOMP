@@ -123,8 +123,9 @@ main/sdk NSO ──► decoder ARM64 ──► lifter ──► C gerado ──�
   todos os aliases. O kernel escolhe o primeiro índice sinalizado no array, inclusive para aliases do mesmo evento.
 - `runtime/src/vi.c` expõe um display lógico 1280×720 e identidades de layers/Binder. Serviços de aplicação
   guardam seus privilégios e aberturas; interfaces filhas têm vida independente. O NativeWindow é um parcel público
-  desserializado pelo próprio SDK. Refcounts e o evento de disponibilidade são rastreados; operações da fila
-  ainda não foram implementadas. O evento de disponibilidade não equivale ao VSync do display.
+  desserializado pelo próprio SDK. Refcounts, evento de disponibilidade e Connect/Disconnect do produtor são
+  rastreados. O parser de parcels confere bounds e token UTF-16, com X/C ou A/B. Dequeue/QueueBuffer ainda não
+  existem. O evento de disponibilidade não equivale ao VSync do display. Escala solicitada fica armazenada.
 - Protocolos VI/Binder: [VI services](https://switchbrew.org/wiki/VI_services#NativeWindow),
   [Nvnflinger](https://switchbrew.org/wiki/Nvnflinger_services) e
   [produtor de buffers do libnx](https://github.com/switchbrew/libnx/blob/master/nx/source/display/buffer_producer.c).

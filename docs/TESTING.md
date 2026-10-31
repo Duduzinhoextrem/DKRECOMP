@@ -226,5 +226,7 @@ copiados. `kernel_sync` também espera numa cópia do evento, sinaliza o origina
 índice quando dois handles no array apontam para o mesmo evento.
 O teste `display_service` verifica as permissões entre vi:u/s/m, interfaces filhas, nome/resolução do display,
 aberturas/fechamentos, bounds do NativeWindow, layers distintos, refcounts Binder e cópias do evento 0xf.
+Inclui Connect/Disconnect do produtor por X/C e A/B, canaries, duplicação de conexão/API incorreta e rejeição
+de parcels malformados (offsets/tamanho, token UTF-16, campos truncados) sem mutação da conexão.
 
 Ver `docs/PROGRESS.md`. Regra: resultado só entra na documentação se foi produzido por um comando acima.

@@ -58,13 +58,14 @@
 
 ## Serviços (runtime/src/services.c)
 
-- Bloqueio atual com gráficos do host: `vi:IHOSBinderDriver:TransactParcelAuto` (3), código 10 (Connect), após
-  criar o contexto Vulkan, configurar HID e desserializar o NativeWindow do layer pelo SDK original.
+- Bloqueio atual com gráficos do host: primeira chamada NVN, `nvnDeviceBuilderSetDefaults`, após configurar HID,
+  desserializar o NativeWindow pelo SDK e conectar o produtor Binder (API 2).
   Os rings HID ainda não publicam entrada; controles ficam desconectados.
   A lista de vibração registra os dispositivos ativados, mas rumble do host e envio de valores ainda faltam.
 - VI expõe somente Default 1280×720. Há limite de 64 layers; as identidades gerenciadas ainda duram até o fim
   do processo. Abertura/fechamento, parcel, refcounts e evento de disponibilidade não implementam compositor,
-  transações de buffers, VSync ou o comportamento completo de Binder. System/manager display param no primeiro
+  transações de buffers, VSync ou o comportamento completo de Binder. Connect/Disconnect aceitam somente listener
+  NULL e APIs Android 1–4; o parser de parcels só trata a interface do produtor. System/manager display param no primeiro
   comando próprio ainda ausente; devolver a interface não significa implementar todos os seus métodos.
   No modo legado `--no-gfx`, continua parando em `nvdrv:Initialize` (3).
 - Cada serviço implementa só os comandos que o boot pediu (e vizinhos óbvios); o resto para com relatório. Os
@@ -94,6 +95,8 @@
   ainda não há geometria, shaders, texturas ou implementação dos objetos/comandos NVN. O jogo não submeteu frames.
 - A lista MIT de nomes NVN não representa cobertura de implementação: procs reconhecidos recebem um endereço,
   mas os ausentes encerram a execução quando chamados; nomes desconhecidos devolvem NULL.
+- No carregamento do alvo, `nvnDeviceApplyDeferredFinalizes` e `nvnQueueAcquireTexture` não existem na lista mais
+  nova e devolvem NULL. Foram consultados, ainda não chamados. Acrescentar/adaptar as APIs antigas conforme o alvo.
 - A janela atual é Win32 e usa uma fila com graphics+present, Vulkan 1.1 e swapchain RGBA/BGRA UNORM com suporte
   a transferência/readback. Outros formatos e plataformas ainda não foram implementados.
 - A camada de validação é opcional no build, mas foi usada localmente com sincronização ativa. A ferramenta

@@ -62,8 +62,9 @@ Continuar guiado pelo primeiro comando ou salto pendente do log:
    **Memória compartilhada/HID inicial implementados:** SDK mapeia o bloco de 256 KiB com proteção de leitura,
    usando aliases reais do Windows. Ativação/configuração de Npad e lista de vibração passam no boot; rings ainda
    vazios, back-end de entrada pendente. **VI inicial implementado:** display e parcel NativeWindow aceitos pelo SDK,
-   Binder com refs/evento rastreados. **Próximo:** TransactParcelAuto (3), Connect (código 10).
-   Boot gráfico medido em **415 SVCs**, com nove threads guest iniciadas. Modo legado revalidado em `nvdrv` (292 SVCs).
+   Binder com refs/evento rastreados. Connect/Disconnect e escala implementados; Connect do SDK passa.
+   **Próximo:** `nvnDeviceBuilderSetDefaults` e layouts/semântica dos objetos NVN do alvo.
+   Boot gráfico medido em **416 SVCs**, com nove threads guest iniciadas. Modo legado revalidado em `nvdrv` (292 SVCs).
 
 Critério original:
 

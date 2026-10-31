@@ -42,6 +42,78 @@ static uint32_t send(uint32_t handle, uint32_t cmd, const void *args, uint32_t s
     return get32(0x18);
 }
 
+static void map_descriptor(int off, uint64_t addr, uint32_t size) {
+    put32(off, size); put32(off + 4, (uint32_t)addr);
+    put32(off + 8, ((uint32_t)(addr >> 32) & 15) << 28 | ((uint32_t)(addr >> 36) & 7) << 2);
+}
+
+static uint32_t producer_transaction(uint32_t binder, uint32_t id, uint32_t code, const uint32_t *args,
+                                     unsigned count, int auto_select, uint32_t out_size, int malformed) {
+    static const char token[] = "android.gui.IGraphicBufferProducer";
+    uint8_t *input = (uint8_t *)(uintptr_t)(native_buffer + 0x200);
+    uint8_t *output = (uint8_t *)(uintptr_t)(native_buffer + 0x800);
+    memset(input, 0, 0x200); memset(output, 0xee, 0x200);
+    uint32_t header[] = {80 + count * 4, 16, 0, 96 + count * 4};
+    memcpy(input, header, sizeof header);
+    uint32_t policy = 0x100, length = sizeof token - 1;
+    memcpy(input + 16, &policy, 4); memcpy(input + 20, &length, 4);
+    for (unsigned i = 0; i < sizeof token; i++) input[24 + i * 2] = (uint8_t)token[i];
+    memcpy(input + 96, args, count * 4);
+    uint32_t size = 96 + count * 4;
+    if (malformed == 1) input[4] = 0xff; /* data offset beyond the descriptor */
+    if (malformed == 2) input[25] = 1; /* not the expected UTF-16 interface token */
+    if (malformed == 3) memset(input, 0xff, 4); /* length arithmetic cannot wrap */
+    memset(msg, 0, sizeof msg);
+    int p;
+    if (auto_select) {
+        uint64_t in_addr = native_buffer + 0x200, out_addr = native_buffer + 0x800;
+        put32(0, 0x00010004); put32(4, 0x807); /* X input, C output, seven raw words */
+        put32(8, (size << 16) | (((uint32_t)(in_addr >> 32) & 15) << 12) |
+                   (((uint32_t)(in_addr >> 36) & 7) << 6));
+        put32(12, (uint32_t)in_addr);
+        put32(44, (uint32_t)out_addr); put32(48, (out_size << 16) | (uint32_t)(out_addr >> 32));
+        p = 16;
+    } else {
+        put32(0, 0x01100004); put32(4, 7); /* A input, B output */
+        map_descriptor(8, native_buffer + 0x200, size);
+        map_descriptor(20, native_buffer + 0x800, out_size);
+        p = 32;
+    }
+    put32(p, 0x49434653); put32(p + 8, auto_select ? 3 : 0);
+    put32(p + 16, id); put32(p + 20, code); put32(p + 24, 0);
+    CHECK(hos_send_sync_request(&cpu, binder, msg, sizeof msg) == HOS_OK);
+    return get32(0x18);
+}
+
+static void test_producer(uint32_t binder, uint32_t id) {
+    uint32_t connect[] = {0, 2, 0};
+    uint8_t *output = (uint8_t *)(uintptr_t)(native_buffer + 0x800);
+    CHECK(producer_transaction(binder, id, 10, connect, 3, 1, 0x23, 0) != HOS_OK && output[0] == 0xee);
+    CHECK(producer_transaction(binder, id, 10, connect, 3, 1, 0x100, 1) != HOS_OK && output[0] == 0xee);
+    CHECK(producer_transaction(binder, id, 10, connect, 3, 1, 0x100, 2) != HOS_OK && output[0] == 0xee);
+    CHECK(producer_transaction(binder, id, 10, connect, 3, 1, 0x100, 3) != HOS_OK && output[0] == 0xee);
+    CHECK(producer_transaction(binder, id, 10, connect, 2, 1, 0x100, 0) != HOS_OK && output[0] == 0xee);
+    CHECK(producer_transaction(binder, id, 10, connect, 3, 1, 0x100, 0) == HOS_OK);
+    uint32_t reply[9]; memcpy(reply, output, sizeof reply);
+    CHECK(reply[0] == 20 && reply[1] == 16 && reply[2] == 0 && reply[3] == 36);
+    CHECK(reply[4] == 1280 && reply[5] == 720 && reply[6] == 0 && reply[7] == 0 && reply[8] == 0);
+    CHECK(output[36] == 0xee);
+    CHECK(producer_transaction(binder, id, 10, connect, 3, 0, 0x100, 0) == HOS_OK);
+    int32_t status;
+    memcpy(&status, output + 32, 4);
+    CHECK(status == -22); /* duplicate connection does not replace the current producer */
+    uint32_t api = 1;
+    CHECK(producer_transaction(binder, id, 11, &api, 1, 0, 0x100, 0) == HOS_OK);
+    memcpy(&status, output + 16, 4); CHECK(status == -22);
+    api = 2;
+    CHECK(producer_transaction(binder, id, 11, &api, 1, 0, 0x100, 0) == HOS_OK);
+    memcpy(&status, output + 16, 4); CHECK(status == 0 && output[20] == 0xee);
+    CHECK(producer_transaction(binder, id, 10, connect, 3, 0, 0x100, 0) == HOS_OK);
+    memcpy(&status, output + 32, 4); CHECK(status == 0);
+    CHECK(producer_transaction(binder, id, 11, &api, 1, 1, 0x100, 0) == HOS_OK);
+    memcpy(&status, output + 16, 4); CHECK(status == 0);
+}
+
 static uint32_t open_app(Service *root, uint32_t command, uint32_t mode) {
     uint32_t session = hos_new_session(root);
     CHECK(send(session, command, &mode, 4) == HOS_OK);
@@ -102,6 +174,7 @@ int main(void) {
     uint32_t binder_id;
     memcpy(&binder_id, parcel + 0x18, 4);
     CHECK(binder_id);
+    test_producer(binder, binder_id);
     int32_t refs[3] = {(int32_t)binder_id, -1, 0};
     CHECK(send(binder, 1, refs, sizeof refs) != HOS_OK); /* cannot underflow weak refs */
     refs[1] = 1;
@@ -120,7 +193,10 @@ int main(void) {
     uint32_t available_copy = get32(12);
     CHECK(available_copy != available && hos_event_state(available_copy) == 0);
     hos_close_handle(available); hos_close_handle(available_copy);
+    uint64_t scaling[] = {2, layer};
+    CHECK(send(app, 2101, scaling, sizeof scaling) == HOS_OK);
     CHECK(send(app, 2021, &layer, 8) == HOS_OK && send(app, 2021, &layer, 8) != HOS_OK);
+    CHECK(send(app, 2101, scaling, sizeof scaling) != HOS_OK);
     hos_close_handle(binder);
     rt_unmap(native_buffer);
     hos_close_handle(app); hos_close_handle(regular); hos_close_handle(sys);
