@@ -195,6 +195,12 @@ que a invalidação do handle original não destrua uma gravação que o incluiu
 O visitor fornece a fronteira do replay. Endereços GPU continuam apontando aos pools; não são confundidos com
 ponteiros para argumentos CPU. O back-end ainda precisa consumir esses registros e controlar recursos/fences reais.
 
+`tools/shader_translator/` fornece o serviço managed Maxwell → SPIR-V, adaptado do TotK/Ryujinx. O build copia
+fontes de revisão fixa para `toolchain/`, aplica nove patches e seleciona somente Shader, Spv.Generator e cinco
+arquivos de Common. Não há dependência NuGet/NativeAOT. O protocolo JSON permite um processo persistente;
+saídas são SPIR-V e reflexão de recursos. A identidade de build acompanha os caches. Três shaders sintéticos
+passaram no validador Khronos compilado localmente; o runtime do jogo ainda não está ligado ao serviço.
+
 ## Vários jogos
 
 Nada em `tools/dkrecomp/` ou `runtime/` depende de *Tropical Freeze*. O que for específico de um jogo fica em

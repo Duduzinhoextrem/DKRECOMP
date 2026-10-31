@@ -2,6 +2,25 @@
 
 Somente o que foi executado e verificado. Cada linha aponta para o comando que a reproduz (`docs/TESTING.md`).
 
+## 2026-10-31 — Tradutor Maxwell → SPIR-V compilado e validado com shaders sintéticos
+
+`tools/build_shader_translator.py` compila um executável managed .NET 10 usando o código MIT do TotK/Ryujinx,
+com revisão fixa e nove patches aplicados apenas à cópia em `toolchain/`. O csproj inclui cinco fontes de Common,
+sem seus quatro pacotes NuGet: `project.assets.json` confirma **zero bibliotecas de pacote**. Build terminou com
+**zero avisos e zero erros**, sem Windows SDK/NativeAOT ou instalação global.
+
+`shader_probe` enviou JSON inválido, chave com traversal e chave com quebra de linha, depois três jobs válidos
+no mesmo processo. Os jobs geraram SPIR-V VS (**1.388 bytes**), PS (**1.028**) e CS (**700**), com estágios/reflexão
+conferidos; PS tem saída RGBA e literais próprios. Nenhum código do jogo foi usado.
+
+O validador Khronos `spirv-val` **v2026.4** foi compilado do fonte Apache-2.0, com headers fixos, usando Zig C++
+local. **Os três shaders passaram em `--target-env vulkan1.3`**, além da verificação estrutural. Suítes:
+**54 pytest passam, 1 pulado**; **11/11 CTest passam**. O teste de tradução é opcional quando a ferramenta não foi construída.
+
+Isso ainda não traduz shaders reais do jogo nem desenha geometria: faltam capturar/normalizar os programas NVN,
+fornecer metadados dos recursos e consumir SPIR-V/buffers/texturas no replay Vulkan. `.id` e `source.json` locais
+registram os fontes usados, sem assets proprietários no Git.
+
 ## 2026-10-31 — Dados transitórios dos comandos preservados para replay
 
 `nvn_commands.c` captura em tempo de gravação os estados, arrays de bindings, viewports/scissors/depth ranges,

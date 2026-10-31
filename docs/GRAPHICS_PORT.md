@@ -86,6 +86,8 @@ exigiriam um interpretador/driver próprio. Esse desvio não é necessário para
 5. Voltar ao boot real, registrar os nomes pedidos e seguir até a primeira apresentação. Depois vêm imagem
    correta, áudio/entrada, gameplay e só então medições de desempenho.
 
-`refs/` permanece somente leitura. Apenas a lista de nomes públicos NVN foi copiada, com os avisos MIT em
-`runtime/gfx/third_party/` e `THIRD_PARTY_NOTICES.md`. As dependências de teste ficam no workspace; nenhum SDK
-foi instalado no sistema. O teste de apresentação não conclui a integração gráfica do jogo.
+`refs/` permanece somente leitura. Além da lista pública NVN e do layout block-linear já registrados nos avisos,
+o adaptador do tradutor foi incorporado em `tools/shader_translator/`, com licenças MIT preservadas. O build
+managed .NET 10 dispensa Windows SDK/NativeAOT e os pacotes NuGet de Common. Nove patches são aplicados somente
+à cópia de Ryujinx em `toolchain/`. Shaders sintéticos VS/PS/CS passaram no `spirv-val` para Vulkan 1.3; ainda
+nenhum shader real do jogo foi traduzido nem integrado a desenho. Dependências/compilações permanecem locais.

@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <AssemblyName>dkr_shader_translator</AssemblyName>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <Nullable>disable</Nullable>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <RestoreSources></RestoreSources>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="Program.cs;EmbeddedResources.cs" />
+    <Compile Include="$(RyuSrc)/src/Ryujinx.Graphics.Shader/**/*.cs" Exclude="**/obj/**;**/bin/**" />
+    <Compile Include="$(RyuSrc)/src/Spv.Generator/**/*.cs" Exclude="**/obj/**;**/bin/**" />
+    <Compile Include="$(RyuSrc)/src/Ryujinx.Common/Memory/IArray.cs" />
+    <Compile Include="$(RyuSrc)/src/Ryujinx.Common/Memory/StructArrayHelpers.cs" />
+    <Compile Include="$(RyuSrc)/src/Ryujinx.Common/Utilities/BitUtils.cs" />
+    <Compile Include="$(RyuSrc)/src/Ryujinx.Common/Pools/ObjectPool.cs" />
+    <Compile Include="$(RyuSrc)/src/Ryujinx.Common/Utilities/BitfieldExtensions.cs" />
+    <EmbeddedResource Include="$(RyuSrc)/src/Ryujinx.Graphics.Shader/CodeGen/Glsl/HelperFunctions/*.glsl"
+      LogicalName="Ryujinx.Graphics.Shader.CodeGen.Glsl.HelperFunctions.%(Filename)%(Extension)" />
+  </ItemGroup>
+</Project>

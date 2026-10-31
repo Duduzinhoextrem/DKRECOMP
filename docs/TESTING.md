@@ -121,6 +121,28 @@ registradores SIMD e strides são gravados e depois os argumentos originais são
 incluem esses dados em outro buffer; o handle original é invalidado e seu buffer finalizado antes de verificar
 os 14 registros pelo mesmo visitor que será usado no replay. Não exige arquivos do jogo nem renderiza imagem.
 
+## Tradutor de shaders e validação SPIR-V (opcionais)
+
+Requer o checkout fixo do TotK em `refs/` e .NET 10 já instalado. Não usa Windows SDK nem instala dependências
+globais. O build seleciona apenas os fontes usados pelo tradutor, sem pacotes NuGet. Os fontes e licenças de
+terceiros ficam em `toolchain/`; executáveis, manifests e caches em `build/`.
+
+```powershell
+.venv/Scripts/python tools/build_shader_translator.py
+.venv/Scripts/python tools/build_spirv_tools.py
+$env:PYTHONPATH = 'tools'
+.venv/Scripts/python -m dkrecomp.testing.shader_probe --validator build/spirv-tools/tools/spirv-val.exe
+```
+
+O segundo comando obtém revisões fixas do SPIRV-Tools/Headers e compila somente `spirv-val`, sem seus testes ou
+dependências extras. O probe gera Maxwell sintético VS/PS/CS e valida estrutura, estágio, reflexão, recuperação
+após mensagens inválidas e SPIR-V para Vulkan 1.3. `pytest` executa a integração se o tradutor existir e usa o
+validador se ele também existir. Os arquivos gerados pelo probe não contêm dados do jogo.
+
+Para traduzir um array de jobs: `build/shader_translator/bin/dkr_shader_translator.exe jobs.json output-dir`.
+`--serve` aceita um JSON por linha e responde `ok <key>`/`fail <key> <erro>`, permitindo reutilizar o processo.
+O esquema está no cabeçalho de `tools/shader_translator/Program.cs`. A execução do jogo ainda não chama esse serviço.
+
 ## Preparar a RomFS já extraída
 
 O gerador recebe uma pasta de arquivos, sem chaves nem NCAs. Recusa sobrescrever a saída sem `--force` e recusa
