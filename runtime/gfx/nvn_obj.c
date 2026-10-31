@@ -9,6 +9,7 @@
  * as complete at once. Nothing is drawn by this file. Semantics follow the reference's nvn_api_core.c. */
 #include "nvn_internal.h"
 #include "nvn_tex.h"
+#include "nvn_commands.h"
 #include "../src/hos.h"
 
 #define WIN32_LEAN_AND_MEAN
@@ -435,15 +436,13 @@ static void program_set_shaders(Cpu *c) { /* NVNboolean (NVNprogram *, int n, co
 }
 
 /* ---- command buffers ------------------------------------------------------------------------------------------ */
-/* Recording goes to a host buffer, never into the game's command memory: the game budgets that memory for Maxwell
- * encodings, and several command buffers may share it. Each command is a Record: the proc's host-function index and
- * its argument registers (x0..x7, low halves of v0..v3), taken when the command is recorded. Pointer arguments are
- * kept as addresses only; the Vulkan replay, when it exists, has to capture what it needs per command at record
- * time. EndRecording copies the recording into a Handle, the NVNcommandHandle the game submits. A handle lives
+/* Recording goes to a host buffer, never into the game's Maxwell command memory. Transient pointer arguments
+ * are snapshotted by nvn_commands.c; immutable payloads are shared by inlined Call/CopyCommands.
+ * EndRecording moves the recording into a Handle, the NVNcommandHandle the game submits. A handle lives
  * until its command buffer adds the control memory it was recorded into again, or is finalized. */
 #define CMD_MAGIC MAGIC('C', 'M', 'D', 'B')
 #define HANDLE_MAGIC MAGIC('H', 'N', 'D', 'L')
-typedef struct { uint32_t proc, pad; uint64_t x[8], v[4]; } Record;
+typedef NvnRecord Record;
 typedef struct Handle {
     uint32_t magic, count;
     struct Handle *next;   /* the command buffer's live handles */
@@ -456,7 +455,7 @@ typedef struct {
     int recording;
     uint64_t command_pool, command_offset, command_size, control, control_size;
     uint64_t callback, callback_data;
-    int32_t copy_row_stride, copy_image_stride;
+    int64_t copy_row_stride, copy_image_stride;
     Handle *handles;
 } CmdState;
 typedef struct { uint32_t magic, pad; CmdState *state; } CmdBuf; /* NVNcommandBuffer: at least 0x90 bytes */
@@ -474,6 +473,7 @@ static void free_handles(CmdState *s, uint64_t lo, uint64_t hi, int all) {
             Handle *dead = *h;
             *h = dead->next;
             dead->magic = 0;
+            for (unsigned i = 0; i < dead->count; i++) nvn_record_release(&dead->records[i]);
             free(dead);
         } else {
             h = &(*h)->next;
@@ -492,6 +492,7 @@ static void cmd_finalize(Cpu *c) {
     CmdBuf *b = PTR(c->x[0]);
     if (b->magic != CMD_MAGIC) return;
     free_handles(b->state, 0, 0, 1);
+    for (size_t i = 0; i < b->state->count; i++) nvn_record_release(&b->state->rec[i]);
     free(b->state->rec);
     free(b->state);
     b->magic = 0;
@@ -518,8 +519,8 @@ static void cmd_set_callback(Cpu *c) { cmd_of(c, c->x[0])->callback = c->x[1]; }
 static void cmd_set_callback_data(Cpu *c) { cmd_of(c, c->x[0])->callback_data = c->x[1]; }
 static void cmd_get_callback(Cpu *c) { c->x[0] = cmd_of(c, c->x[0])->callback; }
 static void cmd_get_callback_data(Cpu *c) { c->x[0] = cmd_of(c, c->x[0])->callback_data; }
-static void cmd_set_copy_row_stride(Cpu *c) { cmd_of(c, c->x[0])->copy_row_stride = (int32_t)c->x[1]; }
-static void cmd_set_copy_image_stride(Cpu *c) { cmd_of(c, c->x[0])->copy_image_stride = (int32_t)c->x[1]; }
+static void cmd_set_copy_row_stride(Cpu *c) { cmd_of(c, c->x[0])->copy_row_stride = (int64_t)c->x[1]; }
+static void cmd_set_copy_image_stride(Cpu *c) { cmd_of(c, c->x[0])->copy_image_stride = (int64_t)c->x[1]; }
 static void cmd_get_copy_row_stride(Cpu *c) { c->x[0] = (uint64_t)(int64_t)cmd_of(c, c->x[0])->copy_row_stride; }
 static void cmd_get_copy_image_stride(Cpu *c) { c->x[0] = (uint64_t)(int64_t)cmd_of(c, c->x[0])->copy_image_stride; }
 static void cmd_is_recording(Cpu *c) { c->x[0] = (uint64_t)cmd_of(c, c->x[0])->recording; }
@@ -543,6 +544,7 @@ static void cmd_end(Cpu *c) { /* NVNcommandHandle (NVNcommandBuffer *) */
     h->next = s->handles;
     s->handles = h;
     s->recording = 0;
+    s->count = 0; /* payload ownership moved to the handle */
     c->x[0] = (uint64_t)(uintptr_t)h;
 }
 
@@ -556,10 +558,38 @@ static void cmd_record(Cpu *c) { /* every command without its own handler */
         s->rec = r; s->cap = cap;
     }
     Record *r = &s->rec[s->count++];
-    r->proc = (uint32_t)((c->pc - DKR_HOSTFN_BASE) / 4);
-    r->pad = 0;
-    memcpy(r->x, c->x, sizeof r->x);
-    for (int i = 0; i < 4; i++) memcpy(&r->v[i], &c->v[i], 8);
+    nvn_record_capture(c, r);
+    r->copy_row_stride = s->copy_row_stride;
+    r->copy_image_stride = s->copy_image_stride;
+}
+
+static void cmd_call_commands(Cpu *c) {
+    CmdState *s = cmd_of(c, c->x[0]);
+    int n = (int32_t)c->x[1];
+    if (!s->recording || n < 0 || n > 0x100000 || (n && !c->x[2])) hos_stop(c, "nvn: invalid Call/CopyCommands");
+    for (int i = 0; i < n; i++) {
+        Handle *h = PTR(rd64(c->x[2] + 8u * (unsigned)i));
+        if (!h || h->magic != HANDLE_MAGIC) hos_stop(c, "nvn: Call/CopyCommands handle is not live");
+        size_t needed = s->count + h->count;
+        if (needed > s->cap) {
+            Record *p = realloc(s->rec, needed * sizeof *p);
+            if (!p) hos_stop(c, "nvn: out of memory inlining commands");
+            s->rec = p; s->cap = needed;
+        }
+        for (unsigned j = 0; j < h->count; j++) {
+            Record *r = &s->rec[s->count++];
+            *r = h->records[j]; nvn_record_retain(r);
+        }
+    }
+}
+
+void dkr_nvn_visit_commands(Cpu *c, const uint64_t *handles, int n, NvnRecordVisitor visit, void *user) {
+    if (n < 0 || (n && !handles) || !visit) hos_stop(c, "nvn: invalid replay handle list");
+    for (int i = 0; i < n; i++) {
+        Handle *h = PTR(handles[i]);
+        if (!h || h->magic != HANDLE_MAGIC) hos_stop(c, "nvn: replay handle is not live");
+        for (unsigned j = 0; j < h->count; j++) visit(&h->records[j], user);
+    }
 }
 
 static void queue_submit(Cpu *c) { /* void (NVNqueue *, int n, const NVNcommandHandle *) */
@@ -727,6 +757,8 @@ const NvnImpl dkr_nvn_obj_impls[] = {
     {"nvnTextureGetStorageClass", texture_get_storage_class},
     {"nvnTextureGetZCullStorageSize", texture_zcull_size},
     {"nvnTextureBuilderGetZCullStorageSize", builder_zcull_size},
+    {"nvnCommandBufferCallCommands", cmd_call_commands},
+    {"nvnCommandBufferCopyCommands", cmd_call_commands},
     {"nvnTextureBuilderGetStorageSize", builder_storage_size},
     {"nvnTextureBuilderGetStorageAlignment", builder_storage_alignment},
     {"nvnTextureBuilderGetStorageClass", builder_storage_class},

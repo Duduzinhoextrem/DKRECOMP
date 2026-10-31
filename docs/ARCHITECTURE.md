@@ -188,6 +188,13 @@ O boot comprovou abertura e processamento de quadros silenciosos; ainda não com
 | `tests/native/` | Testes de valor conhecido do `cpu.h`, via CMake | Pronto |
 | `tools/toolchain/` | Wrappers e toolchain CMake do Clang do Zig | Pronto |
 
+Os comandos NVN são registros do host com argumentos inteiros/SIMD e payloads imutáveis de dados transitórios
+(`nvn_commands.c`). Arrays e estados são copiados durante a chamada; views em SetRenderTargets têm cópia
+recursiva de um nível. Call/CopyCommands expandem registros com propriedade compartilhada dos payloads, para
+que a invalidação do handle original não destrua uma gravação que o incluiu. Strides acompanham cada registro.
+O visitor fornece a fronteira do replay. Endereços GPU continuam apontando aos pools; não são confundidos com
+ponteiros para argumentos CPU. O back-end ainda precisa consumir esses registros e controlar recursos/fences reais.
+
 ## Vários jogos
 
 Nada em `tools/dkrecomp/` ou `runtime/` depende de *Tropical Freeze*. O que for específico de um jogo fica em

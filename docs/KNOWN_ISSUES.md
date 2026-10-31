@@ -65,7 +65,8 @@
   O modo IPC legado continua implementando apenas GetWorkBufferSize REV1–4.
 
 - O boot gráfico chegou a **1.200 chamadas present em 30 s**, sem STOP/exceção; o vigia encerrou o diagnóstico.
-  Nada é desenhado: a captura ainda guarda ponteiros temporários, e replay Vulkan/shaders continuam pendentes.
+  Nada é desenhado: dados transitórios do caminho observado são capturados, mas replay Vulkan/shaders e lifetime
+  dos recursos no back-end continuam pendentes. DrawTexture/CoverageModulationTable exigem medição antes da captura.
   O decoder de filmes é indisponível: NvMMLiteOpenBlock retorna falha antes do cleanup defeituoso do SDK base.
   Não há vídeo substituto; o jogo segue pelo caminho de erro. Reprodução dos filmes precisa de um back-end próprio.
   Os rings HID ainda não publicam entrada; controles ficam desconectados.

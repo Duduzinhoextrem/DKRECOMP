@@ -116,6 +116,11 @@ traversal, dispositivos Win32, streams, nomes ambíguos e strings truncadas. Rem
 sintéticos que o próprio teste criou.
 O teste IPC confere a destruição de um objeto após fechar o último clone e o ciclo de um handle de transfer memory.
 
+`nvn_entry_abi` também verifica a vida útil dos comandos: estados, arrays, views aninhadas, uniform data,
+registradores SIMD e strides são gravados e depois os argumentos originais são alterados. Call/CopyCommands
+incluem esses dados em outro buffer; o handle original é invalidado e seu buffer finalizado antes de verificar
+os 14 registros pelo mesmo visitor que será usado no replay. Não exige arquivos do jogo nem renderiza imagem.
+
 ## Preparar a RomFS já extraída
 
 O gerador recebe uma pasta de arquivos, sem chaves nem NCAs. Recusa sobrescrever a saída sem `--force` e recusa

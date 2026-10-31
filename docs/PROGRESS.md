@@ -2,6 +2,23 @@
 
 Somente o que foi executado e verificado. Cada linha aponta para o comando que a reproduz (`docs/TESTING.md`).
 
+## 2026-10-31 — Dados transitórios dos comandos preservados para replay
+
+`nvn_commands.c` captura em tempo de gravação os estados, arrays de bindings, viewports/scissors/depth ranges,
+cores, dados de UpdateUniformBuffer, regiões de cópia e views. SetRenderTargets copia também as views apontadas
+pelo array, preservando entradas NULL. EndRecording transfere a propriedade dos payloads para o handle;
+CallCommands/CopyCommands expandem os registros e retêm os dados imutáveis. Strides de cópia têm 64 bits e
+acompanham o comando. Endereços GPU e objetos de recurso continuam com o tempo de vida da API.
+
+O consumidor futuro usa `dkr_nvn_visit_commands`, em ordem, sem executar o guest novamente. O teste nativo grava
+sete comandos, altera todos os argumentos originais, inclui duas vezes o handle em outro buffer, invalida o
+handle original/finaliza seu buffer e confere os **14 registros**, incluindo views, valores SIMD e strides acima
+de 32 bits. Passou; o teste de entrada NVN continua verde.
+
+Boot recompilado: **1.200 presents em 30 s**, sem STOP/exceção, vigia após **2.215.570 SVCs**. Nenhuma imagem.
+A captura cobre os argumentos transitórios do caminho observado; DrawTexture e CoverageModulationTable param
+se chamados até medir seus layouts. Integração com lifetime dos recursos e replay Vulkan ainda pendentes.
+
 ## 2026-10-31 — Loop alcança 1.200 presents em 30 segundos, ainda sem imagem
 
 Depois do save, faltava `nvnTextureGetZCullStorageSize`. O host informa zero armazenamento externo de ZCull:
