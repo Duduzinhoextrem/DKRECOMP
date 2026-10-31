@@ -13,6 +13,11 @@ pytest.importorskip("ziglang")
 
 import func_diff  # noqa: E402
 import insn_diff  # noqa: E402
+import saturating_diff  # noqa: E402
+
+
+def test_saturating_narrow_shifts_and_qc_match_unicorn(tmp_path):
+    assert not saturating_diff.run(str(tmp_path))
 
 
 @pytest.mark.parametrize("seed", [101, 202])

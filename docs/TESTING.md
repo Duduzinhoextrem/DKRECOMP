@@ -22,6 +22,16 @@ Inclui testes unitários (formatos, decodificador × Capstone) e versões reduzi
 O teste do gerador também compila/executa um módulo sintético para verificar overrides por alias em chamadas
 diretas e indiretas, preservando a passagem de argumentos/resultados e registradores não alterados pelo host.
 
+As formas de narrowing saturado e soma saturada têm teste dedicado que também lê FPSR.QC com MRS:
+
+```bash
+.venv/Scripts/python tests/diff/saturating_diff.py
+```
+
+Cobre 924 codificações e 14.784 estados: todos os shifts e tamanhos, metade alta, aliases, limites, arredondamento
+e QC previamente ativo. A suíte pytest inclui esse teste. Multiplicações por elemento podem ser isoladas com
+`tests/diff/insn_diff.py --seed 617 --count 2000 --states 3 --only vec_elem`.
+
 ## Testes diferenciais
 
 ### Instrução isolada (`tests/diff/insn_diff.py`)

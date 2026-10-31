@@ -581,6 +581,11 @@ def _simd_vec(w, a, rd, rn, rm):
     q, u, size = bits(w, 30, 1), bits(w, 29, 1), bits(w, 22, 2)
     if w & 0x9F200400 == 0x0E200400:  # three same
         opc = bits(w, 11, 5)
+        if opc == 0b00001:  # SQADD / UQADD
+            if size == 3 and not q:
+                return _u(a, w, "saturating add: reserved 1d vector")
+            return Insn(a, w, "vqadd", {"rd": rd, "rn": rn, "rm": rm, "esize": 1 << size,
+                                        "q": q, "unsigned": bool(u)})
         if opc >= 0b11000:
             sz = size & 1
             kind = VFP3.get((u, size >> 1, opc))
@@ -627,6 +632,12 @@ def _simd_vec(w, a, rd, rn, rm):
         immh, opc = bits(w, 19, 4), bits(w, 11, 5)
         elog = immh.bit_length() - 1
         esize, immhb = 1 << elog, (immh << 3) | bits(w, 16, 3)
+        if opc in (0b10010, 0b10011):  # SQ[ R ]SHRN / UQ[ R ]SHRN and their upper-half forms
+            if elog == 3:
+                return _u(a, w, "saturating narrow shift: reserved immh")
+            return Insn(a, w, "vqshrn", {"rd": rd, "rn": rn, "esize": esize,
+                                         "shift": 16 * esize - immhb, "upper": q,
+                                         "rounding": bool(opc & 1), "unsigned": bool(u)})
         if opc == 0b10100:  # SSHLL / USHLL (SXTL / UXTL)
             if elog == 3:
                 return _u(a, w, "sshll: reserved")
@@ -644,6 +655,15 @@ def _simd_vec(w, a, rd, rn, rm):
     scalar_idx = w & 0xDF000400 == 0x5F000000
     if w & 0x9F000400 == 0x0F000000 or scalar_idx:  # vector (or scalar) x indexed element
         opc, L, M, H, rm4 = bits(w, 12, 4), bits(w, 21, 1), bits(w, 20, 1), bits(w, 11, 1), bits(w, 16, 4)
+        if not scalar_idx and size in (1, 2):
+            index, reg = ((H << 2) | (L << 1) | M, rm4) if size == 1 else ((H << 1) | L, (M << 4) | rm4)
+            if opc in (0b0010, 0b0110, 0b1010):  # S/U MLAL, MLSL, MULL by element (including upper-half forms)
+                return Insn(a, w, "vwiden_elem", {"rd": rd, "rn": rn, "rm": reg, "esize": 1 << size,
+                                                  "upper": q, "index": index, "signed": not u,
+                                                  "kind": {2: "mlal", 6: "mlsl", 10: "mull"}[opc]})
+            if not u and opc == 0b1000:  # MUL by element
+                return Insn(a, w, "vmul_elem", {"rd": rd, "rn": rn, "rm": reg, "esize": 1 << size,
+                                                "q": q, "index": index})
         if size >> 1:  # floating point, size<0> = sz
             sz = size & 1
             if sz and L:
@@ -654,10 +674,6 @@ def _simd_vec(w, a, rd, rn, rm):
                 return _u(a, w, "fp by element: not in subset")
             return Insn(a, w, "vfp_elem", {"kind": kind, "rd": rd, "rn": rn, "rm": (M << 4) | rm4,
                                            "esize": 4 << sz, "q": q, "index": index, "scalar": scalar_idx})
-        if not scalar_idx and not u and opc == 0b1000 and size in (1, 2):  # MUL by element
-            index, reg = ((H << 2) | (L << 1) | M, rm4) if size == 1 else ((H << 1) | L, (M << 4) | rm4)
-            return Insn(a, w, "vmul_elem", {"rd": rd, "rn": rn, "rm": reg, "esize": 1 << size, "q": q,
-                                            "index": index})
         return _u(a, w, "simd by element: not in subset")
     if w & 0xBF208C00 == 0x0E000800:  # permute: UZP, TRN, ZIP
         opc = bits(w, 12, 3)

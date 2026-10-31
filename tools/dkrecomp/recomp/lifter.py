@@ -493,7 +493,7 @@ def _lift_fp(i: Insn, ctx: Ctx) -> List[str]:
 
 VEC_OPS = {"vfp3", "vint3", "vfp2", "vint2", "vxtn", "vshll", "vshift", "vfp_elem", "vmul_elem", "vperm", "vext",
            "vtbl", "vaddv", "vimm", "vdup_elem", "vins_elem", "vbitsel", "vld1lane", "vst1lane", "vld1r",
-           "vwiden", "vaddp_scalar"}
+           "vwiden", "vwiden_elem", "vaddp_scalar", "vqshrn", "vqadd"}
 VF_KIND = {"add": "VF_ADD", "sub": "VF_SUB", "mul": "VF_MUL", "div": "VF_DIV", "max": "VF_MAX", "min": "VF_MIN",
            "maxnm": "VF_MAXNM", "minnm": "VF_MINNM", "mulx": "VF_MULX", "recps": "VF_RECPS", "rsqrts": "VF_RSQRTS",
            "cmeq": "VF_CMEQ", "cmge": "VF_CMGE", "cmgt": "VF_CMGT", "abd": "VF_ABD", "addp": "VF_ADD",
@@ -529,9 +529,10 @@ def _lift_vec(i: Insn, ctx: Ctx) -> List[str]:
         return _setv(i.rd, f"vfp2({V(i.rn)}, {VU_KIND[i.kind]}, {i.esize}, {_lanes(i)})")
     if op == "vint3" and i.kind in ("mla", "mls"):
         return _setv(i.rd, f"vmla({V(i.rd)}, {V(i.rn)}, {V(i.rm)}, {i.esize}, {_lanes(i)}, {int(i.kind == 'mls')})")
-    if op == "vwiden":
+    if op in ("vwiden", "vwiden_elem"):
         kind = {"addl": "VW_ADDL", "subl": "VW_SUBL", "mlal": "VW_MLAL", "mlsl": "VW_MLSL", "mull": "VW_MULL"}[i.kind]
-        return _setv(i.rd, f"vwiden({V(i.rd)}, {V(i.rn)}, {V(i.rm)}, {kind}, {int(i.signed)}, {i.esize}, {i.upper})")
+        operand = f"vdup_elem({V(i.rm)}, {i.esize}, {i.index}, {16 // i.esize})" if op == "vwiden_elem" else V(i.rm)
+        return _setv(i.rd, f"vwiden({V(i.rd)}, {V(i.rn)}, {operand}, {kind}, {int(i.signed)}, {i.esize}, {i.upper})")
     if op == "vaddp_scalar":
         return [f"{{ uint64_t s_ = c->v[{i.rn}].d[0] + c->v[{i.rn}].d[1]; vset_d(c, {i.rd}, s_); }}"]
     if op == "vint3":
@@ -540,6 +541,11 @@ def _lift_vec(i: Insn, ctx: Ctx) -> List[str]:
         return _setv(i.rd, f"vint2({V(i.rn)}, {VI2_KIND[i.kind]}, {i.esize}, {_lanes(i)})")
     if op == "vxtn":
         return _setv(i.rd, f"vxtn({V(i.rd)}, {V(i.rn)}, {i.esize}, {i.upper})")
+    if op == "vqshrn":
+        return _setv(i.rd, f"vqshrn(c, {V(i.rd)}, {V(i.rn)}, {i.esize}, {i.shift}, {i.upper}, "
+                           f"{int(i.rounding)}, {int(i.unsigned)})")
+    if op == "vqadd":
+        return _setv(i.rd, f"vqadd(c, {V(i.rn)}, {V(i.rm)}, {i.esize}, {_lanes(i)}, {int(i.unsigned)})")
     if op == "vshll":
         return _setv(i.rd, f"vshll({V(i.rn)}, {int(i.signed)}, {i.shift}, {i.esize}, {i.upper})")
     if op == "vshift":
@@ -648,6 +654,8 @@ def lift_function(code: bytes, base: int, fn: Function, ctx_args: Optional[dict]
         out.append("    default: rt_dispatch(c); return;")
         out.append("    }")
     out.append("}")
+    if any(i.op in ("vqshrn", "vqadd") for i in insns):
+        out.insert(0, '#include "dkr/simd_sat.h"')
     return out, ctx.unsupported
 
 

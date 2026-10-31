@@ -2,6 +2,19 @@
 
 Somente o que foi executado e verificado. Cada linha aponta para o comando que a reproduz (`docs/TESTING.md`).
 
+## 2026-10-31 — SIMD do renderizador CPU de áudio
+
+O boot com o servidor CPU do SDK executou `SQRSHRN` e `SQADD`, antes ausentes. Foram implementadas as formas
+vetoriais SQSHRN/SQRSHRN/UQSHRN/UQRSHRN, incluindo a variante que escreve a metade alta, e SQADD/UQADD.
+A flag FPSR.QC é acumulada. Arredondamento evita overflow dos operandos de 64 bits.
+
+`tests/diff/saturating_diff.py`: **924 codificações, 14.784 casos, zero diferenças** contra Unicorn, com limites,
+aliases e QC inicialmente limpo/ativo. `insn_diff.py --seed 617 --count 2000 --states 3 --only vec_elem`:
+**6.000 casos, zero diferenças**, incluindo **2.376** casos das novas multiplicações longas por elemento.
+O tratamento de MUL inteiro por elemento de 32 bits também passou a ser alcançável antes da classe FP.
+
+Suíte Python completa: **53 passam, 1 pulado** (`reports/pytest_audio.txt`, 47,21 s).
+
 ## 2026-10-31 — Work buffer do áudio REV4 aceito; próximo é OpenAudioRenderer
 
 `runtime/src/audio.c` atende `audren:u:GetWorkBufferSize` (1), com parâmetro interno de 0x34 bytes, revisão em
