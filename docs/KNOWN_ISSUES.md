@@ -45,6 +45,15 @@
 - Funções descobertas por ponteiros podem começar em dados (algumas palavras inválidas no `subsdk0`/`main`); só
   causam erro se executadas.
 
+## Serviços (runtime/src/services.c)
+
+- Cada serviço implementa só os comandos que o boot pediu (e vizinhos óbvios); o resto para com relatório. Os
+  valores devolvidos (usuário local "DKRecomp", idioma `en-US`, região EUA, modo TV, foco, fuso UTC, configuração de
+  desempenho) são escolhas do DKRecomp, não lidas de um console.
+- Os ids de comando vêm do switchbrew para o firmware 4.x; um id errado aparece no log como comando inesperado.
+- `QueryPointerBufferSize` responde 0x8000 para todo serviço; respostas por buffer de ponteiro (C) ainda não são
+  escritas pelo IPC, só pelos serviços que as usam diretamente.
+
 ## Módulo gerado
 
 - O endereço base do `main` (`0x800000000`) é **provisório** e fica embutido no C gerado; mudar o layout exige

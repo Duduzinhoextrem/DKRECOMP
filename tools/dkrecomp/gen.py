@@ -37,7 +37,7 @@ from .recomp.lifter import C_PRELUDE, Function, fname, lift_function
 CALL_RE = re.compile(r"\bf_([0-9a-f]+)\(c\)")
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 BOOT_SYMBOLS = {"init_start": "_ZN2nn4init5StartEmmPFvvES2_", "nn_main": "nnMain"}
-RUNTIME_SOURCES = ["core.c", "loader.c", "horizon.c"]
+RUNTIME_SOURCES = ["core.c", "loader.c", "horizon.c", "ipc.c", "services.c"]
 
 
 def write_if_changed(path: str, text: str) -> bool:
@@ -138,8 +138,13 @@ def discover(m: nso_fmt.Nso, extra_starts: Set[int]) -> List[Tuple[int, int, str
         for s, e in todo:
             scanned[s] = e
             for a in range(s, min(e, t_hi), 4):
-                tgt = branch_target(words[(a - t_lo) // 4], a)
-                if tgt is not None and not (s <= tgt < e) and t_lo <= tgt < t_hi and tgt not in named_starts:
+                w = words[(a - t_lo) // 4]
+                tgt = branch_target(w, a)
+                if tgt is None or not t_lo <= tgt < t_hi or tgt in named_starts or tgt in extra:
+                    continue
+                # A BL always needs a function at its target, even inside the caller's range (static helpers
+                # placed inside a larger unnamed range); other branches only when they leave the function.
+                if w & 0xFC000000 == 0x94000000 or not (s <= tgt < e):
                     new.add(tgt)
         extra |= new
     return sorted(ranges())

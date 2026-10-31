@@ -20,8 +20,13 @@ target_include_directories(dkr_runtime PUBLIC runtime/include)
 add_executable(dkr_selftest tests/native/selftest.c)
 target_link_libraries(dkr_selftest PRIVATE dkr_runtime)
 
+# IPC message format (runtime/src/ipc.c) against hand-built messages, including the one the game sends first.
+add_executable(dkr_ipc_test tests/native/ipc_test.c runtime/src/ipc.c)
+target_link_libraries(dkr_ipc_test PRIVATE dkr_runtime)
+
 enable_testing()
 add_test(NAME cpu_helpers COMMAND dkr_selftest)
+add_test(NAME ipc_format COMMAND dkr_ipc_test)
 
 # Optional: the differential-test harness built around a lifted C file (tests/diff/func_diff.py --msvc).
 set(DKR_LIFTED_C "" CACHE FILEPATH "Lifted C file to build into dkr_harness")

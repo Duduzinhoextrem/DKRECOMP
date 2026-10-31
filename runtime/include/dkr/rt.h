@@ -45,6 +45,7 @@ extern DkrSvcHook dkr_svc_hook;
 /* Map `size` bytes of guest memory at guest address == host address `addr`. Returns 0 on success. */
 int rt_map_fixed(uint64_t addr, uint64_t size);
 void rt_unmap(uint64_t addr);
+void rt_decommit(uint64_t addr, uint64_t size); /* give back the host memory of a mapped range */
 unsigned long rt_last_os_error(void);
 
 /* Load every module's image at its base and register its dispatch table. Returns 0 on success. */

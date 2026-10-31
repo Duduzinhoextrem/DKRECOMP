@@ -2,6 +2,30 @@
 
 Somente o que foi executado e verificado. Cada linha aponta para o comando que a reproduz (`docs/TESTING.md`).
 
+## 2026-10-31 — IPC e serviços: o boot passa pelos construtores e chega à primeira thread
+
+Novo: `runtime/src/ipc.c` (mensagens HIPC/CMIF: cabeçalho, PID e handles, descritores X/A/B/W/C, `SFCI`/`SFCO`,
+domínios, mensagens de controle, tabela de sessões, eventos), `runtime/src/services.c` (serviços) e
+`tools/boot.sh` (regenerar, compilar e rodar um boot). Um serviço desconhecido é entregue pelo `sm:` e para a
+execução no primeiro comando, com relatório; assim cada boot aponta o próximo comando a implementar.
+
+| Evidência | Resultado |
+|---|---|
+| `dkr_ipc_test` (CMake): mensagem real do `sm:Initialize`, `GetService`, descritores com bits de endereço divididos, domínio, respostas | passa |
+| Boot (`tools/boot.sh`) | **220 SVCs**: 88 mensagens IPC atendidas a 11 serviços; **os construtores (`DT_INIT`) de `main`, `subsdk0` e `sdk` rodam e retornam**; para em `CreateThread` (primeira thread extra, entrada em `sdk+0x95aac`) |
+
+Serviços implementados (só os comandos pedidos no boot, mais vizinhos óbvios; comandos ids do switchbrew,
+firmware 4.x): `sm:`; `lm` (logs do jogo vão para o log do boot); `appletOE` com `IApplicationProxy`,
+`ICommonStateGetter` (fila de mensagens com `FocusStateChanged`, modo TV, foco), `ISelfController`,
+`IWindowController`, `IAudioController`, `IApplicationFunctions`; `pctl`/`pctl:s`/`pctl:r`/`pctl:a` (sem
+restrições); `set` (15 idiomas do firmware 4.x, região EUA); `apm`; `acc:u0` (um usuário local, perfil);
+`time:u`/`time:s` (relógio do Windows, UTC). Também: eventos do kernel, `WaitSynchronization`, `MapMemory`/
+`UnmapMemory` (cópia, equivalente ao alias porque a origem fica inacessível), `SetHeapSize` limitado à memória
+total (o SDK sonda o máximo e converge para `0xC5C00000`, como num console).
+
+Bugs encontrados no caminho: `BL` para função estática dentro do intervalo de outra função não virava início de
+função (corrigido na descoberta); heap aceitava até 6 GB (corrigido com o limite de memória).
+
 ## 2026-10-31 — Primeiro boot: o SDK do jogo inicializa até a primeira mensagem IPC (MVP 5)
 
 Novas peças: `tools/dkrecomp/link.py` (layout e ligação estática dos módulos, o trabalho do `rtld` feito na geração),

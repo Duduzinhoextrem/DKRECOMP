@@ -9,7 +9,7 @@
  * SVCs are implemented only as far as a single-threaded boot needs them. Anything else stops the run with a
  * report, so each attempt shows exactly where the next piece of work is. Register conventions follow switchbrew
  * (SVC page): outputs come back in w0 (result) and x1.. as the libnx wrappers expect. */
-#include "dkr/rt.h"
+#include "hos.h"
 
 #include <stdarg.h>
 #include <stdio.h>
@@ -58,17 +58,28 @@ static Region g_regions[256];
 static int g_nregions;
 static uint64_t g_heap_size;
 
+static uint64_t g_fixed_used; /* modules, stacks and thread local regions: memory the heap cannot use */
+
 static void region_add(uint64_t base, uint64_t size, uint32_t state, uint32_t perm) {
     int i = g_nregions++;
     while (i > 0 && g_regions[i - 1].base > base) { g_regions[i] = g_regions[i - 1]; i--; }
     g_regions[i] = (Region){base, size, state, perm};
 }
 
+/* Replace whatever is mapped in [base, base + span) by one region of `size` bytes (0 removes it). */
+static void region_set(uint64_t base, uint64_t span, uint64_t size, uint32_t state, uint32_t perm) {
+    int j = 0;
+    for (int i = 0; i < g_nregions; i++)
+        if (g_regions[i].base < base || g_regions[i].base >= base + span) g_regions[j++] = g_regions[i];
+    g_nregions = j;
+    if (size) region_add(base, size, state, perm);
+}
+
 /* ---- logging and stopping --------------------------------------------------------------------------------- */
 static uint64_t g_svc_count;
 static FILE *g_log;
 
-static void logf_(const char *fmt, ...) {
+void hos_log(const char *fmt, ...) {
     va_list ap;
     va_start(ap, fmt);
     vfprintf(stderr, fmt, ap);
@@ -81,10 +92,14 @@ static void logf_(const char *fmt, ...) {
     }
 }
 
-static void stop(Cpu *c, const char *why) {
-    char a[96];
-    logf_("\nboot: STOP after %llu SVCs: %s\n", (unsigned long long)g_svc_count, why);
-    logf_("boot: lr=%s sp=%#llx x0=%#llx x1=%#llx x2=%#llx x3=%#llx\n", rt_describe(c->x[30], a, sizeof a),
+void hos_stop(Cpu *c, const char *fmt, ...) {
+    char a[96], why[256];
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(why, sizeof why, fmt, ap);
+    va_end(ap);
+    hos_log("\nboot: STOP after %llu SVCs: %s\n", (unsigned long long)g_svc_count, why);
+    hos_log("boot: lr=%s sp=%#llx x0=%#llx x1=%#llx x2=%#llx x3=%#llx\n", rt_describe(c->x[30], a, sizeof a),
           (unsigned long long)c->sp, (unsigned long long)c->x[0], (unsigned long long)c->x[1],
           (unsigned long long)c->x[2], (unsigned long long)c->x[3]);
     if (g_log) fclose(g_log);
@@ -121,7 +136,7 @@ static uint64_t get_info(uint32_t id0, uint32_t handle, uint64_t id1, int *ok) {
     case 4: return HEAP_BASE;
     case 5: return HEAP_SIZE;
     case 6: return TOTAL_MEMORY;
-    case 7: return g_heap_size + 0x08000000;  /* used memory: heap + an estimate for code and stacks */
+    case 7: return g_fixed_used + g_heap_size; /* used memory: modules, stacks, heap */
     case 8: return 0;                          /* debugger attached */
     case 11: return 0x0123456789ABCDEFull ^ (id1 * 0x9E3779B97F4A7C15ull); /* random entropy (fixed for reproducibility) */
     case 12: return ASLR_BASE;
@@ -133,7 +148,7 @@ static uint64_t get_info(uint32_t id0, uint32_t handle, uint64_t id1, int *ok) {
     case 18: return 0x0100C1F0051B6000ull;     /* program id (main.npdm ACI0) */
     case 20: return 0;                         /* user exception context address */
     case 21: return TOTAL_MEMORY;
-    case 22: return g_heap_size + 0x08000000;
+    case 22: return g_fixed_used + g_heap_size;
     case 23: return 1;                         /* is application */
     default: (void)handle; *ok = 0; return 0;
     }
@@ -143,23 +158,50 @@ static void svc_handler(Cpu *c, uint32_t n, uint64_t pc) {
     char where[96];
     g_svc_count++;
     rt_describe(pc, where, sizeof where);
-    logf_("svc %4llu  %-26s 0x%02x at %-18s x0=%#llx x1=%#llx x2=%#llx x3=%#llx\n", (unsigned long long)g_svc_count,
+    hos_log("svc %4llu  %-26s 0x%02x at %-18s x0=%#llx x1=%#llx x2=%#llx x3=%#llx\n", (unsigned long long)g_svc_count,
           svc_name(n), n, where, (unsigned long long)c->x[0], (unsigned long long)c->x[1],
           (unsigned long long)c->x[2], (unsigned long long)c->x[3]);
     switch (n) {
     case 0x01: { /* SetHeapSize(size x1) -> x1 address */
         uint64_t size = c->x[1];
-        if (size > HEAP_SIZE || (size & 0x1FFFFF)) stop(c, "SetHeapSize: size beyond the heap region or unaligned");
+        if (size & 0x1FFFFF) { c->x[0] = HOS_KERNEL(102); return; } /* InvalidSize: must be 2 MiB aligned */
+        /* The process may use at most TOTAL_MEMORY for modules, stacks and heap together; the SDK probes the
+         * largest heap it can get, so a request above that must fail like the kernel's (OutOfMemory). */
+        if (size > HEAP_SIZE || g_fixed_used + size > TOTAL_MEMORY) {
+            hos_log("     heap of %#llx refused: out of memory\n", (unsigned long long)size);
+            c->x[0] = HOS_KERNEL(104);
+            return;
+        }
         if (size > g_heap_size && rt_map_fixed(HEAP_BASE + g_heap_size, size - g_heap_size))
-            stop(c, "SetHeapSize: host mapping failed");
-        if (size > g_heap_size) region_add(HEAP_BASE + g_heap_size, size - g_heap_size, MS_NORMAL, 3);
-        else if (size < g_heap_size) stop(c, "SetHeapSize: shrinking the heap is not implemented");
+            hos_stop(c, "SetHeapSize: host mapping failed");
+        if (size < g_heap_size) rt_decommit(HEAP_BASE + size, g_heap_size - size);
         g_heap_size = size;
+        region_set(HEAP_BASE, HEAP_SIZE, size, MS_NORMAL, 3);
         c->x[0] = R_OK;
         c->x[1] = HEAP_BASE;
         return;
     }
     case 0x02: case 0x03: c->x[0] = R_OK; return; /* memory permission / attribute: accepted, not enforced */
+    case 0x04: { /* MapMemory(dst x0, src x1, size x2): nn::os uses it to place thread stacks in the stack region.
+                  * The kernel aliases the pages and makes src inaccessible until UnmapMemory, so copying src to
+                  * dst here and back on unmap is equivalent: nothing can use src in between. */
+        uint64_t dst = c->x[0], src = c->x[1], size = c->x[2];
+        if ((dst | src | size) & 0xFFF || dst < STACK_BASE || dst + size > STACK_BASE + STACK_SIZE)
+            hos_stop(c, "MapMemory: unaligned or outside the stack region");
+        if (rt_map_fixed(dst, size)) hos_stop(c, "MapMemory: host mapping failed");
+        memcpy((void *)(uintptr_t)dst, (const void *)(uintptr_t)src, (size_t)size);
+        region_add(dst, size, MS_STACK, 3);
+        c->x[0] = R_OK;
+        return;
+    }
+    case 0x05: { /* UnmapMemory(dst x0, src x1, size x2): copy back, release dst */
+        uint64_t dst = c->x[0], src = c->x[1], size = c->x[2];
+        memcpy((void *)(uintptr_t)src, (const void *)(uintptr_t)dst, (size_t)size);
+        rt_decommit(dst, size);
+        region_set(dst, size, 0, 0, 0);
+        c->x[0] = R_OK;
+        return;
+    }
     case 0x06: { /* QueryMemory(MemoryInfo* x0, -, addr x2) -> w1 page info */
         uint64_t addr = c->x[2], lo = 0, hi = 1ull << 39;
         uint32_t state = MS_FREE, perm = 0;
@@ -191,7 +233,21 @@ static void svc_handler(Cpu *c, uint32_t n, uint64_t pc) {
     case 0x0E: c->x[0] = R_OK; c->x[1] = 0; c->x[2] = 0xF; return; /* GetThreadCoreMask */
     case 0x0F: c->x[0] = R_OK; return;                        /* SetThreadCoreMask */
     case 0x10: c->x[0] = 0; return;                           /* GetCurrentProcessorNumber: core 0 */
-    case 0x11: case 0x12: case 0x16: case 0x17: case 0x19: c->x[0] = R_OK; return;
+    case 0x16: c->x[0] = hos_close_handle((uint32_t)c->x[0]); return; /* CloseHandle */
+    case 0x11: hos_event_set((uint32_t)c->x[0], 1); c->x[0] = R_OK; return;          /* SignalEvent */
+    case 0x12: case 0x17: hos_event_set((uint32_t)c->x[0], 0); c->x[0] = R_OK; return; /* ClearEvent, ResetSignal */
+    case 0x19: c->x[0] = R_OK; return;                                                  /* CancelSynchronization */
+    case 0x18: { /* WaitSynchronization(-, handles x1, count w2, timeout x3) -> w1 index */
+        const uint32_t *h = (const uint32_t *)(uintptr_t)c->x[1];
+        int64_t timeout = (int64_t)c->x[3];
+        for (uint32_t i = 0; i < (uint32_t)c->x[2]; i++) {
+            int st = hos_event_state(h[i]);
+            hos_log("     wait handle %#x: %s\n", h[i], st < 0 ? "not an event" : st ? "signaled" : "clear");
+            if (st == 1) { c->x[0] = R_OK; c->x[1] = i; return; }
+        }
+        if (timeout == 0) { c->x[0] = 0xEA01; return; } /* timed out */
+        hos_stop(c, "WaitSynchronization would block (one thread only, nothing can signal)");
+    }
     case 0x1A: c->x[0] = R_OK; return; /* ArbitrateLock: one thread, so the owner released the lock already */
     case 0x1B: /* ArbitrateUnlock(mutex x0): no waiters, so the mutex word becomes 0 */
         st32(c->x[0], 0);
@@ -202,23 +258,24 @@ static void svc_handler(Cpu *c, uint32_t n, uint64_t pc) {
     case 0x1F: { /* ConnectToNamedPort(-, name x1) -> w1 handle */
         char name[16] = {0};
         memcpy(name, (const void *)(uintptr_t)c->x[1], 12);
-        logf_("     port \"%s\"\n", name);
+        hos_log("     port \"%s\"\n", name);
+        if (strcmp(name, "sm:")) hos_stop(c, "ConnectToNamedPort(\"%s\"): only sm: is known", name);
         c->x[0] = R_OK;
-        c->x[1] = 0xD000;
+        c->x[1] = hos_new_session(hos_service_sm());
         return;
     }
-    case 0x21: { /* SendSyncRequest(handle w0): the IPC message is in the thread local region */
-        const uint32_t *msg = (const uint32_t *)(uintptr_t)c->tpidrro;
-        logf_("     IPC to handle %#x: %08x %08x %08x %08x %08x %08x %08x %08x\n", (unsigned)c->x[0], msg[0], msg[1],
-              msg[2], msg[3], msg[4], msg[5], msg[6], msg[7]);
-        stop(c, "IPC (SendSyncRequest) is not implemented yet");
-    }
+    case 0x21: /* SendSyncRequest(handle w0): the message is in the thread local region */
+        c->x[0] = hos_send_sync_request(c, (uint32_t)c->x[0], (uint8_t *)(uintptr_t)c->tpidrro, 0x100);
+        return;
+    case 0x22: /* SendSyncRequestWithUserBuffer(buffer x0, size x1, handle w2) */
+        c->x[0] = hos_send_sync_request(c, (uint32_t)c->x[2], (uint8_t *)(uintptr_t)c->x[0], (uint32_t)c->x[1]);
+        return;
     case 0x24: c->x[0] = R_OK; c->x[1] = 0x51; return; /* GetProcessId */
     case 0x25: c->x[0] = R_OK; c->x[1] = 1; return;    /* GetThreadId */
-    case 0x26: stop(c, "the guest called Break");
+    case 0x26: hos_stop(c, "the guest called Break");
     case 0x27: { /* OutputDebugString(ptr x0, len x1) */
         uint64_t len = c->x[1] > 4096 ? 4096 : c->x[1];
-        logf_("     debug: %.*s\n", (int)len, (const char *)(uintptr_t)c->x[0]);
+        hos_log("     debug: %.*s\n", (int)len, (const char *)(uintptr_t)c->x[0]);
         c->x[0] = R_OK;
         return;
     }
@@ -228,9 +285,9 @@ static void svc_handler(Cpu *c, uint32_t n, uint64_t pc) {
         if (!ok) {
             char why[96];
             snprintf(why, sizeof why, "GetInfo id %llu is not implemented", (unsigned long long)(uint32_t)c->x[1]);
-            stop(c, why);
+            hos_stop(c, why);
         }
-        logf_("     GetInfo(%u, %llu) = %#llx\n", (unsigned)c->x[1], (unsigned long long)c->x[3], (unsigned long long)v);
+        hos_log("     GetInfo(%u, %llu) = %#llx\n", (unsigned)c->x[1], (unsigned long long)c->x[3], (unsigned long long)v);
         c->x[0] = R_OK;
         c->x[1] = v;
         return;
@@ -239,7 +296,7 @@ static void svc_handler(Cpu *c, uint32_t n, uint64_t pc) {
     default: {
         char why[96];
         snprintf(why, sizeof why, "SVC 0x%02x %s is not implemented yet", n, svc_name(n));
-        stop(c, why);
+        hos_stop(c, why);
     }
     }
 }
@@ -247,7 +304,7 @@ static void svc_handler(Cpu *c, uint32_t n, uint64_t pc) {
 /* ---- rtld callbacks and boot -------------------------------------------------------------------------------- */
 static void cb_flag(Cpu *c) {
     (void)c;
-    logf_("boot: rtld callback 1 (sets rtld's ready flag)\n");
+    hos_log("boot: rtld callback 1 (sets rtld's ready flag)\n");
 }
 
 static void cb_module_inits(Cpu *c) {
@@ -256,15 +313,15 @@ static void cb_module_inits(Cpu *c) {
         const DkrModule *m = &dkr_modules[i];
         if (!m->init) continue;
         char a[96];
-        logf_("boot: DT_INIT of %s at %s\n", m->name, rt_describe(m->init, a, sizeof a));
+        hos_log("boot: DT_INIT of %s at %s\n", m->name, rt_describe(m->init, a, sizeof a));
         rt_call(c, m->init);
-        logf_("boot: DT_INIT of %s returned\n", m->name);
+        hos_log("boot: DT_INIT of %s returned\n", m->name);
     }
     for (int r = 19; r <= 30; r++) c->x[r] = saved.x[r];
     c->sp = saved.sp;
 }
 
-static void cb_returned(Cpu *c) { stop(c, "guest code returned to the host return address"); }
+static void cb_returned(Cpu *c) { hos_stop(c, "guest code returned to the host return address"); }
 
 int main(int argc, char **argv) {
     const char *dir = argc > 1 ? argv[1] : ".";
@@ -283,6 +340,8 @@ int main(int argc, char **argv) {
     }
     region_add(STACK_BASE, stack, MS_STACK, 3);
     region_add(TLR_BASE, 0x1000, MS_THREADLOCAL, 3);
+    g_fixed_used = stack + 0x1000;
+    for (size_t i = 0; i < dkr_module_count; i++) g_fixed_used += dkr_modules[i].size;
     dkr_svc_hook = svc_handler;
 
     static Cpu cpu;
@@ -295,9 +354,9 @@ int main(int argc, char **argv) {
     c->x[3] = rt_hostfn_register("rtld module initializers", cb_module_inits);
     c->x[30] = rt_hostfn_register("return to host", cb_returned);
     char a[96];
-    logf_("boot: calling nn::init::Start at %s (nnMain at %s)\n", rt_describe(dkr_sym_init_start, a, sizeof a),
+    hos_log("boot: calling nn::init::Start at %s (nnMain at %s)\n", rt_describe(dkr_sym_init_start, a, sizeof a),
           rt_describe(dkr_sym_nn_main, a + 48, 48));
     rt_call(c, dkr_sym_init_start);
-    stop(c, "nn::init::Start returned");
+    hos_stop(c, "nn::init::Start returned");
     return 0;
 }

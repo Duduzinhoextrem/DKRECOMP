@@ -49,9 +49,10 @@ aplicado no Unicorn por um hook de interrupção. Os SVCs reais do Horizon perte
 **Estado (2026-10-31): tentativa verificável alcançada.** O `dkctf.exe` carrega os três módulos ligados, chama
 `nn::init::Start` e o SDK inicializa com 18 SVCs atendidas até a primeira mensagem IPC (ao `sm:`), onde para com
 relatório. Próximos passos, nesta ordem:
-1. IPC do Horizon (HIPC/CMIF): ler e escrever mensagens no TLR, descritores de handle, PID e buffers.
-2. `sm:` (Initialize, GetService) e um registro de serviços do host, implementados um a um conforme o log pedir.
-3. Threads (CreateThread/StartThread) com threads do host, sincronização real (mutex, condição, eventos) e o
+1. ~~IPC do Horizon (HIPC/CMIF)~~ **feito** (2026-10-31), com domínios e mensagens de controle.
+2. ~~`sm:` e registro de serviços~~ **feito**; 11 serviços atendem o boot até `CreateThread`. Continua conforme o
+   log pedir.
+3. **Próximo:** threads (CreateThread/StartThread) com threads do host, sincronização real (mutex, condição, eventos) e o
    modelo de núcleos/prioridades.
 4. Os callbacks de inicialização dos módulos (`DT_INIT`) e a chegada ao `nnMain`.
 5. Sistema de arquivos (RomFS combinada) e saves.

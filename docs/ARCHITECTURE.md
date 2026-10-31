@@ -61,6 +61,14 @@ main/sdk NSO ──► decoder ARM64 ──► lifter ──► C gerado ──�
   `nn::init::Start` como o `rtld` faz. Cada SVC é registrada no log; o que não está implementado encerra a execução
   com relatório.
 
+## IPC e serviços
+
+- `runtime/src/ipc.c` lê a mensagem do TLR (ou do buffer do usuário em `SendSyncRequestWithUserBuffer`), despacha
+  para o serviço da sessão (ou para o objeto do domínio) e escreve a resposta no mesmo buffer, como o kernel faz.
+- `runtime/src/services.c` registra os serviços por nome; `sm:GetService` de um nome desconhecido entrega uma
+  sessão que registra o primeiro comando e para. Interfaces devolvidas viram handle numa sessão comum ou objeto
+  num domínio (`hos_reply_interface`).
+
 ## Organização do repositório
 
 | Pasta | Conteúdo | Estado |

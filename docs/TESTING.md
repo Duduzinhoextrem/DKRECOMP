@@ -132,7 +132,14 @@ Executar o boot (o argumento é a pasta com os `.img`; o log também vai para `d
 cd generated/dkctf_v0 && ./dkctf.exe .
 ```
 
-Saída esperada hoje: cada SVC com argumentos, até `boot: STOP ... IPC (SendSyncRequest) is not implemented yet`.
+Ou tudo de uma vez (regenera só o que mudou, compila e roda; ~45 s quando só o runtime mudou):
+
+```bash
+tools/boot.sh 180
+```
+
+Saída esperada hoje: cada SVC e cada comando IPC, até `boot: STOP after 220 SVCs: SVC 0x08 CreateThread is not
+implemented yet`. O teste do formato das mensagens IPC roda no `ctest` (`dkr_ipc_test`).
 
 ## Resultados registrados
 

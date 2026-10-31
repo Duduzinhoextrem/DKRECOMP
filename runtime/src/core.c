@@ -204,6 +204,19 @@ unsigned long rt_last_os_error(void) {
 #endif
 }
 
+void rt_decommit(uint64_t addr, uint64_t size) {
+#ifdef _WIN32
+    /* rt_map_fixed reserves each 64 KiB granule on its own, and a decommit cannot span two reservations. */
+    const uint64_t G = 0x10000, end = addr + size;
+    for (uint64_t g = addr & ~(G - 1); g < end; g += G) {
+        uint64_t lo = g > addr ? g : addr, hi = g + G < end ? g + G : end;
+        VirtualFree((void *)(uintptr_t)lo, (SIZE_T)(hi - lo), MEM_DECOMMIT);
+    }
+#else
+    (void)addr; (void)size;
+#endif
+}
+
 void rt_unmap(uint64_t addr) {
 #ifdef _WIN32
     /* Only releases a range whose reservation started at `addr` (a 64 KiB granule); see rt_map_fixed. */
