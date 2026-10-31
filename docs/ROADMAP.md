@@ -72,6 +72,8 @@ comandos restantes, instruções ainda não suportadas se executadas e demais su
 
 ## MVP 6 — Gameplay
 
+Avaliação inicial da integração gráfica: `docs/GRAPHICS_PORT.md`. Ainda não há back-end incorporado nem frame.
+
 **Critério**: alcançar gameplay controlável, se os problemas técnicos forem resolvidos.
 **Pré-requisitos**: NVN → Vulkan (avaliar reutilização do back-end do TotK e do tradutor de shaders do Ryujinx),
 áudio (`audren:u` + SDL3), entrada (HID → SDL3), sistema de arquivos (RomFS + saves), modelo de núcleos/prioridades.

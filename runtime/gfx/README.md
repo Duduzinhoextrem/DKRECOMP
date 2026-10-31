@@ -1,6 +1,8 @@
 # runtime/gfx
 
-Camada gráfica: NVN (se o jogo usar NVN, hipótese H2) traduzida para Vulkan.
+Camada gráfica: NVN do SDK alvo, com tradução para Vulkan.
 
-**Estado: não iniciado.** Avaliar a reutilização do front-end NVN e do back-end Vulkan do TotK Recomp (MIT) e do
-tradutor de shaders Maxwell do Ryujinx depois do MVP 5. Ver `docs/FEASIBILITY.md`, seção 3.
+**Estado: avaliação iniciada; nenhum frame renderizado.** O boot chega a `nv::InitializeGraphics` e pede
+`nvdrv:Initialize`. O front-end NVN, o back-end Vulkan e o tradutor de shaders ainda não foram incorporados.
+Ver [avaliação e roteiro de integração](../../docs/GRAPHICS_PORT.md), com a revisão examinada, diferenças de ABI,
+dependências e validações necessárias.

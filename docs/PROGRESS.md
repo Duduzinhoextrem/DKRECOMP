@@ -21,6 +21,11 @@ ou os atributos de memória do console.
 O novo limite do boot é a implementação do driver gráfico. A montagem do save não prova leitura/escrita de save;
 nenhuma delas foi solicitada pelo caminho executado até aqui. Ainda não há apresentação de frames, áudio ou entrada.
 
+Avaliação gráfica inicial: `docs/GRAPHICS_PORT.md` registra a revisão TotK examinada, as diferenças de Cpu/ABI,
+o contrato do front-end NVN, dependências e uma rota de integração Vulkan. Só documentação/inspeção: nenhum
+código de terceiros foi incorporado. O loader Vulkan do Windows existe (versão de arquivo 1.4.357.0), mas
+nenhum device ou teste de apresentação foi executado.
+
 ## 2026-10-31 — Usuário pré-selecionado: boot chega ao save
 
 `IApplicationFunctions:PopLaunchParameter(2)` entrega o parâmetro de usuário local por
