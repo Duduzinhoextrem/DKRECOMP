@@ -14,10 +14,6 @@ static int failures;
         }                                                                                            \
     } while (0)
 
-/* The test binary links the runtime, which expects a function table. */
-const DkrFnEntry dkr_fn_table[1] = {{0, 0}};
-const size_t dkr_fn_count = 0;
-
 int main(void) {
     Cpu c = {0};
 

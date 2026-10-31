@@ -2,6 +2,29 @@
 
 Somente o que foi executado e verificado. Cada linha aponta para o comando que a reproduz (`docs/TESTING.md`).
 
+## 2026-10-31 — Primeiro boot: o SDK do jogo inicializa até a primeira mensagem IPC (MVP 5)
+
+Novas peças: `tools/dkrecomp/link.py` (layout e ligação estática dos módulos, o trabalho do `rtld` feito na geração),
+`dkrecomp.gen` para a ExeFS inteira (imagens ligadas, uma tabela de despacho por módulo, `layout.c`, um
+`build.ninja`), descoberta de funções por ponto fixo (desvios diretos para fora da função, ponteiros relocados e
+endereços calculados por `ADR`/`ADRP+ADD`), `runtime/src/loader.c` e `runtime/src/horizon.c` (espaço de endereços,
+thread principal, callbacks do `rtld`, SVCs com log).
+
+**Sequência de boot, lida do `rtld` do próprio jogo:** `nn::init::Start(handle_da_thread_principal,
+endereço_logo_após_o_rtld, cb_flag, cb_inits)`. `cb_flag` grava 1 numa variável do `rtld`; `cb_inits` percorre a
+lista de módulos chamando a inicialização de cada um. O SDK 4.4.0 passa 2 callbacks (o SDK do TotK, 3).
+
+| Medida (ExeFS 1.0.0) | Resultado |
+|---|---|
+| Módulos | `main` @ `0x800000000` (100 MiB), `subsdk0` @ `0x806600000` (7 MiB), `sdk` @ `0x806e00000` (10,5 MiB) |
+| Relocações | só `RELATIVE`, `ABS64`, `GLOB_DAT`, `JUMP_SLOT`; não resolvidos: só símbolos internos do `rtld` e um fraco opcional |
+| Funções geradas | `main` 59.632, `subsdk0` 13.236, `sdk` 28.109 |
+| Geração / compilação (12 processos) / executável | ~40 s / ~9 min / `dkctf.exe` de 106 MB |
+| **Boot** | `nn::init::Start` roda; 18 SVCs atendidas (GetInfo de entropia, regiões, memória; QueryMemory; prioridade/ID da thread; SignalProcessWideKey; ConnectToNamedPort `"sm:"`); callback 1 do `rtld` chamado; **para na 19ª: primeira mensagem IPC ao `sm:`** (cabeçalho `00000004 8000000a 00000001…`, pedido com PID: `sm:Initialize`) |
+
+Confirmado no boot: `x1` é a base do primeiro módulo (o SDK consulta exatamente `0x800000000` com QueryMemory).
+Primeira tentativa: parou num salto de cauda para um stub de PLT não descoberto; levou à descoberta por ponto fixo.
+
 ## 2026-10-31 — O `main` inteiro do jogo compila e liga
 
 Nova ferramenta `tools/dkrecomp/gen.py` (`python -m dkrecomp.gen`): gera o C de um módulo NSO inteiro, dividido em

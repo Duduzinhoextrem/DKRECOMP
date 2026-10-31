@@ -33,6 +33,18 @@
   `QueryPerformanceCounter`; não foi comparado com hardware.
 - Floating point de host: nada de FPCR/arredondamento é aplicado ainda (não há aritmética FP).
 
+## Boot (runtime/src/horizon.c)
+
+- Uma única thread; SVCs de sincronização respondem como se não houvesse disputa. Basta para o boot atual, não para
+  o jogo.
+- O espaço de endereços (regiões de heap, alias, pilha, ASLR) e o tamanho de memória informados ao jogo foram
+  escolhidos pelo DKRecomp; a memória total (`0xCD500000`) é uma aproximação.
+- A entropia de `GetInfo(11)` é fixa, para que as execuções sejam reproduzíveis.
+- A ordem de busca de símbolos na ligação (main, subsdk0, sdk; primeira definição global vence) segue o ELF padrão;
+  que o `rtld` da Nintendo faça igual é hipótese.
+- Funções descobertas por ponteiros podem começar em dados (algumas palavras inválidas no `subsdk0`/`main`); só
+  causam erro se executadas.
+
 ## Módulo gerado
 
 - O endereço base do `main` (`0x800000000`) é **provisório** e fica embutido no C gerado; mudar o layout exige

@@ -221,6 +221,8 @@ def lift_insn(i: Insn, ctx: Ctx) -> List[str]:
     if op == "mrs":
         src = {"tpidr_el0": "c->tpidr", "tpidrro_el0": "c->tpidrro", "nzcv": "c->nzcv", "fpcr": "c->fpcr",
                "fpsr": "c->fpsr", "cntvct_el0": "rt_cntvct()", "cntfrq_el0": "rt_cntfrq()",
+               "cntpct_el0": "rt_cntvct()",  # physical and virtual counters agree (CNTVOFF = 0 on the Switch)
+               "ctr_el0": "0x8444C004ull",   # Cortex-A57 cache type: 64-byte lines (Arm TRM, CTR_EL0 reset value)
                # DC ZVA is not lifted yet, so report it as prohibited (DZP=1, bit 4); block size 2^4 words.
                "dczid_el0": "0x14ull"}[i.sysreg]
         return [wr_(i.rt, 1, src)]

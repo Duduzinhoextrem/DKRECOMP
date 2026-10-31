@@ -134,7 +134,8 @@ def random_fp32(rng: random.Random) -> int:
     return rng.getrandbits(32)
 FIXED = {
     "br": [0xD61F0000], "blr": [0xD63F0000], "ret": [0xD65F0000],
-    "mrs": [0xD53B4200, 0xD53BD040, 0xD53BD060],   # nzcv, tpidr_el0, tpidrro_el0
+    "mrs": [0xD53B4200, 0xD53BD040, 0xD53BD060, 0xD53B0020],   # nzcv, tpidr_el0, tpidrro_el0, ctr_el0
+    "sys_cache": [0xD50B7E20, 0xD50B7A20, 0xD50B7B20, 0xD50B7520],  # dc civac / cvac / cvau, ic ivau
     "msr": [0xD51B4200, 0xD51BD040],                # nzcv, tpidr_el0
     "nop": [0xD503201F], "dmb": [0xD5033BBF],
 }
@@ -152,7 +153,7 @@ def random_word(rng: random.Random, cls: str) -> int:
         w = rng.choice(FIXED[cls])
         if cls in ("br", "blr", "ret"):
             return w | (rng.randrange(31) << 5)
-        if cls in ("mrs", "msr"):
+        if cls in ("mrs", "msr", "sys_cache"):
             return w | rng.randrange(31)
         return w
     mask, val = TEMPLATES[cls]

@@ -9,9 +9,10 @@ from dkrecomp import gen  # noqa: E402
 
 
 def test_ninja_file_escapes_drive_colons_and_parses(tmp_path):
-    for name in ("f_0000.c", "fn_table.c"):
+    (tmp_path / "main").mkdir()
+    for name in ("main/f_0000.c", "main/table.c", "layout.c"):
         (tmp_path / name).write_text("/* empty */\n")
-    gen.write_ninja(str(tmp_path), ["f_0000.c", "fn_table.c"])
+    gen.write_ninja(str(tmp_path), [{"module": "main", "files": ["f_0000.c", "table.c"]}])
     text = (tmp_path / "build.ninja").read_text()
     for line in text.splitlines():
         if line.startswith("build "):
@@ -21,3 +22,10 @@ def test_ninja_file_escapes_drive_colons_and_parses(tmp_path):
     if os.path.exists(ninja):  # ninja must accept the file (dry run, nothing is compiled)
         r = subprocess.run([ninja, "-C", str(tmp_path), "-n"], capture_output=True, text=True)
         assert r.returncode == 0, r.stdout + r.stderr
+
+
+def test_write_if_changed_keeps_mtime(tmp_path):
+    p = tmp_path / "x.c"
+    assert gen.write_if_changed(str(p), "int a;\n")
+    assert not gen.write_if_changed(str(p), "int a;\n")
+    assert gen.write_if_changed(str(p), "int b;\n")

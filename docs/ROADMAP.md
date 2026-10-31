@@ -46,6 +46,18 @@ aplicado no Unicorn por um hook de interrupção. Os SVCs reais do Horizon perte
 
 ## MVP 5 — Primeiro boot
 
+**Estado (2026-10-31): tentativa verificável alcançada.** O `dkctf.exe` carrega os três módulos ligados, chama
+`nn::init::Start` e o SDK inicializa com 18 SVCs atendidas até a primeira mensagem IPC (ao `sm:`), onde para com
+relatório. Próximos passos, nesta ordem:
+1. IPC do Horizon (HIPC/CMIF): ler e escrever mensagens no TLR, descritores de handle, PID e buffers.
+2. `sm:` (Initialize, GetService) e um registro de serviços do host, implementados um a um conforme o log pedir.
+3. Threads (CreateThread/StartThread) com threads do host, sincronização real (mutex, condição, eventos) e o
+   modelo de núcleos/prioridades.
+4. Os callbacks de inicialização dos módulos (`DT_INIT`) e a chegada ao `nnMain`.
+5. Sistema de arquivos (RomFS combinada) e saves.
+
+Critério original:
+
 **Critério**: tentativa verificável de iniciar o jogo real: o `main` recompilado roda a partir do ponto de entrada,
 com log de cada SVC/serviço até o primeiro ponto em que falta implementação.
 **Pré-requisitos**: ~~MVP 2b~~, ~~cobertura SIMD/FP~~, ~~gerar e compilar o `main` inteiro~~ (feitos em

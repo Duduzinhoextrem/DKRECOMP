@@ -173,8 +173,11 @@ def _dp_imm(w, a):
 SYSREGS = {
     # (o0:op1:CRn:CRm:op2) as the 15-bit field of MRS/MSR, see the Arm ARM system register index.
     0x5E82: "tpidr_el0", 0x5E83: "tpidrro_el0", 0x5A10: "nzcv", 0x5A20: "fpcr", 0x5A21: "fpsr",
-    0x5F02: "cntvct_el0", 0x5F00: "cntfrq_el0", 0x5807: "dczid_el0",
+    0x5F02: "cntvct_el0", 0x5F00: "cntfrq_el0", 0x5807: "dczid_el0", 0x5F01: "cntpct_el0", 0x5801: "ctr_el0",
 }
+# SYS cache maintenance by address (op1=3, CRn=7, CRm, op2=1): DC CVAC, DC CVAU, DC CIVAC, IC IVAU. Guest memory
+# is ordinary coherent host memory and code is never executed from it, so these have no effect to model.
+CACHE_OPS = {10: "dc cvac", 11: "dc cvau", 14: "dc civac", 5: "ic ivau"}
 
 
 def _branch_sys(w, a):
@@ -213,6 +216,11 @@ def _branch_sys(w, a):
         if op2 == 2:
             return Insn(a, w, "clrex", {})
         return _u(a, w, "system: barrier variant")
+    if w & 0xFFF80000 == 0xD5080000:  # SYS
+        op1, crn, crm, op2 = bits(w, 16, 3), bits(w, 12, 4), bits(w, 8, 4), bits(w, 5, 3)
+        if op1 == 3 and crn == 7 and op2 == 1 and crm in CACHE_OPS:
+            return Insn(a, w, "nop", {"hint": CACHE_OPS[crm]})
+        return _u(a, w, "sys: not in subset (dc zva or other)")
     if w & 0xFFF00000 == 0xD5300000:  # MRS
         reg = bits(w, 5, 15)
         name = SYSREGS.get(reg)

@@ -49,6 +49,18 @@ main/sdk NSO ──► decoder ARM64 ──► lifter ──► C gerado ──�
 - **Instruções não suportadas** viram `rt_unsupported(c, pc, word)` (aborta com o endereço) e entram no relatório
   do módulo. Nada é "emulado de mentira".
 
+## Carregamento e boot
+
+- **Ligação estática** (`tools/dkrecomp/link.py`): os módulos (`main`, `subsdk*`, `sdk`; o `rtld` não é carregado)
+  recebem bases fixas a partir de `0x800000000`, alinhadas a 2 MiB; relocações e símbolos importados são resolvidos
+  na geração, e cada módulo vira uma imagem pronta (`<módulo>.img`).
+- **Loader** (`runtime/src/loader.c`): mapeia cada módulo na sua base (endereço guest = host), copia a imagem, deixa
+  o `.bss` zerado e registra a tabela de despacho do módulo.
+- **Boot** (`runtime/src/horizon.c`): cria a pilha e a região local da thread principal (TLR, via `TPIDRRO_EL0`),
+  registra os callbacks do `rtld` como funções do host com endereço guest (`rt_hostfn_register`) e chama
+  `nn::init::Start` como o `rtld` faz. Cada SVC é registrada no log; o que não está implementado encerra a execução
+  com relatório.
+
 ## Organização do repositório
 
 | Pasta | Conteúdo | Estado |

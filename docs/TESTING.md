@@ -113,24 +113,26 @@ PYTHONIOENCODING=utf-8 PYTHONPATH=tools .venv/Scripts/python -m dkrecomp.coverag
 O segundo mede quantas instruções de cada módulo o decodificador aceita (cerca de 20 s). Repetir depois de cada
 avanço do lifter.
 
-## Gerar e compilar um módulo inteiro do jogo
+## Gerar, compilar e dar boot no jogo
 
-Gera o C do `main` (funções exportadas mais alvos de `BL` fora delas), um `build.ninja` e liga um executável de
-sonda que confere a tabela de despacho sem executar código do jogo. Tudo vai para `generated/` (ignorada pelo Git):
+Gera o C de todos os módulos da ExeFS, as imagens já ligadas, o `layout.c` e um `build.ninja`; tudo vai para
+`generated/` (ignorada pelo Git). Os endereços dos módulos vêm de `tools/dkrecomp/link.py` e ficam gravados no C.
 
 ```bash
-PYTHONIOENCODING=utf-8 PYTHONPATH=tools .venv/Scripts/python -m dkrecomp.gen user_files/exefs/main --out generated/dkctf_v0/main --base 0x800000000
+PYTHONIOENCODING=utf-8 PYTHONPATH=tools .venv/Scripts/python -m dkrecomp.gen user_files/exefs --out generated/dkctf_v0
 ```
 
 ```bash
-.venv/Scripts/ninja -C generated/dkctf_v0/main -j 16
+.venv/Scripts/ninja -C generated/dkctf_v0 -j 12
 ```
+
+Executar o boot (o argumento é a pasta com os `.img`; o log também vai para `dkctf_boot.log`):
 
 ```bash
-generated/dkctf_v0/main/probe.exe
+cd generated/dkctf_v0 && ./dkctf.exe .
 ```
 
-O endereço base (`--base`) fica gravado no C gerado; o runtime terá de carregar o módulo nesse endereço.
+Saída esperada hoje: cada SVC com argumentos, até `boot: STOP ... IPC (SendSyncRequest) is not implemented yet`.
 
 ## Resultados registrados
 

@@ -1,16 +1,20 @@
-"""Generate C for a whole NSO module and a Ninja build for it.
+"""Generate C for a whole ExeFS, the linked module images and a Ninja build of the native program.
 
-    python -m dkrecomp.gen user_files/exefs/main --out generated/dkctf_v0/main --base 0x800000000
+    python -m dkrecomp.gen user_files/exefs --out generated/dkctf_v0
 
-Function starts: the module's exported FUNC symbols, plus every BL target that falls outside them (PLT stubs and
-other unnamed code), which runs until the next known start. The guest addresses baked into the C are
-module offset + `--base`, so the runtime must load the module at that base.
+Layout and linking come from dkrecomp.link (rtld's job, done at build time). For each module (main, subsdk*,
+sdk) the function starts are its exported FUNC symbols, every BL target outside them, and every address in its
+.text that a relocation stores (vtables, callbacks); unnamed starts run until the next known start or the end of
+the function that contains them.
 
-Output (all derived from the game: it stays out of version control):
-    <out>/f_NNNN.c        lifted functions, `--per-file` per translation unit
-    <out>/fn_table.c      the sorted dispatch table (dkr_fn_table)
-    <out>/manifest.json   counts, base, unsupported sites, timing
-    <out>/build.ninja     compiles everything and links <out>/probe.exe with the runtime
+Output (all derived from the game, so it stays out of version control):
+    <out>/<module>/f_NNNN.c   lifted functions
+    <out>/<module>/table.c    dkr_fn_table_<module>, sorted by address
+    <out>/<module>.img        the linked module image (text|ro|data, relocations applied; bss not stored)
+    <out>/layout.c            module descriptors and the boot symbols for the runtime
+    <out>/manifest.json       counts and timings
+    <out>/build.ninja         compiles everything and links <out>/dkctf.exe with the runtime
+Files whose content did not change are not rewritten, so Ninja only recompiles what changed.
 """
 from __future__ import annotations
 
@@ -23,68 +27,142 @@ import re
 import struct
 import sys
 import time
-from typing import Dict, List, Tuple
+from typing import Dict, List, Set, Tuple
 
-from .arm64.decoder import decode
+from . import link as linker
 from .coverage import function_ranges
 from .formats import nso as nso_fmt
 from .recomp.lifter import C_PRELUDE, Function, fname, lift_function
 
 CALL_RE = re.compile(r"\bf_([0-9a-f]+)\(c\)")
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+BOOT_SYMBOLS = {"init_start": "_ZN2nn4init5StartEmmPFvvES2_", "nn_main": "nnMain"}
+RUNTIME_SOURCES = ["core.c", "loader.c", "horizon.c"]
 
 
-def discover(m: nso_fmt.Nso) -> List[Tuple[int, int, str]]:
-    """(start, end, name) offsets: exported functions plus BL targets outside them."""
+def write_if_changed(path: str, text: str) -> bool:
+    data = text.encode("utf-8")
+    if os.path.exists(path) and open(path, "rb").read() == data:
+        return False
+    with open(path, "wb") as fh:
+        fh.write(data)
+    return True
+
+
+def _sx(v: int, n: int) -> int:
+    return v - (1 << n) if v & (1 << (n - 1)) else v
+
+
+def branch_target(w: int, pc: int):
+    """Target of a direct branch (B, BL, B.cond, CBZ/CBNZ, TBZ/TBNZ), or None."""
+    if w & 0x7C000000 == 0x14000000:
+        return pc + (_sx(w & 0x3FFFFFF, 26) << 2)
+    if w & 0xFF000010 == 0x54000000 or w & 0x7E000000 == 0x34000000:
+        return pc + (_sx((w >> 5) & 0x7FFFF, 19) << 2)
+    if w & 0x7E000000 == 0x36000000:
+        return pc + (_sx((w >> 5) & 0x3FFF, 14) << 2)
+    return None
+
+
+def materialised_code_addresses(text: bytes, t_lo: int, t_hi: int) -> Set[int]:
+    """Code addresses built with ADR, or ADRP followed (within 4 instructions) by ADD of the same register:
+    position-independent code passes function pointers this way, without a relocation."""
+    out = set()
+    words = struct.unpack(f"<{len(text) // 4}I", text[:len(text) & ~3])
+    for k, w in enumerate(words):
+        pc = t_lo + 4 * k
+        if w & 0x9F000000 == 0x10000000:  # ADR
+            tgt = pc + _sx(((w >> 5) & 0x7FFFF) << 2 | (w >> 29) & 3, 21)
+        elif w & 0x9F000000 == 0x90000000:  # ADRP
+            page = (pc & ~0xFFF) + (_sx(((w >> 5) & 0x7FFFF) << 2 | (w >> 29) & 3, 21) << 12)
+            rd, tgt = w & 31, None
+            for j in range(k + 1, min(k + 5, len(words))):
+                a = words[j]
+                if a & 0xFFC00000 == 0x91000000 and (a >> 5) & 31 == rd:  # ADD Xd, Xrd, #imm12 (no shift)
+                    tgt = page + ((a >> 10) & 0xFFF)
+                    break
+            if tgt is None:
+                continue
+        else:
+            continue
+        if t_lo <= tgt < t_hi and tgt % 4 == 0:
+            out.add(tgt)
+    return out
+
+
+def discover(m: nso_fmt.Nso, extra_starts: Set[int]) -> List[Tuple[int, int, str]]:
+    """(start, end, name) as module offsets.
+
+    Starts: exported functions, `extra_starts` (relocated code pointers), code addresses built by ADR/ADRP+ADD,
+    and, to a fixpoint, every direct branch target that lies outside the function the branch is in. After the
+    fixpoint each direct branch lands inside its own function or on a known start, so the lifter never needs
+    rt_dispatch for a direct branch. Unnamed functions run to the next start (or the next named function);
+    a start inside a named function is lifted from there to that function's end."""
     t = m.seg("text")
+    t_lo, t_hi = t.mem_off, t.mem_off + t.size
+    text = m.image[t_lo:t_hi]
+    words = struct.unpack(f"<{len(text) // 4}I", text[:len(text) & ~3])
     named = function_ranges(m)
-    starts = sorted({s for s, _, _ in named})
-    covered = bytearray(t.size // 4 + 1)
+    named_starts = {s for s, _, _ in named}
+    covered = bytearray(len(words) + 1)
+    container: Dict[int, int] = {}  # word index -> end of the named function covering it
     for s, e, _ in named:
-        for k in range((s - t.mem_off) // 4, min((e - t.mem_off) // 4, len(covered))):
+        for k in range((s - t_lo) // 4, min((e - t_lo) // 4, len(words))):
             covered[k] = 1
-    extra = set()
-    text = m.image[t.mem_off:t.mem_off + t.size]
-    for off in range(0, len(text) - 3, 4):
-        w = struct.unpack_from("<I", text, off)[0]
-        if w & 0xFC000000 == 0x94000000:  # BL
-            imm = w & 0x03FFFFFF
-            tgt = t.mem_off + off + ((imm - (1 << 26) if imm & (1 << 25) else imm) << 2)
-            if t.mem_off <= tgt < t.mem_off + t.size and not covered[(tgt - t.mem_off) // 4]:
-                extra.add(tgt)
-    all_starts = sorted(set(starts) | extra)
-    out = list(named)
-    for s in sorted(extra):
-        i = bisect.bisect_right(all_starts, s)
-        end = all_starts[i] if i < len(all_starts) else t.mem_off + t.size
-        k = (s - t.mem_off) // 4  # stop at the next covered word too
-        e = s
-        while e < end and not covered[(e - t.mem_off) // 4]:
-            e += 4
-        out.append((s, e, f"sub_{s:x}"))
-    return sorted(out)
+            container[k] = max(container.get(k, 0), e)
+    extra = ({a for a in extra_starts if t_lo <= a < t_hi and a % 4 == 0} |
+             materialised_code_addresses(text, t_lo, t_hi)) - named_starts
+
+    def ranges():
+        all_starts = sorted(named_starts | extra)
+        out = list(named)
+        for s in sorted(extra):
+            k = (s - t_lo) // 4
+            if covered[k]:
+                e = container[k]
+            else:
+                i = bisect.bisect_right(all_starts, s)
+                end = all_starts[i] if i < len(all_starts) else t_hi
+                e = s
+                while e < end and not covered[(e - t_lo) // 4]:
+                    e += 4
+            out.append((s, e, f"sub_{s:x}"))
+        return out
+
+    scanned: Dict[int, int] = {}  # start -> end of the range last scanned
+    while True:
+        todo = [(s, e) for s, e, _ in ranges() if scanned.get(s) != e]  # new functions, or ends that moved
+        if not todo:
+            break
+        new = set()
+        for s, e in todo:
+            scanned[s] = e
+            for a in range(s, min(e, t_hi), 4):
+                tgt = branch_target(words[(a - t_lo) // 4], a)
+                if tgt is not None and not (s <= tgt < e) and t_lo <= tgt < t_hi and tgt not in named_starts:
+                    new.add(tgt)
+        extra |= new
+    return sorted(ranges())
 
 
-def generate(path: str, out: str, base: int, per_file: int) -> Dict:
+def lift_module(lm: linker.LinkedModule, out_dir: str, per_file: int) -> Dict:
     t0 = time.time()
-    m = nso_fmt.parse(open(path, "rb").read())
-    if not all(s.hash_ok for s in m.segments):
-        raise SystemExit(f"{path}: segment hash mismatch; refusing to lift a damaged module")
-    funcs = discover(m)
-    image = m.image
-    os.makedirs(out, exist_ok=True)
+    m = lm.nso
+    seeds = {a - lm.base for a in lm.code_pointer_targets}
+    funcs = discover(m, seeds)
+    os.makedirs(out_dir, exist_ok=True)
+    base = lm.base
     starts = {base + s for s, _, _ in funcs}
     is_fn = starts.__contains__
     reasons = collections.Counter()
-    files = []
-    lifted_words = 0
+    files, written, lifted_words = [], 0, 0
+    image = bytes(lm.nso.image)  # code is never relocated, so the unrelocated image serves for lifting
     for chunk_i in range(0, len(funcs), per_file):
         chunk = funcs[chunk_i:chunk_i + per_file]
         body: List[str] = []
         defined = set()
         for s, e, name in chunk:
             fn = Function(base + s, base + e, name[:80].replace("*/", ""))
-            # lift_function reads code bytes relative to `base`, so hand it the image with the base applied.
             lines, unsup = lift_function(image, base, fn, {"is_function": is_fn})
             body += lines
             body.append("")
@@ -94,45 +172,54 @@ def generate(path: str, out: str, base: int, per_file: int) -> Dict:
                 reasons[i.f["reason"]] += 1
         called = {int(x, 16) for x in CALL_RE.findall("\n".join(body))} - defined
         name = f"f_{chunk_i // per_file:04d}.c"
-        with open(os.path.join(out, name), "w", encoding="utf-8", newline="\n") as fh:
-            fh.write(C_PRELUDE)
-            fh.write("".join(f"void {fname(a)}(Cpu *c);\n" for a in sorted(called | defined)))
-            fh.write("\n".join(body))
+        text = C_PRELUDE + "".join(f"void {fname(a)}(Cpu *c);\n" for a in sorted(called | defined)) + "\n".join(body)
+        written += write_if_changed(os.path.join(out_dir, name), text)
         files.append(name)
-        print(f"\r  lifted {min(chunk_i + per_file, len(funcs))}/{len(funcs)} functions", end="",
+        print(f"\r  {lm.name}: lifted {min(chunk_i + per_file, len(funcs))}/{len(funcs)} functions", end="",
               file=sys.stderr, flush=True)
     print(file=sys.stderr)
-    with open(os.path.join(out, "fn_table.c"), "w", encoding="utf-8", newline="\n") as fh:
-        fh.write(C_PRELUDE + '#include "dkr/rt.h"\n')
-        uniq = sorted(starts)
-        fh.write("".join(f"void {fname(a)}(Cpu *c);\n" for a in uniq))
-        fh.write("const DkrFnEntry dkr_fn_table[] = {\n")
-        fh.write("".join(f"    {{0x{a:x}ull, {fname(a)}}},\n" for a in uniq))
-        fh.write("};\n")
-        fh.write(f"const size_t dkr_fn_count = {len(uniq)};\n")
-        fh.write(f"const uint64_t dkr_module_base = 0x{base:x}ull;\n")
-    files.append("fn_table.c")
-    manifest = {
-        "module": os.path.basename(path), "build_id": m.build_id, "base": hex(base),
-        "functions": len(funcs), "named": sum(1 for f in funcs if not f[2].startswith("sub_")),
-        "bl_target_functions": sum(1 for f in funcs if f[2].startswith("sub_")),
-        "lifted_words": lifted_words, "files": len(files), "unsupported_sites": dict(reasons),
-        "lift_seconds": round(time.time() - t0, 1),
-    }
-    with open(os.path.join(out, "manifest.json"), "w") as fh:
-        json.dump(manifest, fh, indent=2)
-    write_ninja(out, files)
-    return manifest
+    uniq = sorted(starts)
+    table = (C_PRELUDE + '#include "dkr/rt.h"\n' + "".join(f"void {fname(a)}(Cpu *c);\n" for a in uniq) +
+             f"const DkrFnEntry dkr_fn_table_{lm.name}[] = {{\n" +
+             "".join(f"    {{0x{a:x}ull, {fname(a)}}},\n" for a in uniq) + "};\n" +
+             f"const size_t dkr_fn_count_{lm.name} = {len(uniq)};\n")
+    written += write_if_changed(os.path.join(out_dir, "table.c"), table)
+    files.append("table.c")
+    return {"module": lm.name, "base": hex(base), "size": hex(lm.size), "functions": len(funcs),
+            "named": sum(1 for f in funcs if not f[2].startswith("sub_")),
+            "discovered": sum(1 for f in funcs if f[2].startswith("sub_")), "lifted_words": lifted_words,
+            "files": files, "files_rewritten": written, "unsupported_sites": dict(reasons),
+            "unresolved_symbols": lm.unresolved, "relocations": lm.reloc_counts,
+            "lift_seconds": round(time.time() - t0, 1)}
 
 
-def write_ninja(out: str, files: List[str]) -> None:
+def write_layout(mods: List[linker.LinkedModule], syms: Dict[str, int], npdm_stack: int, out: str) -> None:
+    lines = [C_PRELUDE, '#include "dkr/rt.h"', ""]
+    for lm in mods:
+        lines.append(f"extern const DkrFnEntry dkr_fn_table_{lm.name}[];")
+        lines.append(f"extern const size_t dkr_fn_count_{lm.name};")
+    lines.append("const DkrModule dkr_modules[] = {")
+    for lm in mods:
+        t_lo, t_hi = lm.text
+        lines.append(f'    {{"{lm.name}", 0x{lm.base:x}ull, 0x{lm.size:x}ull, 0x{len(lm.image):x}ull, '
+                     f'0x{t_lo:x}ull, 0x{t_hi:x}ull, 0x{lm.init or 0:x}ull, dkr_fn_table_{lm.name}, '
+                     f'&dkr_fn_count_{lm.name}}},')
+    lines.append("};")
+    lines.append(f"const size_t dkr_module_count = {len(mods)};")
+    for key, sym in BOOT_SYMBOLS.items():
+        if sym not in syms:
+            raise SystemExit(f"boot symbol {sym} is not exported by any module")
+        lines.append(f"const uint64_t dkr_sym_{key} = 0x{syms[sym]:x}ull; /* {sym} */")
+    lines.append(f"const uint64_t dkr_main_thread_stack_size = 0x{npdm_stack:x}ull; /* main.npdm */")
+    write_if_changed(os.path.join(out, "layout.c"), "\n".join(lines) + "\n")
+
+
+def write_ninja(out: str, modules: List[Dict]) -> None:
     py = sys.executable.replace("\\", "/")
     inc = os.path.join(ROOT, "runtime", "include").replace("\\", "/")
-    # Paths in build statements must escape ':' (ninja syntax), e.g. C$:/Users/...
-    rt = os.path.join(ROOT, "runtime", "src", "core.c").replace("\\", "/").replace(":", "$:")
-    probe = os.path.join(ROOT, "runtime", "src", "probe_main.c").replace("\\", "/").replace(":", "$:")
+    esc = lambda p: p.replace("\\", "/").replace(":", "$:")  # ':' must be escaped in build statements
     lines = [
-        "# Generated by dkrecomp.gen. Compiles the lifted module with Zig's Clang (see docs/TESTING.md).",
+        "# Generated by dkrecomp.gen. Compiles the lifted modules with Zig's Clang (see docs/TESTING.md).",
         f"cc = {py} -m ziglang cc -target x86_64-windows-gnu",
         "cflags = -O1 -std=c11 -mfma -ffp-contract=off -fno-math-errno -w",
         f"inc = -I{inc}",
@@ -144,26 +231,52 @@ def write_ninja(out: str, files: List[str]) -> None:
         "  description = LINK $out",
     ]
     objs = []
-    for f in files:
-        o = f"obj/{f[:-2]}.o"
+    for mod in modules:
+        for f in mod["files"]:
+            o = f"obj/{mod['module']}/{f[:-2]}.o"
+            objs.append(o)
+            lines.append(f"build {o}: cc {mod['module']}/{f}")
+    for src in RUNTIME_SOURCES:
+        o = f"obj/rt/{src[:-2]}.o"
         objs.append(o)
-        lines.append(f"build {o}: cc {f}")
-    lines.append(f"build obj/core.o: cc {rt}")
-    lines.append(f"build obj/probe_main.o: cc {probe}")
-    lines.append(f"build probe.exe: link {' '.join(objs)} obj/core.o obj/probe_main.o")
-    lines.append("default probe.exe")
-    with open(os.path.join(out, "build.ninja"), "w", newline="\n") as fh:
-        fh.write("\n".join(lines) + "\n")
+        lines.append(f"build {o}: cc {esc(os.path.join(ROOT, 'runtime', 'src', src))}")
+    objs.append("obj/layout.o")
+    lines.append("build obj/layout.o: cc layout.c")
+    lines.append(f"build dkctf.exe: link {' '.join(objs)}")
+    lines.append("default dkctf.exe")
+    write_if_changed(os.path.join(out, "build.ninja"), "\n".join(lines) + "\n")
+
+
+def generate(exefs: str, out: str, per_file: int) -> Dict:
+    from .formats import npdm
+    t0 = time.time()
+    mods = linker.load_layout(exefs)
+    syms = linker.link(mods)
+    os.makedirs(out, exist_ok=True)
+    stack = npdm.parse(open(os.path.join(exefs, "main.npdm"), "rb").read()).main_thread_stack_size
+    results = []
+    for lm in mods:
+        results.append(lift_module(lm, os.path.join(out, lm.name), per_file))
+        img = os.path.join(out, f"{lm.name}.img")
+        if not os.path.exists(img) or open(img, "rb").read() != bytes(lm.image):
+            with open(img, "wb") as fh:
+                fh.write(lm.image)
+    write_layout(mods, syms, stack, out)
+    write_ninja(out, results)
+    manifest = {"modules": [{k: v for k, v in r.items() if k != "files"} for r in results],
+                "seconds": round(time.time() - t0, 1)}
+    with open(os.path.join(out, "manifest.json"), "w") as fh:
+        json.dump(manifest, fh, indent=2)
+    return manifest
 
 
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("nso")
+    ap.add_argument("exefs")
     ap.add_argument("--out", required=True)
-    ap.add_argument("--base", type=lambda v: int(v, 0), default=0x800000000)
     ap.add_argument("--per-file", type=int, default=600)
     a = ap.parse_args(argv)
-    print(json.dumps(generate(a.nso, a.out, a.base, a.per_file), indent=2))
+    print(json.dumps(generate(a.exefs, a.out, a.per_file), indent=2))
     return 0
 
 

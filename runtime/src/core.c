@@ -11,25 +11,96 @@
 
 DkrSvcHook dkr_svc_hook = NULL;
 
-GuestFn rt_lookup(uint64_t addr) {
-    size_t lo = 0, hi = dkr_fn_count;
-    while (lo < hi) {
-        size_t mid = lo + (hi - lo) / 2;
-        if (dkr_fn_table[mid].addr < addr) lo = mid + 1;
-        else hi = mid;
+/* ---- dispatch tables ------------------------------------------------------------------------------------- */
+#define MAX_TABLES 32
+static struct { const DkrFnEntry *t; size_t n; uint64_t lo, hi; } g_tables[MAX_TABLES];
+static size_t g_ntables;
+
+void rt_register_table(const DkrFnEntry *table, size_t count, uint64_t lo, uint64_t hi) {
+    if (g_ntables == MAX_TABLES) {
+        fprintf(stderr, "dkr: too many dispatch tables\n");
+        abort();
     }
-    if (lo < dkr_fn_count && dkr_fn_table[lo].addr == addr) return dkr_fn_table[lo].fn;
+    g_tables[g_ntables].t = table;
+    g_tables[g_ntables].n = count;
+    g_tables[g_ntables].lo = lo;
+    g_tables[g_ntables].hi = hi;
+    g_ntables++;
+}
+
+/* ---- host functions with guest addresses ---------------------------------------------------------------- */
+#define MAX_HOSTFN 1024
+static struct { const char *name; GuestFn fn; } g_hostfn[MAX_HOSTFN];
+static size_t g_nhostfn;
+
+uint64_t rt_hostfn_register(const char *name, GuestFn fn) {
+    if (g_nhostfn == MAX_HOSTFN) {
+        fprintf(stderr, "dkr: too many host functions\n");
+        abort();
+    }
+    g_hostfn[g_nhostfn].name = name;
+    g_hostfn[g_nhostfn].fn = fn;
+    return DKR_HOSTFN_BASE + 4 * g_nhostfn++;
+}
+
+const char *rt_hostfn_name(uint64_t addr) {
+    uint64_t k = (addr - DKR_HOSTFN_BASE) / 4;
+    return addr >= DKR_HOSTFN_BASE && k < g_nhostfn ? g_hostfn[k].name : NULL;
+}
+
+GuestFn rt_lookup(uint64_t addr) {
+    for (size_t i = 0; i < g_ntables; i++) {
+        if (addr < g_tables[i].lo || addr >= g_tables[i].hi) continue;
+        const DkrFnEntry *t = g_tables[i].t;
+        size_t lo = 0, hi = g_tables[i].n;
+        while (lo < hi) {
+            size_t mid = lo + (hi - lo) / 2;
+            if (t[mid].addr < addr) lo = mid + 1;
+            else hi = mid;
+        }
+        if (lo < g_tables[i].n && t[lo].addr == addr) return t[lo].fn;
+    }
+    if (addr >= DKR_HOSTFN_BASE && (addr - DKR_HOSTFN_BASE) % 4 == 0 && (addr - DKR_HOSTFN_BASE) / 4 < g_nhostfn)
+        return g_hostfn[(addr - DKR_HOSTFN_BASE) / 4].fn;
     return NULL;
+}
+
+/* ---- module names for logs ---------------------------------------------------------------------------------- */
+static const DkrModule *g_mods;
+static size_t g_nmods;
+
+void rt_set_modules(const DkrModule *mods, size_t count) {
+    g_mods = mods;
+    g_nmods = count;
+}
+
+const char *rt_describe(uint64_t addr, char *buf, size_t n) {
+    for (size_t i = 0; i < g_nmods; i++)
+        if (addr >= g_mods[i].base && addr < g_mods[i].base + g_mods[i].size) {
+            snprintf(buf, n, "%s+%#llx", g_mods[i].name, (unsigned long long)(addr - g_mods[i].base));
+            return buf;
+        }
+    const char *h = rt_hostfn_name(addr);
+    if (h) snprintf(buf, n, "<host %s>", h);
+    else snprintf(buf, n, "%#llx", (unsigned long long)addr);
+    return buf;
 }
 
 void rt_dispatch(Cpu *c) {
     GuestFn f = rt_lookup(c->pc);
     if (!f) {
-        fprintf(stderr, "dkr: indirect branch to %#llx, which is not a lifted function (lr=%#llx)\n",
-                (unsigned long long)c->pc, (unsigned long long)c->x[30]);
+        char a[96], l[96];
+        fprintf(stderr, "dkr: indirect branch to %s, which is not a lifted function (lr=%s)\n",
+                rt_describe(c->pc, a, sizeof a), rt_describe(c->x[30], l, sizeof l));
+        fflush(stderr);
         abort();
     }
     f(c);
+}
+
+void rt_call(Cpu *c, uint64_t addr) {
+    c->pc = addr;
+    rt_dispatch(c);
 }
 
 void rt_svc(Cpu *c, uint32_t imm, uint64_t pc) {

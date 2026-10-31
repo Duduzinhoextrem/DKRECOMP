@@ -18,6 +18,8 @@
 #define STATE_WORDS 100
 
 extern GuestFn dkr_case_table[];
+extern const DkrFnEntry dkr_fn_table[];   /* the generated test module's dispatch table */
+extern const size_t dkr_fn_count;
 extern const size_t dkr_case_count;
 
 typedef struct Region {
@@ -46,6 +48,7 @@ static void test_svc_hook(Cpu *c, uint32_t imm, uint64_t pc) {
 int main(int argc, char **argv) {
     if (argc != 3) die("usage: harness <in> <out>");
     dkr_svc_hook = test_svc_hook;
+    rt_register_table(dkr_fn_table, dkr_fn_count, 0, ~0ull);
     FILE *in = fopen(argv[1], "rb"), *out = fopen(argv[2], "wb");
     if (!in || !out) die("cannot open files");
     char magic[4];

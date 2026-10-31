@@ -8,18 +8,37 @@
 extern "C" {
 #endif
 
-/* One lifted guest function. Generated code defines dkr_fn_table, sorted by `addr`. */
+/* One lifted guest function. Each generated module provides a table sorted by `addr`. */
 typedef struct DkrFnEntry {
     uint64_t addr;
     GuestFn fn;
 } DkrFnEntry;
 
-extern const DkrFnEntry dkr_fn_table[];
-extern const size_t dkr_fn_count;
-
+/* Indirect branches look addresses up in the registered tables, then in the host functions. */
+void rt_register_table(const DkrFnEntry *table, size_t count, uint64_t lo, uint64_t hi);
 GuestFn rt_lookup(uint64_t addr);
 
-/* Hooks the host may install. Without a hook, SVC/BRK/unsupported instructions print and abort. */
+/* Host functions callable from guest code: rt_hostfn_register returns a guest address (outside every module)
+ * whose indirect call runs `fn`. */
+#define DKR_HOSTFN_BASE 0x7F00000000ull
+uint64_t rt_hostfn_register(const char *name, GuestFn fn);
+const char *rt_hostfn_name(uint64_t addr);
+
+/* Call guest code from the host: x0..x7 = args, then returns when the guest function returns. */
+void rt_call(Cpu *c, uint64_t addr);
+
+/* A generated, statically linked module (tools/dkrecomp/gen.py writes the table of these in layout.c). */
+typedef struct DkrModule {
+    const char *name;
+    uint64_t base, size;       /* mapped range: image + bss */
+    uint64_t image_size;       /* bytes stored in <name>.img */
+    uint64_t text_lo, text_hi;
+    uint64_t init;             /* DT_INIT, 0 if none */
+    const DkrFnEntry *table;
+    const size_t *count;
+} DkrModule;
+
+/* SVC dispatch: the Horizon layer installs its handler here. */
 typedef void (*DkrSvcHook)(Cpu *c, uint32_t imm, uint64_t pc);
 extern DkrSvcHook dkr_svc_hook;
 
@@ -27,6 +46,13 @@ extern DkrSvcHook dkr_svc_hook;
 int rt_map_fixed(uint64_t addr, uint64_t size);
 void rt_unmap(uint64_t addr);
 unsigned long rt_last_os_error(void);
+
+/* Load every module's image at its base and register its dispatch table. Returns 0 on success. */
+int rt_load_modules(const DkrModule *mods, size_t count, const char *dir);
+
+/* Describe a guest address ("main+0x1234") for logs. */
+const char *rt_describe(uint64_t addr, char *buf, size_t n);
+void rt_set_modules(const DkrModule *mods, size_t count);
 
 #ifdef __cplusplus
 }
