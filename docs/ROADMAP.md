@@ -57,7 +57,9 @@ Continuar guiado pelo primeiro comando ou salto pendente do log:
 5. **RomFS base 1.0.0 extraída e reempacotada**: 83 arquivos, parser independente aceita a imagem. IStorage
    validado com dados sintéticos e a leitura do header real no boot; implementar saves e demais comandos conforme o log.
 6. **Usuário pré-selecionado implementado e validado** (`PopLaunchParameter(2)`): boot chega a 267 SVCs.
-   **Próximo:** abrir o save (`fsp-srv` 51), com IFileSystem/IFile persistentes no host.
+7. **Montagem do save de conta implementada** (`fsp-srv` 51); IFileSystem/IFile ainda sem operações de arquivo.
+   **Próximo:** `nvdrv:Initialize` (3), pedido pela inicialização gráfica após criar transfer memory de 8 MiB.
+   Boot medido em **292 SVCs**, com quatro threads guest iniciadas no total.
 
 Critério original:
 

@@ -75,6 +75,8 @@ main/sdk NSO ──► decoder ARM64 ──► lifter ──► C gerado ──�
   num domínio (`hos_reply_interface`).
 - Uma trava do kernel serializa as SVCs, inclusive o tratamento de IPC. As sessões clonadas de um domínio
   compartilham sua tabela de objetos, liberada quando a última sessão é fechada.
+- Objetos Service contam as referências de sessões e domínios; um destrutor opcional libera os recursos do
+  objeto após a última referência. A IFileSystem de save usa esse mecanismo para liberar seu estado.
 - O applet manager fornece o usuário local por `PopLaunchParameter(2)`, numa IStorage de 0x88 bytes;
   Open devolve IStorageAccessor, com GetSize e Read. Esse parâmetro é consumido uma vez e usa o mesmo UID de
   `acc:u0`, permitindo que o SDK abra o usuário antes de montar o save.
@@ -99,6 +101,9 @@ main/sdk NSO ──► decoder ARM64 ──► lifter ──► C gerado ──�
   Lê a imagem no disco por offsets de 64 bits; o próprio SDK guest procura os arquivos nas tabelas RomFS.
 - A imagem padrão é `user_files/romfs.bin`, relativa ao layout gerado. `DKR_ROMFS` ou o terceiro argumento do
   executável seleciona outra imagem. Nenhuma imagem ou arquivo do jogo faz parte do código versionado.
+- `runtime/src/save.c` monta saves de conta em `user_files/saves/<program-id>/<uid>/` (ou `DKR_SAVE_ROOT`).
+  Normaliza a raiz absoluta, cria seus componentes e recusa reparse points. Por enquanto devolve a IFileSystem
+  sem operações de arquivo: um comando dessas operações ainda para explicitamente com relatório.
 - Formato conferido com os [tipos de RomFS do libnx](https://github.com/switchbrew/libnx/blob/master/nx/include/switch/runtime/devices/romfs_dev.h),
   o [leitor do libnx](https://github.com/switchbrew/libnx/blob/master/nx/source/runtime/devices/romfs_dev.c) e o parser local `nstool`.
 
@@ -115,7 +120,7 @@ main/sdk NSO ──► decoder ARM64 ──► lifter ──► C gerado ──�
 | `tools/dkrecomp/testing/` | Infra de testes diferenciais (Unicorn × harness) e gerador de casos | Pronto |
 | `runtime/include/dkr/` | `cpu.h` (estado e auxiliares para o código gerado), `rt.h` (API do host) | Pronto |
 | `runtime/src/core.c` | Despacho, CAS, barreiras, mapeamento fixo, contador de sistema, tratadores de trap | Pronto |
-| `runtime/src/horizon.c`, `kernel.c`, `ipc.c`, `services.c`, `fs.c` | Boot, SVCs, threads, sincronização, IPC, serviços e RomFS | Parcial, guiado pelo boot |
+| `runtime/src/horizon.c`, `kernel.c`, `ipc.c`, `services.c`, `fs.c`, `save.c` | Boot, SVCs, threads, sincronização, IPC, serviços, RomFS e montagem de save | Parcial, guiado pelo boot |
 | `runtime/gfx/` | NVN → Vulkan | *(planejado)* |
 | `runtime/audio/`, `runtime/input/`, `runtime/config/` | Áudio (SDL3), entrada, configuração | *(planejado)* |
 | `tests/python/` | Testes unitários (formatos, decodificador × Capstone) | Pronto |

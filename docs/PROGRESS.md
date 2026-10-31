@@ -2,6 +2,25 @@
 
 Somente o que foi executado e verificado. Cada linha aponta para o comando que a reproduz (`docs/TESTING.md`).
 
+## 2026-10-31 — Montagem do save: inicialização gráfica alcança nvdrv
+
+`fsp-srv:OpenSaveDataFileSystem` (51) cria/abre a pasta do save de conta sob
+`user_files/saves/<program-id>/<uid>/` e devolve uma IFileSystem. A criação verifica os componentes do caminho e
+recusa reparse points; não há operações de arquivo implementadas ainda. `DKR_SAVE_ROOT` seleciona outra raiz.
+Objetos IPC dinâmicos agora têm contagem de referências e destrutor, inclusive quando compartilhados por domínios.
+
+`CreateTransferMemory` (SVC 0x15) registra um intervalo guest existente, tamanho e permissão num handle, que pode
+ser consultado por serviços e fechado. Valida alinhamento, tamanho e permissões; não aplica proteção de páginas
+ou os atributos de memória do console.
+
+| Evidência | Resultado |
+|---|---|
+| Build nativo + boot de 30 s | **292 SVCs**: monta o save, inicia `0xc002` e `0xc003` além da `0xc001`, cria transfer memory de **8 MiB**; `nv::InitializeGraphics` pede **`nvdrv:Initialize` (3)**, onde para por serviço ausente |
+| CMake/ctest | **4/4 passam**; teste de save cria e remove somente as próprias pastas temporárias; teste IPC verifica destruição do objeto após fechar o último clone e fechamento de transfer memory |
+
+O novo limite do boot é a implementação do driver gráfico. A montagem do save não prova leitura/escrita de save;
+nenhuma delas foi solicitada pelo caminho executado até aqui. Ainda não há apresentação de frames, áudio ou entrada.
+
 ## 2026-10-31 — Usuário pré-selecionado: boot chega ao save
 
 `IApplicationFunctions:PopLaunchParameter(2)` entrega o parâmetro de usuário local por

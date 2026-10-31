@@ -37,7 +37,7 @@ from .recomp.lifter import C_PRELUDE, Function, fname, lift_function
 CALL_RE = re.compile(r"\bf_([0-9a-f]+)\(c\)")
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 BOOT_SYMBOLS = {"init_start": "_ZN2nn4init5StartEmmPFvvES2_", "nn_main": "nnMain"}
-RUNTIME_SOURCES = ["core.c", "loader.c", "horizon.c", "ipc.c", "services.c", "kernel.c", "fs.c"]
+RUNTIME_SOURCES = ["core.c", "loader.c", "horizon.c", "ipc.c", "services.c", "kernel.c", "fs.c", "save.c"]
 
 
 def write_if_changed(path: str, text: str) -> bool:

@@ -143,12 +143,18 @@ typedef struct Session {
 static Session g_sess[MAX_SESSIONS];
 static Session *g_current; /* the session of the request being handled */
 
+static void retain_service(Service *s) { s->refs++; }
+static void release_service(Service *s) {
+    if (s && --s->refs == 0 && s->destroy) s->destroy(s);
+}
+
 uint32_t hos_new_session(Service *svc) {
     for (int i = 0; i < MAX_SESSIONS; i++)
         if (!g_sess[i].used) {
             memset(&g_sess[i], 0, sizeof g_sess[i]);
             g_sess[i].used = 1;
             g_sess[i].root = svc;
+            retain_service(svc);
             return HANDLE_BASE + (uint32_t)i;
         }
     hos_log("ipc: out of session handles\n");
@@ -159,6 +165,7 @@ uint32_t hos_new_domain_object(Service *svc) {
     for (uint32_t id = 1; id < MAX_OBJECTS; id++)
         if (!g_current->dom->objs[id]) {
             g_current->dom->objs[id] = svc;
+            retain_service(svc);
             return id;
         }
     return 0;
@@ -170,7 +177,11 @@ static Session *session_of(uint32_t handle) {
 }
 
 static void close_session(Session *s) {
-    if (s->dom && --s->dom->refs == 0) free(s->dom);
+    release_service(s->root);
+    if (s->dom && --s->dom->refs == 0) {
+        for (int i = 1; i < MAX_OBJECTS; i++) release_service(s->dom->objs[i]);
+        free(s->dom);
+    }
     memset(s, 0, sizeof *s);
 }
 
@@ -202,10 +213,31 @@ int hos_event_state(uint32_t handle) {
     return handle >= EVENT_BASE && i < MAX_EVENTS && g_events[i].used ? g_events[i].signaled : -1;
 }
 
+/* Transfer memory lends an existing guest range to a service; no second copy of its backing is needed. */
+#define TRANSFER_BASE 0xF000u
+#define MAX_TRANSFERS 256
+static struct { int used; HosTransferMemory memory; } g_transfers[MAX_TRANSFERS];
+
+uint32_t hos_new_transfer_memory(uint64_t addr, uint64_t size, uint32_t perm) {
+    for (uint32_t i = 0; i < MAX_TRANSFERS; i++) {
+        if (g_transfers[i].used) continue;
+        g_transfers[i].used = 1;
+        g_transfers[i].memory = (HosTransferMemory){addr, size, perm};
+        return TRANSFER_BASE + i;
+    }
+    return 0;
+}
+
+const HosTransferMemory *hos_transfer_memory(uint32_t handle) {
+    uint32_t i = handle - TRANSFER_BASE;
+    return handle >= TRANSFER_BASE && i < MAX_TRANSFERS && g_transfers[i].used ? &g_transfers[i].memory : NULL;
+}
+
 uint32_t hos_close_handle(uint32_t handle) {
     Session *s = session_of(handle);
     if (s) close_session(s);
     if (hos_event_state(handle) >= 0) g_events[handle - EVENT_BASE].used = 0;
+    if (hos_transfer_memory(handle)) g_transfers[handle - TRANSFER_BASE].used = 0;
     return HOS_OK; /* other handle kinds are not tracked yet */
 }
 
@@ -254,6 +286,7 @@ uint32_t hos_send_sync_request(Cpu *c, uint32_t handle, uint8_t *msg, uint32_t c
                 s->dom = calloc(1, sizeof *s->dom);
                 s->dom->refs = 1;
                 s->dom->objs[1] = s->root;
+                retain_service(s->root);
             }
             RP_PUT(&rp, uint32_t, 1);
             ipc_write_reply(msg, cap, 0, &rp);
@@ -284,6 +317,7 @@ uint32_t hos_send_sync_request(Cpu *c, uint32_t handle, uint8_t *msg, uint32_t c
             hos_stop(c, "ipc: domain object %u of %s does not exist", rq.object_id, s->root->name);
         target = s->dom->objs[rq.object_id];
         if (rq.domain_cmd == 2) { /* close object */
+            release_service(target);
             s->dom->objs[rq.object_id] = NULL;
             ipc_write_reply(msg, cap, 1, &rp);
             return HOS_OK;

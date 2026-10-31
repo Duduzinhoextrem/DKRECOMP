@@ -68,6 +68,8 @@ struct Service {
     char name[32];
     ServiceFn handle;      /* NULL: unknown service, logged and stopped at its first command */
     void *state;
+    void (*destroy)(Service *s); /* optional: release a dynamically-owned object after its final IPC reference */
+    unsigned refs;
 };
 
 /* New handle for a session to `svc` (a fresh session; not a domain until the guest converts it). */
@@ -81,6 +83,12 @@ uint32_t hos_close_handle(uint32_t handle);
 uint32_t hos_new_event(int signaled);
 void hos_event_set(uint32_t handle, int signaled);
 int hos_event_state(uint32_t handle); /* 1 signaled, 0 clear, -1 not an event */
+typedef struct HosTransferMemory {
+    uint64_t addr, size;
+    uint32_t perm;
+} HosTransferMemory;
+uint32_t hos_new_transfer_memory(uint64_t addr, uint64_t size, uint32_t perm);
+const HosTransferMemory *hos_transfer_memory(uint32_t handle);
 /* ---- kernel (kernel.c): threads and synchronisation; every call below expects the kernel lock held ------- */
 void kern_lock(void);
 void kern_unlock(void);
@@ -122,6 +130,8 @@ Service *hos_service_sm(void);
 /* Filesystem service. Configure the raw RomFS path once before starting the guest. */
 void hos_fs_set_romfs(const char *path);
 void hos_fsp_handle(Cpu *c, Service *s, const IpcRequest *rq, IpcReply *rp);
+void hos_save_configure(const char *root, uint64_t program_id);
+void hos_save_open(Cpu *c, const IpcRequest *rq, IpcReply *rp);
 
 /* Helpers for service implementations. */
 #define RP_PUT(rp, type, value) do { type v_ = (value); memcpy((rp)->data + (rp)->data_size, &v_, sizeof v_); \

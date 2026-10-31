@@ -96,6 +96,33 @@ static void test_launch_user(void) {
     for (int i = 0; i < sizeof handles / sizeof *handles; i++) hos_close_handle(handles[i]);
 }
 
+static void test_save_mount(void) {
+    char temp_dir[MAX_PATH], root[MAX_PATH], program_dir[MAX_PATH + 32], user_dir[MAX_PATH + 80];
+    CHECK(GetTempPathA(sizeof temp_dir, temp_dir) != 0);
+    CHECK(GetTempFileNameA(temp_dir, "dks", 0, root) != 0);
+    CHECK(DeleteFileA(root));
+    hos_save_configure(root, 0x0100c1f0051b6000ull);
+    uint32_t session = hos_new_session(hos_get_service("fsp-srv"));
+    request(51);
+    put32(4, 24); /* SFCI plus 72 bytes of command arguments */
+    put32(0x20, 1); /* user save-data space */
+    put64(0x30, 0x11); put64(0x38, 0x22); /* account UID */
+    msg[0x48] = 1; /* SaveDataAttribute type: account */
+    CHECK(hos_send_sync_request(&cpu, session, msg, sizeof msg) == HOS_OK);
+    CHECK(get32(0x18) == HOS_OK);
+    uint32_t filesystem = get32(12);
+    CHECK(filesystem != 0);
+    snprintf(program_dir, sizeof program_dir, "%s\\0100c1f0051b6000", root);
+    snprintf(user_dir, sizeof user_dir, "%s\\00000000000000110000000000000022", program_dir);
+    DWORD attributes = GetFileAttributesA(user_dir);
+    CHECK(attributes != INVALID_FILE_ATTRIBUTES && (attributes & FILE_ATTRIBUTE_DIRECTORY));
+    hos_close_handle(filesystem);
+    hos_close_handle(session);
+    CHECK(RemoveDirectoryA(user_dir));
+    CHECK(RemoveDirectoryA(program_dir));
+    CHECK(RemoveDirectoryA(root));
+}
+
 int main(void) {
     char temp_dir[MAX_PATH], path[MAX_PATH];
     if (!GetTempPathA(sizeof temp_dir, temp_dir) || !GetTempFileNameA(temp_dir, "dkr", 0, path)) return 2;
@@ -138,6 +165,7 @@ int main(void) {
     hos_fs_set_romfs(""); /* closes the image so Windows can remove the fixture */
     CHECK(DeleteFileA(path));
     test_launch_user();
+    test_save_mount();
     printf("%s (%d failures)\n", failures ? "FAIL" : "PASS", failures);
     return failures != 0;
 }

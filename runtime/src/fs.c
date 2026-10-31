@@ -72,6 +72,7 @@ void hos_fsp_handle(Cpu *c, Service *s, const IpcRequest *rq, IpcReply *rp) {
         open_romfs(c);
         hos_reply_interface(rp, &storage);
         return;
+    case 51: hos_save_open(c, rq, rp); return;     /* OpenSaveDataFileSystem */
     case 1003: return;                           /* DisableAutoSaveDataCreation */
     case 1005: RP_PUT(rp, uint32_t, 0); return;  /* GetGlobalAccessLogMode: logging off */
     case 1006: return;                           /* OutputAccessLogToSdCard */

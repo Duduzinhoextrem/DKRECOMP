@@ -42,6 +42,8 @@
   mutex/condição respeita prioridade e FIFO, mas isso não equivale ao escalonador do console.
 - Handles de threads e suas regiões locais ainda não são reciclados; há limite de 256 threads por execução.
   CancelSynchronization, suspensão/contexto de thread e arbitragem por endereço ainda não estão completos.
+- Transfer memory registra o backing guest, tamanho e permissão, mas ainda não altera proteção de páginas nem
+  os atributos apresentados por QueryMemory; MapTransferMemory/UnmapTransferMemory não foram implementados.
 - O espaço de endereços (regiões de heap, alias, pilha, ASLR) e o tamanho de memória informados ao jogo foram
   escolhidos pelo DKRecomp; a memória total (`0xCD500000`) é uma aproximação.
 - A entropia de `GetInfo(11)` é fixa, para que as execuções sejam reproduzíveis.
@@ -52,16 +54,17 @@
 
 ## Serviços (runtime/src/services.c)
 
-- Bloqueio atual do boot: `fsp-srv:OpenSaveDataFileSystem` (51), após montar a RomFS e abrir o usuário.
-  `PopLaunchParameter(2)` já fornece o usuário pré-selecionado e o abort anterior deixou de ocorrer.
+- Bloqueio atual do boot: `nvdrv:Initialize` (3), dentro de `nv::InitializeGraphics`, após abrir o save e criar
+  transfer memory. `PopLaunchParameter(2)` já fornece o usuário pré-selecionado e o abort anterior deixou de ocorrer.
 - Cada serviço implementa só os comandos que o boot pediu (e vizinhos óbvios); o resto para com relatório. Os
   valores devolvidos (usuário local "DKRecomp", idioma `en-US`, região EUA, modo TV, foco, fuso UTC, configuração de
   desempenho) são escolhas do DKRecomp, não lidas de um console.
 - Os ids de comando vêm do switchbrew para o firmware 4.x; um id errado aparece no log como comando inesperado.
 - `QueryPointerBufferSize` responde 0x8000 para todo serviço; respostas por buffer de ponteiro (C) ainda não são
   escritas pelo IPC, só pelos serviços que as usam diretamente.
-- O filesystem implementa a RomFS somente leitura. Save data, SD card e outros tipos de IFileSystem/IFile ainda
-  faltam. A imagem tem que ser regenerada se os arquivos extraídos mudarem; ela não é o NCA original nem contém
+- O filesystem implementa a RomFS somente leitura e a montagem do save de conta. Operações de arquivos do save,
+  SD card e outros tipos de IFileSystem/IFile ainda faltam. A raiz de save suporta caminhos locais de drive;
+  UNC e reparse points são recusados. A imagem tem que ser regenerada se os arquivos extraídos mudarem; ela não é o NCA original nem contém
   suas camadas de integridade. A abertura verifica tamanho e header, sem auditoria completa de todos os metadados.
 
 ## Módulo gerado

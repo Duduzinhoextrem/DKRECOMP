@@ -54,9 +54,12 @@ static void leaf_handle(Cpu *c, Service *s, const IpcRequest *rq, IpcReply *rp) 
     RP_PUT(rp, uint32_t, 0xcafe);
 }
 
+static int leaf_destroyed;
+static void leaf_destroy(Service *s) { (void)s; leaf_destroyed++; }
+
 static void root_handle(Cpu *c, Service *s, const IpcRequest *rq, IpcReply *rp) {
     (void)c; (void)s;
-    static Service leaf = {"leaf", leaf_handle, NULL};
+    static Service leaf = {"leaf", leaf_handle, NULL, leaf_destroy};
     CHECK(rq->cmd == 5);
     hos_reply_interface(rp, &leaf);
 }
@@ -77,10 +80,12 @@ static void test_domain_clones(void) {
     uint32_t clone = get32(12);
     CHECK(clone && clone != session);
     CHECK(hos_close_handle(session) == HOS_OK);
+    CHECK(leaf_destroyed == 0);
     request(4, 7, child);
     CHECK(hos_send_sync_request(&cpu, clone, msg, sizeof msg) == HOS_OK);
     CHECK(get32(0x28) == HOS_OK && get32(0x30) == 0xcafe);
     CHECK(hos_close_handle(clone) == HOS_OK);
+    CHECK(leaf_destroyed == 1);
     CHECK(hos_send_sync_request(&cpu, clone, msg, sizeof msg) == HOS_INVALID_HANDLE);
 }
 
@@ -151,6 +156,10 @@ int main(void) {
     CHECK(get32(0x10) == 1 && get32(0x20) == 0x4F434653 && get32(0x30) == 2);
 
     test_domain_clones();
+    uint32_t transfer = hos_new_transfer_memory(0x1001000000ull, 0x800000, 0);
+    const HosTransferMemory *memory = hos_transfer_memory(transfer);
+    CHECK(transfer && memory && memory->addr == 0x1001000000ull && memory->size == 0x800000 && memory->perm == 0);
+    CHECK(hos_close_handle(transfer) == HOS_OK && !hos_transfer_memory(transfer));
     printf("%s (%d failures)\n", failures ? "FAIL" : "PASS", failures);
     return failures != 0;
 }

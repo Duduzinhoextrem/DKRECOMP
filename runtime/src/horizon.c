@@ -40,6 +40,7 @@ extern const uint64_t dkr_sym_init_start, dkr_sym_nn_main, dkr_main_thread_stack
 #define MAIN_THREAD_HANDLE 0xDE00u
 #define CUR_PROCESS 0xFFFF8001u
 #define CUR_THREAD 0xFFFF8000u
+#define PROGRAM_ID 0x0100C1F0051B6000ull
 
 /* Result codes (module 1 = kernel; value = module | description << 9). */
 #define R_OK 0
@@ -158,7 +159,7 @@ static uint64_t get_info(uint32_t id0, uint32_t handle, uint64_t id1, int *ok) {
     case 15: return STACK_SIZE;
     case 16: return 0;                         /* system resource size total */
     case 17: return 0;
-    case 18: return 0x0100C1F0051B6000ull;     /* program id (main.npdm ACI0) */
+    case 18: return PROGRAM_ID;             /* program id (main.npdm ACI0) */
     case 20: return 0;                         /* user exception context address */
     case 21: return TOTAL_MEMORY;
     case 22: return g_fixed_used + g_heap_size;
@@ -276,6 +277,17 @@ static void svc_dispatch(Cpu *c, uint32_t n, uint64_t pc) {
     case 0x10: c->x[0] = (uint64_t)kern_current_core(); return; /* GetCurrentProcessorNumber */
     case 0x11: hos_event_set((uint32_t)c->x[0], 1); c->x[0] = R_OK; return;          /* SignalEvent */
     case 0x12: case 0x17: hos_event_set((uint32_t)c->x[0], 0); c->x[0] = R_OK; return; /* ClearEvent, ResetSignal */
+    case 0x15: { /* CreateTransferMemory(-, addr x1, size x2, perm w3) -> w1 handle */
+        uint64_t addr = c->x[1], size = c->x[2];
+        uint32_t perm = (uint32_t)c->x[3];
+        if (addr & 0xfff) { c->x[0] = HOS_KERNEL(102); return; }
+        if (!size || (size & 0xfff) || addr + size < addr) { c->x[0] = HOS_KERNEL(101); return; }
+        if (perm != 0 && perm != 1 && perm != 3) { c->x[0] = HOS_KERNEL(108); return; }
+        uint32_t handle = hos_new_transfer_memory(addr, size, perm);
+        c->x[0] = handle ? HOS_OK : HOS_KERNEL(105);
+        c->x[1] = handle;
+        return;
+    }
     case 0x16: c->x[0] = hos_close_handle((uint32_t)c->x[0]); return;                  /* CloseHandle */
     case 0x18: { /* WaitSynchronization(-, handles x1, count w2, timeout x3) -> w1 index */
         int32_t index = -1;
@@ -379,6 +391,10 @@ int main(int argc, char **argv) {
     snprintf(default_romfs, sizeof default_romfs, "%s/../../user_files/romfs.bin", dir);
     const char *romfs_path = argc > 3 ? argv[3] : getenv("DKR_ROMFS");
     hos_fs_set_romfs(romfs_path ? romfs_path : default_romfs);
+    char default_save_root[4096];
+    snprintf(default_save_root, sizeof default_save_root, "%s/../../user_files/saves", dir);
+    const char *save_root = getenv("DKR_SAVE_ROOT");
+    hos_save_configure(save_root ? save_root : default_save_root, PROGRAM_ID);
     g_log = fopen("dkctf_boot.log", "w");
     if (rt_load_modules(dkr_modules, dkr_module_count, dir)) return 2;
     for (size_t i = 0; i < dkr_module_count; i++) {
