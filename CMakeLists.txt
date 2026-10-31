@@ -28,7 +28,7 @@ if(WIN32)
   # Exercise the actual kernel and event objects with synthetic guest entry points.
   add_executable(dkr_kernel_test tests/native/kernel_test.c runtime/src/kernel.c runtime/src/ipc.c)
   target_link_libraries(dkr_kernel_test PRIVATE dkr_runtime)
-  add_executable(dkr_fs_test tests/native/fs_test.c runtime/src/fs.c runtime/src/ipc.c)
+  add_executable(dkr_fs_test tests/native/fs_test.c runtime/src/fs.c runtime/src/ipc.c runtime/src/services.c)
   target_link_libraries(dkr_fs_test PRIVATE dkr_runtime)
 endif()
 

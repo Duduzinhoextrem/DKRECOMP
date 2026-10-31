@@ -6,6 +6,9 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* The same local identity is used by account services and the applet launch parameter. */
+static const uint64_t g_uid[2] = {0x0123456789ABCDEFull, 0x0FEDCBA987654321ull};
+
 /* ---- sm: (service manager) ------------------------------------------------------------------------------- */
 static void sm_handle(Cpu *c, Service *s, const IpcRequest *rq, IpcReply *rp) {
     switch (rq->cmd) {
@@ -130,10 +133,54 @@ static void am_audio_handle(Cpu *c, Service *s, const IpcRequest *rq, IpcReply *
     }
 }
 
+/* The home menu supplies a preselected user to account initialization as a launch parameter (kind 2).
+ * SDK 4.4.0 expects 0x88 bytes: u32 magic, u8 valid, padding, then a 16-byte account UID at offset 8. */
+static uint8_t g_launch_user[0x88];
+static int g_launch_user_pending = 1;
+
+static void am_launch_accessor_handle(Cpu *c, Service *s, const IpcRequest *rq, IpcReply *rp) {
+    switch (rq->cmd) {
+    case 0: RP_PUT(rp, uint64_t, sizeof g_launch_user); return; /* GetSize */
+    case 11: { /* Read(s64 offset, auto-select output buffer) */
+        const IpcBuf *buffer = rq->nc ? &rq->c[0] : rq->nb ? &rq->b[0] : NULL;
+        if (rq->args_size < 8 || !buffer) { rp->result = AM_RESULT(503); return; }
+        int64_t offset = RQ_GET(rq, int64_t, 0);
+        if (offset < 0 || (uint64_t)offset > sizeof g_launch_user ||
+            buffer->size > sizeof g_launch_user - (uint64_t)offset) {
+            rp->result = AM_RESULT(503);
+            return;
+        }
+        if (buffer->size) memcpy((void *)(uintptr_t)buffer->addr, g_launch_user + offset, (size_t)buffer->size);
+        return;
+    }
+    default: hos_unimplemented(c, s, rq);
+    }
+}
+
+static void am_launch_storage_handle(Cpu *c, Service *s, const IpcRequest *rq, IpcReply *rp) {
+    static Service accessor = {"am:IStorageAccessor", am_launch_accessor_handle, NULL};
+    switch (rq->cmd) {
+    case 0: hos_reply_interface(rp, &accessor); return; /* Open */
+    default: hos_unimplemented(c, s, rq);
+    }
+}
+
 /* IApplicationFunctions */
 static void am_app_handle(Cpu *c, Service *s, const IpcRequest *rq, IpcReply *rp) {
+    static Service launch_storage = {"am:IStorage", am_launch_storage_handle, NULL};
     switch (rq->cmd) {
-    case 1: rp->result = AM_RESULT(2); return;     /* PopLaunchParameter: no parameter */
+    case 1: { /* PopLaunchParameter(u32 kind) -> IStorage, consumed once */
+        uint32_t kind = rq->args_size >= 4 ? RQ_GET(rq, uint32_t, 0) : 0;
+        if (kind != 2 || !g_launch_user_pending) { rp->result = AM_RESULT(2); return; }
+        memset(g_launch_user, 0, sizeof g_launch_user);
+        uint32_t magic = 0xc79497ca;
+        memcpy(g_launch_user, &magic, 4);
+        g_launch_user[4] = 1;
+        memcpy(g_launch_user + 8, g_uid, sizeof g_uid);
+        g_launch_user_pending = 0;
+        hos_reply_interface(rp, &launch_storage);
+        return;
+    }
     case 20: RP_PUT(rp, uint64_t, 0); return;      /* EnsureSaveData(user) -> required size 0 (exists) */
     case 21: {                                     /* GetDesiredLanguage -> language code "en-US" */
         uint64_t code = 0;
@@ -268,8 +315,6 @@ static void apm_handle(Cpu *c, Service *s, const IpcRequest *rq, IpcReply *rp) {
 /* ---- acc:u0 (accounts) ------------------------------------------------------------------------------------- */
 /* One local user. ProfileBase (0x38 bytes): uid (16), last edit timestamp (8), nickname (0x21, NUL padded).
  * Layouts from switchbrew "Account services". */
-static const uint64_t g_uid[2] = {0x0123456789ABCDEFull, 0x0FEDCBA987654321ull};
-
 static void put_profile_base(IpcReply *rp) {
     uint8_t base[0x38] = {0};
     memcpy(base, g_uid, 16);

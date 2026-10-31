@@ -96,6 +96,8 @@ No Windows, `kernel_sync` usa 6 threads sintéticas para disputar um mutex (12.0
 (sinal, broadcast, prioridade, timeout e espera pela reaquisição do mutex), eventos e espera pela saída de
 threads. `romfs_storage` passa mensagens IPC reais ao `fsp-srv`/`IStorage` usando um arquivo sintético: tamanho,
 leituras, fim do arquivo, offsets negativos, overflow e buffer insuficiente. Nenhum desses testes usa o jogo.
+Também percorre as interfaces do applet manager para ler o parâmetro de usuário pré-selecionado e compará-lo
+ao UID devolvido por `acc:u0`; verifica o consumo único do parâmetro e seus limites de leitura.
 
 ## Preparar a RomFS já extraída
 

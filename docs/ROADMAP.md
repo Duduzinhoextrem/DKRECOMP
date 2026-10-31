@@ -56,8 +56,8 @@ Continuar guiado pelo primeiro comando ou salto pendente do log:
 4. Os callbacks de inicialização dos módulos (`DT_INIT`) **rodam e retornam**; a entrada em **`nnMain` é registrada**.
 5. **RomFS base 1.0.0 extraída e reempacotada**: 83 arquivos, parser independente aceita a imagem. IStorage
    validado com dados sintéticos e a leitura do header real no boot; implementar saves e demais comandos conforme o log.
-6. **Próximo:** parâmetro de lançamento com usuário pré-selecionado (`PopLaunchParameter(2)`), necessário para
-   o jogo abrir o usuário após montar a RomFS; parada atual medida em 250 SVCs.
+6. **Usuário pré-selecionado implementado e validado** (`PopLaunchParameter(2)`): boot chega a 267 SVCs.
+   **Próximo:** abrir o save (`fsp-srv` 51), com IFileSystem/IFile persistentes no host.
 
 Critério original:
 

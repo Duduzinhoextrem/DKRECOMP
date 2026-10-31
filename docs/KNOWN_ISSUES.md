@@ -52,8 +52,8 @@
 
 ## Serviços (runtime/src/services.c)
 
-- Bloqueio atual do boot: `PopLaunchParameter(2)` ainda não fornece o usuário pré-selecionado. O SDK monta
-  a RomFS, mas `OpenPreselectedUser` aborta quando o jogo abre o usuário. Resultado e frames estão no log.
+- Bloqueio atual do boot: `fsp-srv:OpenSaveDataFileSystem` (51), após montar a RomFS e abrir o usuário.
+  `PopLaunchParameter(2)` já fornece o usuário pré-selecionado e o abort anterior deixou de ocorrer.
 - Cada serviço implementa só os comandos que o boot pediu (e vizinhos óbvios); o resto para com relatório. Os
   valores devolvidos (usuário local "DKRecomp", idioma `en-US`, região EUA, modo TV, foco, fuso UTC, configuração de
   desempenho) são escolhas do DKRecomp, não lidas de um console.

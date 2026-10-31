@@ -75,6 +75,9 @@ main/sdk NSO ──► decoder ARM64 ──► lifter ──► C gerado ──�
   num domínio (`hos_reply_interface`).
 - Uma trava do kernel serializa as SVCs, inclusive o tratamento de IPC. As sessões clonadas de um domínio
   compartilham sua tabela de objetos, liberada quando a última sessão é fechada.
+- O applet manager fornece o usuário local por `PopLaunchParameter(2)`, numa IStorage de 0x88 bytes;
+  Open devolve IStorageAccessor, com GetSize e Read. Esse parâmetro é consumido uma vez e usa o mesmo UID de
+  `acc:u0`, permitindo que o SDK abra o usuário antes de montar o save.
 
 ## Threads e sincronização
 

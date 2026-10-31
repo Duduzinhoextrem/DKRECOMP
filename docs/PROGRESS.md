@@ -2,6 +2,20 @@
 
 Somente o que foi executado e verificado. Cada linha aponta para o comando que a reproduz (`docs/TESTING.md`).
 
+## 2026-10-31 — Usuário pré-selecionado: boot chega ao save
+
+`IApplicationFunctions:PopLaunchParameter(2)` entrega o parâmetro de usuário local por
+`am:IStorage` → `IStorageAccessor`. O SDK 4.4.0 lê 0x88 bytes com magic, flag e UID; é o mesmo UID usado por
+`acc:u0`. O parâmetro é consumido uma vez. A ausência do parâmetro de UserChannel não consome o de usuário.
+
+| Evidência | Resultado |
+|---|---|
+| Build nativo + boot de 30 s | **267 SVCs**; o SDK obtém o parâmetro, o jogo abre o usuário, chama `EnsureSaveData` e pede **`fsp-srv:OpenSaveDataFileSystem` (51)**; parada explícita nesse comando |
+| CMake/ctest | **4/4 passam**; `romfs_storage` também verifica o parâmetro por IPC, seu tamanho, magic/flag, UID igual ao de `GetLastOpenedUser`, limites de leitura e consumo único |
+
+O abort anterior (`OpenPreselectedUser`, 2162-0001) deixou de ocorrer nesse caminho. A abertura real de save
+ainda está pendente; `EnsureSaveData` já era aceito pelo runtime. Nenhuma tela nem gameplay foi produzido.
+
 ## 2026-10-31 — Threads do host e RomFS extraída
 
 `runtime/src/kernel.c` executa cada thread guest em uma thread do Windows, com CPU/TLR próprios, uma trava
