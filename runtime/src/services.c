@@ -110,7 +110,12 @@ static void am_self_handle(Cpu *c, Service *s, const IpcRequest *rq, IpcReply *r
     case 9: /* GetLibraryAppletLaunchableEvent -> copy handle */
         rp->copy[rp->ncopy++] = hos_new_event(1);
         return;
-    case 40: RP_PUT(rp, uint64_t, 1); return; /* CreateManagedDisplayLayer -> layer id */
+    case 40: { /* CreateManagedDisplayLayer -> real VI layer identity */
+        uint64_t layer = hos_vi_create_managed_layer();
+        if (!layer) { rp->result = HOS_KERNEL(105); return; }
+        RP_PUT(rp, uint64_t, layer);
+        return;
+    }
     default: hos_unimplemented(c, s, rq);
     }
 }
@@ -476,6 +481,9 @@ static const Known g_known[] = {
     {"time:s", time_handle},
     {"fsp-srv", hos_fsp_handle},
     {"hid", hos_hid_handle},
+    {"vi:u", hos_vi_handle},
+    {"vi:s", hos_vi_handle},
+    {"vi:m", hos_vi_handle},
 };
 
 Service *hos_get_service(const char *name) {

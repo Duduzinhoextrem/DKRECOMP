@@ -3,7 +3,8 @@
 Estado em 2026-10-31: existe um **back-end Vulkan próprio de janela/clear/apresentação**, testado sem o jogo,
 e uma ponte de entrada NVN ligada ao SDK por overrides. A lista MIT de nomes públicos foi incorporada;
 implementações de objetos/comandos da referência ainda não foram portadas. No modo gráfico o boot cria
-device/swapchain do host em `nv::InitializeGraphics`, configura HID e chega a `vi:m:GetDisplayService` (2). O modo legado
+device/swapchain do host em `nv::InitializeGraphics`, configura HID e desserializa o NativeWindow VI. Para em
+`vi:IHOSBinderDriver:TransactParcelAuto` (3), código 10 (Connect). O modo legado
 continua parando em `nvdrv:Initialize`. Nenhum frame do jogo foi submetido.
 
 ## Referência examinada

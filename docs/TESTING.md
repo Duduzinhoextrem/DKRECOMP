@@ -224,5 +224,7 @@ permanece válido após fechar todos os handles, até encerrar o processo, como 
 O mesmo teste confere configuração/getters HID, orientação inválida, slots Handheld/Other e eventos de estilo
 copiados. `kernel_sync` também espera numa cópia do evento, sinaliza o original e confere a escolha do primeiro
 índice quando dois handles no array apontam para o mesmo evento.
+O teste `display_service` verifica as permissões entre vi:u/s/m, interfaces filhas, nome/resolução do display,
+aberturas/fechamentos, bounds do NativeWindow, layers distintos, refcounts Binder e cópias do evento 0xf.
 
 Ver `docs/PROGRESS.md`. Regra: resultado só entra na documentação se foi produzido por um comando acima.

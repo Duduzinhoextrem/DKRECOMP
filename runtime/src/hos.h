@@ -142,6 +142,8 @@ void hos_fsp_handle(Cpu *c, Service *s, const IpcRequest *rq, IpcReply *rp);
 void hos_save_configure(const char *root, uint64_t program_id);
 void hos_save_open(Cpu *c, const IpcRequest *rq, IpcReply *rp);
 void hos_hid_handle(Cpu *c, Service *s, const IpcRequest *rq, IpcReply *rp);
+void hos_vi_handle(Cpu *c, Service *s, const IpcRequest *rq, IpcReply *rp);
+uint64_t hos_vi_create_managed_layer(void);
 
 /* Helpers for service implementations. */
 #define RP_PUT(rp, type, value) do { type v_ = (value); memcpy((rp)->data + (rp)->data_size, &v_, sizeof v_); \

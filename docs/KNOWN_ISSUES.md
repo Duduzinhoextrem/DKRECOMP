@@ -58,9 +58,14 @@
 
 ## Serviços (runtime/src/services.c)
 
-- Bloqueio atual com gráficos do host: `vi:m:GetDisplayService` (2), após criar o contexto Vulkan, mapear os
-  256 KiB do HID e configurar Npad/vibração. Os rings ainda não publicam entrada; controles ficam desconectados.
+- Bloqueio atual com gráficos do host: `vi:IHOSBinderDriver:TransactParcelAuto` (3), código 10 (Connect), após
+  criar o contexto Vulkan, configurar HID e desserializar o NativeWindow do layer pelo SDK original.
+  Os rings HID ainda não publicam entrada; controles ficam desconectados.
   A lista de vibração registra os dispositivos ativados, mas rumble do host e envio de valores ainda faltam.
+- VI expõe somente Default 1280×720. Há limite de 64 layers; as identidades gerenciadas ainda duram até o fim
+  do processo. Abertura/fechamento, parcel, refcounts e evento de disponibilidade não implementam compositor,
+  transações de buffers, VSync ou o comportamento completo de Binder. System/manager display param no primeiro
+  comando próprio ainda ausente; devolver a interface não significa implementar todos os seus métodos.
   No modo legado `--no-gfx`, continua parando em `nvdrv:Initialize` (3).
 - Cada serviço implementa só os comandos que o boot pediu (e vizinhos óbvios); o resto para com relatório. Os
   valores devolvidos (usuário local "DKRecomp", idioma `en-US`, região EUA, modo TV, foco, fuso UTC, configuração de

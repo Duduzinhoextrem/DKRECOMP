@@ -121,6 +121,13 @@ main/sdk NSO ──► decoder ARM64 ──► lifter ──► C gerado ──�
   Os rings permanecem vazios e os controles desconectados até existir um back-end de entrada do host.
 - Eventos têm objetos referenciados por handles; cópias compartilham sinalização e reset e acordam waiters de
   todos os aliases. O kernel escolhe o primeiro índice sinalizado no array, inclusive para aliases do mesmo evento.
+- `runtime/src/vi.c` expõe um display lógico 1280×720 e identidades de layers/Binder. Serviços de aplicação
+  guardam seus privilégios e aberturas; interfaces filhas têm vida independente. O NativeWindow é um parcel público
+  desserializado pelo próprio SDK. Refcounts e o evento de disponibilidade são rastreados; operações da fila
+  ainda não foram implementadas. O evento de disponibilidade não equivale ao VSync do display.
+- Protocolos VI/Binder: [VI services](https://switchbrew.org/wiki/VI_services#NativeWindow),
+  [Nvnflinger](https://switchbrew.org/wiki/Nvnflinger_services) e
+  [produtor de buffers do libnx](https://github.com/switchbrew/libnx/blob/master/nx/source/display/buffer_producer.c).
 - Contratos do host: [MapViewOfFile3](https://learn.microsoft.com/en-us/windows/win32/api/memoryapi/nf-memoryapi-mapviewoffile3)
   e [VirtualFree](https://learn.microsoft.com/en-us/windows/win32/api/memoryapi/nf-memoryapi-virtualfree).
   Protocolo: [HID](https://switchbrew.org/wiki/HID_services#IAppletResource) e
@@ -154,7 +161,7 @@ main/sdk NSO ──► decoder ARM64 ──► lifter ──► C gerado ──�
 | `tools/dkrecomp/testing/` | Infra de testes diferenciais (Unicorn × harness) e gerador de casos | Pronto |
 | `runtime/include/dkr/` | `cpu.h` (estado e auxiliares para o código gerado), `rt.h` (API do host) | Pronto |
 | `runtime/src/core.c` | Despacho, CAS, barreiras, mapeamento fixo, contador de sistema, tratadores de trap | Pronto |
-| `runtime/src/horizon.c`, `kernel.c`, `ipc.c`, `services.c`, `fs.c`, `save.c`, `shared.c`, `hid.c` | Boot, SVCs, threads, sincronização, IPC, serviços, RomFS, save e shared memory/HID | Parcial, guiado pelo boot |
+| `runtime/src/horizon.c`, `kernel.c`, `ipc.c`, `services.c`, `fs.c`, `save.c`, `shared.c`, `hid.c`, `vi.c` | Boot, SVCs, threads, sincronização, IPC, serviços, RomFS, save, shared memory/HID e display/VI | Parcial, guiado pelo boot |
 | `runtime/gfx/` | Janela/apresentação Vulkan próprias verificadas; adaptação NVN pendente | Parcial, independente do jogo |
 | `runtime/audio/`, `runtime/input/`, `runtime/config/` | Áudio (SDL3), entrada, configuração | *(planejado)* |
 | `tests/python/` | Testes unitários (formatos, decodificador × Capstone) | Pronto |

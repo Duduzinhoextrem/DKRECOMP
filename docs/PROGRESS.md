@@ -2,6 +2,28 @@
 
 Somente o que foi executado e verificado. Cada linha aponta para o comando que a reproduz (`docs/TESTING.md`).
 
+## 2026-10-31 — Display e NativeWindow aceitos pelo SDK; próximo é Binder Connect
+
+`runtime/src/vi.c` atende as raízes `vi:u/s/m`, os privilégios dos serviços de display, a abertura/fechamento
+do display lógico Default (1280×720), resolução e abertura/fechamento de layers gerenciados. O applet cria uma
+identidade de layer rastreada, em lugar do antigo ID constante. OpenLayer escreve um parcel NativeWindow de
+0x3c bytes, com Binder e tabela de objetos, respeitando o tamanho do buffer.
+
+O **SDK original desserializou esse parcel** e chamou AdjustRefcount para weak/strong refs e GetNativeHandle
+0xf. O evento retornado é de disponibilidade da fila inicialmente vazia, com referência compartilhada;
+não é um evento de VSync nem de conclusão GPU. Transações da fila ainda param explicitamente.
+
+| Evidência | Resultado |
+|---|---|
+| Build incremental + boot de 30 s | **415 SVCs**; display 1, layer 1/Binder 1, weak=1/strong=1; próximo **`vi:IHOSBinderDriver:TransactParcelAuto` (3), código 10 (Connect)** |
+| Mesmo boot com camada Khronos + sincronização | **415 SVCs**, mesma parada e sem erros Vulkan |
+| `display_service` | hierarquia/privilégios, display/resolução, limites do parcel, identidade dos layers, refcounts sem underflow, eventos copiados e fechamento |
+| CMake/ctest; pytest | **8/8 passam**; **51 passam, 1 pulado** |
+
+Connect chega com entrada X de **0x6c** bytes e saída C de **0x1000**; descritores A/B alternativos estão vazios.
+Implementação própria baseada no protocolo público do switchbrew/libnx; nenhum código de fila de terceiros copiado.
+Ainda não há compositor, transações de buffers nem frame do jogo.
+
 ## 2026-10-31 — Configuração HID concluída no caminho de boot; próximo serviço é VI
 
 HID passa por ActivateNpad, orientação dos Joy-Con, modo handheld, IDs e estilos suportados e criação/ativação

@@ -31,10 +31,12 @@ if(WIN32)
   # Exercise the actual kernel and event objects with synthetic guest entry points.
   add_executable(dkr_kernel_test tests/native/kernel_test.c runtime/src/kernel.c runtime/src/ipc.c)
   target_link_libraries(dkr_kernel_test PRIVATE dkr_runtime)
-  add_executable(dkr_fs_test tests/native/fs_test.c runtime/src/fs.c runtime/src/save.c runtime/src/ipc.c runtime/src/services.c runtime/src/hid.c)
+  add_executable(dkr_fs_test tests/native/fs_test.c runtime/src/fs.c runtime/src/save.c runtime/src/ipc.c runtime/src/services.c runtime/src/hid.c runtime/src/vi.c)
   target_link_libraries(dkr_fs_test PRIVATE dkr_runtime)
   add_executable(dkr_shared_test tests/native/shared_test.c runtime/src/hid.c runtime/src/ipc.c)
   target_link_libraries(dkr_shared_test PRIVATE dkr_runtime)
+  add_executable(dkr_vi_test tests/native/vi_test.c runtime/src/vi.c runtime/src/ipc.c)
+  target_link_libraries(dkr_vi_test PRIVATE dkr_runtime)
 endif()
 
 enable_testing()
@@ -45,6 +47,7 @@ if(WIN32)
   set_tests_properties(kernel_sync PROPERTIES TIMEOUT 30)
   add_test(NAME romfs_storage COMMAND dkr_fs_test)
   add_test(NAME shared_memory COMMAND dkr_shared_test)
+  add_test(NAME display_service COMMAND dkr_vi_test)
 endif()
 
 # The optional host graphics target uses only pinned headers and the Windows Vulkan loader, no system SDK.
