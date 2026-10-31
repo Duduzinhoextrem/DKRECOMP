@@ -77,7 +77,9 @@ static void pool_initialize(Cpu *c) { /* NVNboolean (NVNmemoryPool *, const NVNm
     Pool p = {POOL_MAGIC, rd32(b + PB_FLAGS), rd64(b + PB_STORAGE), rd64(b + PB_SIZE)};
     if (p.flags & (POOL_PHYSICAL | POOL_VIRTUAL))
         hos_stop(c, "nvn: physical/virtual memory pools (flags %#x) are not implemented", p.flags);
-    if (!p.mem || !p.size) hos_stop(c, "nvn: memory pool without storage (mem %#llx size %#llx)",
+    /* The host reports zero external ZCull storage. Tropical Freeze still constructs an empty pool for it;
+     * retain the logical object and its empty bounds, without creating a GPU allocation. */
+    if (!p.mem) hos_stop(c, "nvn: memory pool without storage (mem %#llx size %#llx)",
                                    (unsigned long long)p.mem, (unsigned long long)p.size);
     if (p.mem & 0xfff || p.size & 0xfff)
         hos_stop(c, "nvn: memory pool storage %#llx+%#llx is not 4 KiB aligned", (unsigned long long)p.mem,
@@ -256,6 +258,8 @@ static void builder_storage_alignment(Cpu *c) { NvnTexLayout l; layout_of(c, PTR
  * use 0 (the reference's choice, nvn_api_obj.c storage_class); it is not a Tegra memory kind. */
 static uint64_t storage_class(const uint8_t *b) { uint32_t target; memcpy(&target, b + TB_TARGET, 4); return target == 10 ? 0 : 1; }
 static void builder_storage_class(Cpu *c) { c->x[0] = storage_class(PTR(c->x[0])); }
+/* Depth-cull metadata belongs to Vulkan's image allocation; there is no separate Tegra ZCull save area. */
+static void builder_zcull_size(Cpu *c) { c->x[0] = 0; }
 
 static void texture_initialize(Cpu *c) { /* NVNboolean (NVNtexture *, const NVNtextureBuilder *) */
     Texture t = {TEX_MAGIC, (uint32_t)InterlockedIncrement(&g_texture_serial), 0, {0}};
@@ -293,6 +297,7 @@ static void texture_get_offset(Cpu *c) { c->x[0] = tex64(texture_of(c, c->x[0]),
 static void texture_get_storage_size(Cpu *c) { c->x[0] = texture_of(c, c->x[0])->storage_size; }
 static void texture_get_ds_mode(Cpu *c) { c->x[0] = tex32(texture_of(c, c->x[0]), TB_DSMODE); }
 static void texture_get_storage_class(Cpu *c) { c->x[0] = storage_class(texture_of(c, c->x[0])->builder); }
+static void texture_zcull_size(Cpu *c) { texture_of(c, c->x[0]); c->x[0] = 0; }
 
 static void texture_get_swizzle(Cpu *c) { /* void (const NVNtexture *, NVNtextureSwizzle *r, *g, *b, *a) */
     Texture *t = texture_of(c, c->x[0]);
@@ -720,6 +725,8 @@ const NvnImpl dkr_nvn_obj_impls[] = {
     {"nvnTextureGetDepthStencilMode", texture_get_ds_mode},
     {"nvnTextureGetSwizzle", texture_get_swizzle},
     {"nvnTextureGetStorageClass", texture_get_storage_class},
+    {"nvnTextureGetZCullStorageSize", texture_zcull_size},
+    {"nvnTextureBuilderGetZCullStorageSize", builder_zcull_size},
     {"nvnTextureBuilderGetStorageSize", builder_storage_size},
     {"nvnTextureBuilderGetStorageAlignment", builder_storage_alignment},
     {"nvnTextureBuilderGetStorageClass", builder_storage_class},

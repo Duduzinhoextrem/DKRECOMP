@@ -2,6 +2,22 @@
 
 Somente o que foi executado e verificado. Cada linha aponta para o comando que a reproduz (`docs/TESTING.md`).
 
+## 2026-10-31 — Loop alcança 1.200 presents em 30 segundos, ainda sem imagem
+
+Depois do save, faltava `nvnTextureGetZCullStorageSize`. O host informa zero armazenamento externo de ZCull:
+esse estado auxiliar pertence à imagem Vulkan. Tropical Freeze ainda cria um memory pool vazio para ele;
+o front-end agora preserva esse objeto lógico com bounds de tamanho zero, sem alocação GPU.
+
+O carregamento seguinte abriu a biblioteca de vídeo (`subsdk0`, NVOMX/NvMMLite). O caminho nativo do SDK abortava
+ao tentar usar nvdrv sem inicialização do driver do Switch. Devolver fd=-1, conforme nxnative, revelou um erro
+no cleanup do SDK base: leitura absoluta de **0x1c48**. A abertura de NvMMLiteOpenBlock agora devolve falha antes
+da alocação, e o jogo trata a indisponibilidade. **Vídeos não são decodificados nem apresentados.**
+
+Boot de 30 s: **`nvn: present #600` e `#1200`**, sem STOP ou exceção. O vigia terminou o diagnóstico como previsto
+(exit 4), após **2.259.928 SVCs**, com threads ativas/aguardando. Isso satisfaz o critério de loop da Etapa B;
+não comprova título visível nem jogabilidade. A janela continua vazia, os comandos não têm replay e o áudio
+capturado ainda era silencioso. Próximo passo: capturar dados apontados pelos comandos, depois replay/shaders.
+
 ## 2026-10-31 — Save cria, grava, confirma e lê dados no boot
 
 `save.c` atende GetEntryType, CreateFile, CreateDirectory, DeleteFile/DeleteDirectory não recursivo, OpenFile,

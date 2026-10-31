@@ -72,6 +72,21 @@ int main(int argc, char **argv) {
     cpu.x[0] = (uint64_t)(uintptr_t)"nvnDeviceBuilderSetFlags";
     dkr_nvn_bootstrap(&cpu);
     CHECK(cpu.x[0] == flags);
+    uint8_t pool_builder[32] = {0}, pool[0x110];
+    memset(pool, 0xa5, sizeof pool);
+    st64((uint64_t)(uintptr_t)pool_builder + 8, 0x4000000000ull);
+    st32((uint64_t)(uintptr_t)pool_builder + 0x18, 0x62);
+    cpu.x[0] = (uint64_t)(uintptr_t)pool;
+    cpu.x[1] = (uint64_t)(uintptr_t)pool_builder;
+    rt_call(&cpu, dkr_nvn_proc_address("nvnMemoryPoolInitialize"));
+    CHECK(cpu.x[0] == 1);
+    cpu.x[0] = (uint64_t)(uintptr_t)pool;
+    rt_call(&cpu, dkr_nvn_proc_address("nvnMemoryPoolGetSize"));
+    CHECK(cpu.x[0] == 0);
+    for (unsigned i = 0x100; i < sizeof pool; i++) CHECK(pool[i] == 0xa5);
+    cpu.x[0] = (uint64_t)(uintptr_t)pool_builder;
+    rt_call(&cpu, dkr_nvn_proc_address("nvnTextureBuilderGetZCullStorageSize"));
+    CHECK(cpu.x[0] == 0);
     printf("NVN entry ABI: %s (lookup, legacy names, exact builder writes, register preservation)\n", failures ? "FAIL" : "PASS");
     return failures ? 1 : 0;
 }

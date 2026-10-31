@@ -66,9 +66,9 @@ Continuar guiado pelo primeiro comando ou salto pendente do log:
    **Inicialização gráfica NVN completa** (2026-10-31): layouts medidos no driver NVN original do `sdk`, 211 procs
    puros rodam o código original, o resto no host. Comandos são gravados mas não desenhados (sem replay/shaders).
    Boot gráfico medido em **2876 SVCs**, parando em **`audren:u`**. Modo legado revalidado em `nvdrv` (292 SVCs).
-9. **Áudio CPU/manual do SDK ligado**: renderer abre, WinMM recebe quadros silenciosos e o boot chega ao primeiro
-   present NVN, depois para em GetEntryType do save. **Próximo:** operações do save e continuação do boot,
-   seguida da captura completa/replay Vulkan e tradução dos shaders.
+9. **Áudio CPU/manual e save ligados**: renderer abre e processa quadros silenciosos; save cria/grava/confirma/lê.
+   Com decoder de filmes indisponível e ZCull sem armazenamento externo, boot alcançou **1.200 presents/30 s**,
+   sem STOP/exceção. **Próximo:** captura completa dos comandos, replay Vulkan e tradução dos shaders.
 
 Critério original:
 
@@ -83,7 +83,7 @@ comandos restantes, instruções ainda não suportadas se executadas e demais su
 
 O servidor CPU/manual do SDK substitui a proposta inicial de simular áudio silencioso por IPC. Abertura e
 processamento de 200 quadros silenciosos medidos; não há áudio audível confirmado, controles publicados ou
-imagem do jogo. O primeiro present NVN aparece, mas o boot ainda para no save antes do critério de 600 presents.
+imagem do jogo. O critério da Etapa B foi atingido com 1.200 presents, sem renderização; Etapa C é a próxima.
 
 Avaliação da integração gráfica: `docs/GRAPHICS_PORT.md`. O back-end próprio do host passa no teste de
 clear/apresentação, resize e readback, inclusive validação de sincronização. Ainda não há frame do jogo nem NVN.

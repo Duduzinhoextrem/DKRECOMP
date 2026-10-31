@@ -64,8 +64,10 @@
   Close/reabertura e uso prolongado. Outros SDKs/layouts e 32 kHz não são suportados nesse caminho.
   O modo IPC legado continua implementando apenas GetWorkBufferSize REV1–4.
 
-- Bloqueio atual com gráficos do host: **IFileSystem(save):GetEntryType (7)**, em 1.251.486 SVCs nessa execução.
-  Já há primeira chamada de apresentação NVN, mas nada é desenhado: replay Vulkan e shaders continuam pendentes.
+- O boot gráfico chegou a **1.200 chamadas present em 30 s**, sem STOP/exceção; o vigia encerrou o diagnóstico.
+  Nada é desenhado: a captura ainda guarda ponteiros temporários, e replay Vulkan/shaders continuam pendentes.
+  O decoder de filmes é indisponível: NvMMLiteOpenBlock retorna falha antes do cleanup defeituoso do SDK base.
+  Não há vídeo substituto; o jogo segue pelo caminho de erro. Reprodução dos filmes precisa de um back-end próprio.
   Os rings HID ainda não publicam entrada; controles ficam desconectados.
   A lista de vibração registra os dispositivos ativados, mas rumble do host e envio de valores ainda faltam.
 - VI expõe somente Default 1280×720. Há limite de 64 layers; as identidades gerenciadas ainda duram até o fim

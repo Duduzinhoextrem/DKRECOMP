@@ -45,6 +45,14 @@ GFX_OVERRIDES = {
     "_ZN2nv26InitializeGraphicsDevtoolsEPvm": "dkr_nvn_devtools_init",
     "_ZN2nv24FinalizeGraphicsDevtoolsEv": "dkr_nvn_devtools_finalize",
     "nvnBootstrapLoader": "dkr_nvn_bootstrap",
+    "NvOsDrvOpen": "dkr_nvdrv_open",
+    "NvOsDrvClose": "dkr_nvdrv_close",
+    "NvOsDrvIoctl": "dkr_nvdrv_unavailable",
+    "NvOsDrvIoctl2": "dkr_nvdrv_unavailable",
+    "NvOsDrvIoctl3": "dkr_nvdrv_unavailable",
+    "NvOsDrvMapSharedMem": "dkr_nvdrv_unavailable",
+    "_Z17NvOsDrvQueryEventijPN2nn2os15SystemEventTypeE": "dkr_nvdrv_unavailable",
+    "NvMMLiteOpenBlock": "dkr_nvmm_open",
 }
 AUDIO_OVERRIDES = {
     "_ZN2nn5audio30GetAudioRendererWorkBufferSizeERKNS0_22AudioRendererParameterE": "dkr_audio_work_size",

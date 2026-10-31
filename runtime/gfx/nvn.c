@@ -2,6 +2,7 @@
  * The public proc name list is from the MIT TotK/MacNativeGames reference; see third_party/ and notices.
  * This bridge uses DKRecomp's actual Cpu and host-function table. Unimplemented procs stop by name. */
 #include "dkr/nvn.h"
+
 #include "dkr/gfx.h"
 #include "nvn_internal.h"
 #include "../src/hos.h"
@@ -11,6 +12,26 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+/* Report the unavailable Switch hardware movie decoder through the SDK's device-error path.
+ * Adapted from nxnative dm/host/hle_nvdrv.c @ 5474c6f34789a41770868564fbf4e9e32fc57584,
+ * Copyright (c) 2026 seedds, MIT; see ../third_party/LICENSE-nxnative.txt. */
+void dkr_nvdrv_open(Cpu *c) {
+    const char *path = (const char *)(uintptr_t)c->x[0];
+    hos_log("nvdrv: unavailable host device %.128s (hardware movie decoding is unsupported)\n",
+            path ? path : "(null)");
+    c->x[0] = UINT32_MAX; /* int fd = -1 */
+}
+void dkr_nvdrv_close(Cpu *c) { (void)c; }
+void dkr_nvdrv_unavailable(Cpu *c) { c->x[0] = 3; } /* NvError_NotInitialized */
+
+/* The base SDK's decoder error cleanup dereferences address 0x1c48 after a failed channel open.
+ * Reject the component before allocating it, so OMX receives an ordinary initialization failure. */
+void dkr_nvmm_open(Cpu *c) {
+    if (c->x[0]) st64(c->x[0], 0);
+    hos_log("video: NvMMLite component unavailable; no host movie decoder is implemented\n");
+    c->x[0] = 3;
+}
 
 typedef struct NvnProc {
     const char *name;
