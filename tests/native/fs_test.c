@@ -96,6 +96,72 @@ static void test_launch_user(void) {
     for (int i = 0; i < sizeof handles / sizeof *handles; i++) hos_close_handle(handles[i]);
 }
 
+static void path_request(uint32_t command, const char *path) {
+    request(command);
+    put32(0, 0x10004); /* one X descriptor; 0x301-byte FspPath */
+    put32(8, (0x301u << 16) | (((guest_buffer >> 32) & 15) << 12) | (((guest_buffer >> 36) & 7) << 6));
+    put32(12, (uint32_t)guest_buffer);
+    snprintf((char *)(uintptr_t)guest_buffer, 0x301, "%s", path);
+}
+
+static uint32_t send(uint32_t handle) {
+    CHECK(hos_send_sync_request(&cpu, handle, msg, sizeof msg) == HOS_OK);
+    return get32(0x18);
+}
+
+static uint32_t file_transfer(uint32_t handle, int writing, int64_t offset, int64_t size, uint32_t option) {
+    uint64_t address = guest_buffer + 0x400;
+    memset(msg, 0, sizeof msg);
+    put32(0, writing ? 0x00100004 : 0x01000004); put32(4, 13);
+    put32(8, 0x100); put32(12, (uint32_t)address);
+    put32(16, (((address >> 32) & 15) << 28) | (((address >> 36) & 7) << 2));
+    put32(0x20, 0x49434653); put32(0x28, writing ? 1 : 0);
+    put32(0x30, option); put64(0x38, offset); put64(0x40, size);
+    return send(handle);
+}
+
+static void test_save_files(uint32_t filesystem) {
+    path_request(7, "/"); CHECK(send(filesystem) == HOS_OK && get32(0x20) == 0);
+    path_request(7, "/missing"); CHECK(send(filesystem) == 0x202);
+    path_request(2, "/empty"); CHECK(send(filesystem) == HOS_OK);
+    path_request(3, "/empty"); CHECK(send(filesystem) == HOS_OK);
+    path_request(3, "/"); CHECK(send(filesystem) != HOS_OK);
+    path_request(2, "/slot"); CHECK(send(filesystem) == HOS_OK);
+    path_request(0, "/slot/test.bin"); put64(0x28, 4); CHECK(send(filesystem) == HOS_OK);
+    path_request(0, "/slot/test.bin"); put64(0x28, 4); CHECK(send(filesystem) == 0x402);
+    path_request(7, "/slot/test.bin"); CHECK(send(filesystem) == HOS_OK && get32(0x20) == 1);
+    path_request(8, "/slot/test.bin"); put32(0x20, 3); CHECK(send(filesystem) == HOS_OK);
+    uint32_t file = get32(12);
+    uint8_t *buffer = (uint8_t *)(uintptr_t)(guest_buffer + 0x400);
+    memcpy(buffer, "DKR!", 4);
+    CHECK(file_transfer(file, 1, 0, 4, 1) == HOS_OK);
+    CHECK(file_transfer(file, 1, 4, 1, 0) == 0x307202); /* no append permission */
+    memset(buffer, 0xee, 16);
+    CHECK(file_transfer(file, 0, 0, 8, 0) == HOS_OK && get64(0x20) == 4);
+    CHECK(!memcmp(buffer, "DKR!", 4) && buffer[4] == 0xee && buffer[8] == 0xee);
+    CHECK(file_transfer(file, 0, -1, 4, 0) != HOS_OK);
+    CHECK(file_transfer(file, 0, 0, 0x101, 0) != HOS_OK); /* descriptor too short */
+    request(3); put64(0x20, 8); CHECK(send(file) == HOS_OK);
+    request(4); CHECK(send(file) == HOS_OK && get64(0x20) == 8);
+    request(10); CHECK(send(filesystem) == HOS_OK);
+    hos_close_handle(file);
+    path_request(8, "/slot/test.bin"); put32(0x20, 1); CHECK(send(filesystem) == HOS_OK);
+    file = get32(12);
+    CHECK(file_transfer(file, 1, 0, 1, 0) != HOS_OK); /* read-only handle */
+    CHECK(file_transfer(file, 0, 0, 4, 0) == HOS_OK && !memcmp(buffer, "DKR!", 4));
+    const char *invalid[] = {"../escape", "/../escape", "/slot/../escape", "/NUL", "/slot/CON.txt",
+                             "/slot/a:stream", "/slot/a.", "/slot/a ", "/slot\\outside", "//double", "/bad\xff"};
+    for (unsigned i = 0; i < sizeof invalid / sizeof *invalid; i++) {
+        path_request(0, invalid[i]); put64(0x28, 1); CHECK(send(filesystem) != HOS_OK);
+    }
+    path_request(7, "/slot/test.bin");
+    memset((void *)(uintptr_t)guest_buffer, 'x', 0x301); /* no terminator */
+    CHECK(send(filesystem) != HOS_OK);
+    hos_close_handle(filesystem); /* file state must retain its filesystem until the last file closes */
+    request(4); CHECK(send(file) == HOS_OK && get64(0x20) == 8);
+    hos_close_handle(file);
+}
+
 static void test_save_mount(void) {
     char temp_dir[MAX_PATH], root[MAX_PATH], program_dir[MAX_PATH + 32], user_dir[MAX_PATH + 80];
     CHECK(GetTempPathA(sizeof temp_dir, temp_dir) != 0);
@@ -116,8 +182,17 @@ static void test_save_mount(void) {
     snprintf(user_dir, sizeof user_dir, "%s\\00000000000000110000000000000022", program_dir);
     DWORD attributes = GetFileAttributesA(user_dir);
     CHECK(attributes != INVALID_FILE_ATTRIBUTES && (attributes & FILE_ATTRIBUTE_DIRECTORY));
-    hos_close_handle(filesystem);
+    test_save_files(filesystem);
     hos_close_handle(session);
+    char slot[MAX_PATH + 96], file_path[MAX_PATH + 112];
+    snprintf(slot, sizeof slot, "%s\\slot", user_dir);
+    snprintf(file_path, sizeof file_path, "%s\\test.bin", slot);
+    FILE *persisted = fopen(file_path, "rb");
+    char data[8] = {0};
+    CHECK(persisted != NULL);
+    if (persisted) { CHECK(fread(data, 1, sizeof data, persisted) == 8 && !memcmp(data, "DKR!", 4)); fclose(persisted); }
+    CHECK(DeleteFileA(file_path));
+    CHECK(RemoveDirectoryA(slot));
     CHECK(RemoveDirectoryA(user_dir));
     CHECK(RemoveDirectoryA(program_dir));
     CHECK(RemoveDirectoryA(root));

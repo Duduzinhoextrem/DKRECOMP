@@ -2,6 +2,20 @@
 
 Somente o que foi executado e verificado. Cada linha aponta para o comando que a reproduz (`docs/TESTING.md`).
 
+## 2026-10-31 — Save cria, grava, confirma e lê dados no boot
+
+`save.c` atende GetEntryType, CreateFile, CreateDirectory, DeleteFile/DeleteDirectory não recursivo, OpenFile,
+Commit e consultas de espaço. IFile atende Read, Write, Flush, SetSize e GetSize. Read retorna quantidade efetiva
+no fim do arquivo; escrever além do tamanho exige AllowAppend. Objetos IFile retêm o filesystem após fechar a sessão.
+
+O boot criou **`save.bin`, 262.144 bytes**, gravou, fez Flush e Commit. A execução seguinte abriu e leu esse arquivo
+e avançou para a inicialização de mais recursos gráficos. Nenhum save foi incluído no Git.
+
+`romfs_storage` passou com a nova cobertura via IPC real: criação, tipos de entrada, persistência após reabrir,
+leitura curta, extensão, permissões, descriptor curto, offsets inválidos, filesystem fechado antes do arquivo,
+rejeição de traversal, dispositivos Win32, streams alternativos, nomes ambíguos, UTF-8 inválido e path sem terminador.
+Os arquivos sintéticos ficam em uma raiz temporária e são removidos pelo próprio teste.
+
 ## 2026-10-31 — Áudio CPU do SDK abre; primeira apresentação NVN e próxima parada no save
 
 `--gfx` agora intercepta GetWorkBufferSize/Open/Close do AudioRenderer e utiliza o servidor CPU/manual já

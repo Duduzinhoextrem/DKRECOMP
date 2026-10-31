@@ -147,8 +147,10 @@ main/sdk NSO ──► decoder ARM64 ──► lifter ──► C gerado ──�
 - A imagem padrão é `user_files/romfs.bin`, relativa ao layout gerado. `DKR_ROMFS` ou o terceiro argumento do
   executável seleciona outra imagem. Nenhuma imagem ou arquivo do jogo faz parte do código versionado.
 - `runtime/src/save.c` monta saves de conta em `user_files/saves/<program-id>/<uid>/` (ou `DKR_SAVE_ROOT`).
-  Normaliza a raiz absoluta, cria seus componentes e recusa reparse points. Por enquanto devolve a IFileSystem
-  sem operações de arquivo: um comando dessas operações ainda para explicitamente com relatório.
+  Normaliza a raiz absoluta, cria seus componentes e recusa reparse points. IFileSystem/IFile implementam consulta,
+  criação/remoção não recursiva, abertura, leitura/escrita, tamanho, flush e commit dos arquivos abertos. Paths
+  absolutos do guest ficam relativos à raiz; componentes perigosos e nomes de dispositivo Win32 são recusados.
+  O estado do filesystem é retido pelos arquivos abertos, independentemente do tempo de vida da sessão IPC.
 - Formato conferido com os [tipos de RomFS do libnx](https://github.com/switchbrew/libnx/blob/master/nx/include/switch/runtime/devices/romfs_dev.h),
   o [leitor do libnx](https://github.com/switchbrew/libnx/blob/master/nx/source/runtime/devices/romfs_dev.c) e o parser local `nstool`.
 

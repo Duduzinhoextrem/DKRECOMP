@@ -110,7 +110,10 @@ threads. `romfs_storage` passa mensagens IPC reais ao `fsp-srv`/`IStorage` usand
 leituras, fim do arquivo, offsets negativos, overflow e buffer insuficiente. Nenhum desses testes usa o jogo.
 Também percorre as interfaces do applet manager para ler o parâmetro de usuário pré-selecionado e compará-lo
 ao UID devolvido por `acc:u0`; verifica o consumo único do parâmetro e seus limites de leitura.
-Monta um save de conta numa raiz temporária, confere as pastas e remove somente as que o próprio teste criou.
+Monta um save de conta numa raiz temporária e verifica criação, leitura/escrita, flush/commit, extensão,
+permissões e persistência, além de arquivos que sobrevivem ao fechamento da sessão do filesystem. Rejeita
+traversal, dispositivos Win32, streams, nomes ambíguos e strings truncadas. Remove somente os arquivos e pastas
+sintéticos que o próprio teste criou.
 O teste IPC confere a destruição de um objeto após fechar o último clone e o ciclo de um handle de transfer memory.
 
 ## Preparar a RomFS já extraída

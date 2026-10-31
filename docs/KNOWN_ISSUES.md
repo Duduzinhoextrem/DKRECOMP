@@ -80,8 +80,9 @@
 - Os ids de comando vêm do switchbrew para o firmware 4.x; um id errado aparece no log como comando inesperado.
 - `QueryPointerBufferSize` responde 0x8000 para todo serviço; respostas por buffer de ponteiro (C) ainda não são
   escritas pelo IPC, só pelos serviços que as usam diretamente.
-- O filesystem implementa a RomFS somente leitura e a montagem do save de conta. Operações de arquivos do save,
-  SD card e outros tipos de IFileSystem/IFile ainda faltam. A raiz de save suporta caminhos locais de drive;
+- O filesystem implementa a RomFS somente leitura e operações básicas de arquivos do save de conta. Enumeração
+  de diretórios, renomeação, remoção recursiva, SD card e outros tipos ainda faltam. Commit faz flush, sem journal
+  transacional; sem quota própria de save e com regras de nomes/case do Windows. A raiz suporta caminhos locais de drive;
   UNC e reparse points são recusados. A imagem tem que ser regenerada se os arquivos extraídos mudarem; ela não é o NCA original nem contém
   suas camadas de integridade. A abertura verifica tamanho e header, sem auditoria completa de todos os metadados.
 
