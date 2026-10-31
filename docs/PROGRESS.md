@@ -2,6 +2,42 @@
 
 Somente o que foi executado e verificado. Cada linha aponta para o comando que a reproduz (`docs/TESTING.md`).
 
+## 2026-10-31 — SIMD vetorial: `main` 100% coberto
+
+Novo: `runtime/include/dkr/simd.h` e as classes vetoriais no decodificador/lifter:
+- FP vetorial (FADD, FSUB, FMUL, FDIV, FMAX/FMIN(NM), FABD, FADDP/FMAXP/FMINP, FMULX, FMLA/FMLS, comparações
+  com registrador e com zero, FABS, FNEG, FSQRT, conversões);
+- estimativas FRECPE/FRSQRTE (algoritmo da Arm) e passos FRECPS/FRSQRTS;
+- por elemento: FMUL/FMULX/FMLA/FMLS (vetor e escalar), MUL;
+- inteiros: ADD, SUB, MUL, MLA/MLS, ADDP, comparações, CMTST, REV16/32/64, CNT, NOT, ABS, NEG, SHL/SSHR/USHR,
+  SSHLL/USHLL(2), XTN(2), [SU]ADDL/SUBL/MLAL/MLSL/MULL(2), ADDV, ADDP escalar;
+- BSL/BIT/BIF; ZIP/UZP/TRN; EXT; TBL/TBX; DUP e INS de elemento;
+- MOVI/MVNI/ORR/BIC/FMOV vetoriais (todos os modos de imediato);
+- LD1/ST1 de uma lane e LD1R, com pós-incremento;
+- a palavra de armadilha `0xE7FFDEFE` do compilador da Nintendo, tratada como trap.
+
+| Evidência | Resultado |
+|---|---|
+| `insn_diff --only vec_`, sementes 61–64 e 72, 6–8 mil instruções | 146.000 casos, 0 falhas |
+| Teste de mutação SIMD: arredondamento do RecipEstimate, ZIP, NaN em comparação, SSHR sem sinal | as 4 detectadas (25, 438, 32, 32 casos) |
+| `func_diff --vectorize` (programas vetorizados pelo Clang), O0/O1/O2/Os | 416 execuções, 0 falhas (Unicorn = recompilado = nativo) |
+| `func_diff` sem vetorização, regressão inteira (sementes 11–12) e FP (semente 33) | 0 falhas |
+| `pytest` | 39 testes passam |
+
+Bug encontrado: `FRSQRTS` estourava para infinito perto do limite do float, porque 3 − a·b era arredondado antes
+da divisão por 2. Corrigido dividindo um operando normal por 2 antes (exato), mantendo um só arredondamento.
+
+**Cobertura no jogo (1.0.0)**:
+
+| Módulo | Funções 100% suportadas | Instruções suportadas |
+|---|---|---|
+| `main` | 99,5% → **100%** (57.776 / 57.776) | 99,89% → **100%** |
+| `subsdk0` | 99,9% → **100%** | **100%** |
+| `sdk` | 99,3% → 99,6% (67 funções faltando) | 99,79% |
+
+O que resta é só no `sdk`: AES, SHA-1, SHA-256, PMULL, CRC32, `CNTPCT_EL0`, `CTR_EL0` e algumas formas
+saturadas (`sqadd`, `sqrshrn`).
+
 ## 2026-10-30 (noite) — Ponto flutuante escalar
 
 Novo: `runtime/include/dkr/fp.h` e regras no decodificador/lifter para FP escalar (single e double): aritmética

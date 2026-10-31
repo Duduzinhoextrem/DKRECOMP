@@ -216,6 +216,8 @@ def lift_insn(i: Insn, ctx: Ctx) -> List[str]:
         return [f"rt_svc(c, {i.imm}, {hx(i.addr)});"]
     if op == "brk":
         return [f"rt_brk(c, {i.imm}, {hx(i.addr)});"]
+    if op == "udf_trap":  # undefined-instruction trap used for unreachable code
+        return [f"rt_unsupported(c, {hx(i.addr)}, 0x{i.word:08x}u); /* deliberate trap */"]
     if op == "mrs":
         src = {"tpidr_el0": "c->tpidr", "tpidrro_el0": "c->tpidrro", "nzcv": "c->nzcv", "fpcr": "c->fpcr",
                "fpsr": "c->fpsr", "cntvct_el0": "rt_cntvct()", "cntfrq_el0": "rt_cntfrq()",
@@ -340,6 +342,9 @@ def lift_insn(i: Insn, ctx: Ctx) -> List[str]:
     # --- scalar floating point (runtime/include/dkr/fp.h has the A64 semantics)
     if op in FP_OPS:
         return _lift_fp(i, ctx)
+    # --- vector Advanced SIMD (runtime/include/dkr/simd.h)
+    if op in VEC_OPS:
+        return _lift_vec(i, ctx)
 
     # --- data processing, register
     if op == "addsub_reg":
@@ -482,6 +487,114 @@ def _lift_fp(i: Insn, ctx: Ctx) -> List[str]:
     raise LiftError(f"no fp lifting rule for {i!r}")
 
 
+# ---- vector Advanced SIMD ------------------------------------------------------------------------------------
+
+VEC_OPS = {"vfp3", "vint3", "vfp2", "vint2", "vxtn", "vshll", "vshift", "vfp_elem", "vmul_elem", "vperm", "vext",
+           "vtbl", "vaddv", "vimm", "vdup_elem", "vins_elem", "vbitsel", "vld1lane", "vst1lane", "vld1r",
+           "vwiden", "vaddp_scalar"}
+VF_KIND = {"add": "VF_ADD", "sub": "VF_SUB", "mul": "VF_MUL", "div": "VF_DIV", "max": "VF_MAX", "min": "VF_MIN",
+           "maxnm": "VF_MAXNM", "minnm": "VF_MINNM", "mulx": "VF_MULX", "recps": "VF_RECPS", "rsqrts": "VF_RSQRTS",
+           "cmeq": "VF_CMEQ", "cmge": "VF_CMGE", "cmgt": "VF_CMGT", "abd": "VF_ABD", "addp": "VF_ADD",
+           "maxp": "VF_MAX", "minp": "VF_MIN"}
+VU_KIND = {"recpe": "VU_RECPE", "rsqrte": "VU_RSQRTE", "abs": "VU_ABS", "neg": "VU_NEG", "sqrt": "VU_SQRT",
+           "cmgt0": "VU_CMGT0", "cmeq0": "VU_CMEQ0", "cmlt0": "VU_CMLT0", "cmge0": "VU_CMGE0", "cmle0": "VU_CMLE0",
+           "scvtf": "VU_SCVTF", "ucvtf": "VU_UCVTF", "fcvtzs": "VU_FCVTZS", "fcvtzu": "VU_FCVTZU"}
+VI_KIND = {"add": "VI_ADD", "sub": "VI_SUB", "mul": "VI_MUL", "cmeq": "VI_CMEQ", "cmgt": "VI_CMGT",
+           "cmge": "VI_CMGE", "cmhi": "VI_CMHI", "cmhs": "VI_CMHS", "cmtst": "VI_CMTST", "addp": "VI_ADDP"}
+VI2_KIND = {"rev16": "VI2_REV16", "rev32": "VI2_REV32", "rev64": "VI2_REV64", "cnt": "VI2_CNT", "not": "VI2_NOT",
+            "cmgt0": "VI2_CMGT0", "cmeq0": "VI2_CMEQ0", "cmlt0": "VI2_CMLT0", "cmge0": "VI2_CMGE0",
+            "cmle0": "VI2_CMLE0", "abs": "VI2_ABS", "neg": "VI2_NEG"}
+
+
+def _lanes(i: Insn) -> int:
+    return (16 if i.q else 8) // i.esize
+
+
+def _setv(rd: int, expr: str) -> List[str]:
+    return [f"{{ V128 r_ = {expr}; c->v[{rd}] = r_; }}"]
+
+
+def _lift_vec(i: Insn, ctx: Ctx) -> List[str]:
+    op = i.op
+    V = lambda r: f"c->v[{r}]"
+    if op == "vfp3":
+        if i.kind in ("fmla", "fmls"):
+            return _setv(i.rd, f"vfmla({V(i.rd)}, {V(i.rn)}, {V(i.rm)}, {i.esize}, {_lanes(i)}, "
+                               f"{int(i.kind == 'fmls')}, -1)")
+        pair = int(i.kind in ("addp", "maxp", "minp"))
+        return _setv(i.rd, f"vfp3({V(i.rn)}, {V(i.rm)}, {VF_KIND[i.kind]}, {i.esize}, {_lanes(i)}, {pair})")
+    if op == "vfp2":
+        return _setv(i.rd, f"vfp2({V(i.rn)}, {VU_KIND[i.kind]}, {i.esize}, {_lanes(i)})")
+    if op == "vint3" and i.kind in ("mla", "mls"):
+        return _setv(i.rd, f"vmla({V(i.rd)}, {V(i.rn)}, {V(i.rm)}, {i.esize}, {_lanes(i)}, {int(i.kind == 'mls')})")
+    if op == "vwiden":
+        kind = {"addl": "VW_ADDL", "subl": "VW_SUBL", "mlal": "VW_MLAL", "mlsl": "VW_MLSL", "mull": "VW_MULL"}[i.kind]
+        return _setv(i.rd, f"vwiden({V(i.rd)}, {V(i.rn)}, {V(i.rm)}, {kind}, {int(i.signed)}, {i.esize}, {i.upper})")
+    if op == "vaddp_scalar":
+        return [f"{{ uint64_t s_ = c->v[{i.rn}].d[0] + c->v[{i.rn}].d[1]; vset_d(c, {i.rd}, s_); }}"]
+    if op == "vint3":
+        return _setv(i.rd, f"vint3({V(i.rn)}, {V(i.rm)}, {VI_KIND[i.kind]}, {i.esize}, {_lanes(i)})")
+    if op == "vint2":
+        return _setv(i.rd, f"vint2({V(i.rn)}, {VI2_KIND[i.kind]}, {i.esize}, {_lanes(i)})")
+    if op == "vxtn":
+        return _setv(i.rd, f"vxtn({V(i.rd)}, {V(i.rn)}, {i.esize}, {i.upper})")
+    if op == "vshll":
+        return _setv(i.rd, f"vshll({V(i.rn)}, {int(i.signed)}, {i.shift}, {i.esize}, {i.upper})")
+    if op == "vshift":
+        return _setv(i.rd, f"vshift({V(i.rn)}, {i.kind}, {i.shift}, {i.esize}, {_lanes(i)})")
+    if op == "vfp_elem":
+        lanes = 1 if i.scalar else _lanes(i)
+        if i.kind in ("fmla", "fmls"):
+            return _setv(i.rd, f"vfmla({V(i.rd)}, {V(i.rn)}, {V(i.rm)}, {i.esize}, {lanes}, "
+                               f"{int(i.kind == 'fmls')}, {i.index})")
+        return _setv(i.rd, f"vfp_elem({V(i.rn)}, {V(i.rm)}, {VF_KIND[i.kind]}, {i.esize}, {lanes}, {i.index})")
+    if op == "vmul_elem":
+        return _setv(i.rd, f"vint3({V(i.rn)}, vdup_elem({V(i.rm)}, {i.esize}, {i.index}, {_lanes(i)}), VI_MUL, "
+                           f"{i.esize}, {_lanes(i)})")
+    if op == "vperm":
+        # The permute opcode is stored as f["op"]; `i.op` is the instruction kind.
+        return _setv(i.rd, f"vperm({V(i.rn)}, {V(i.rm)}, {i.f['op']}, {i.esize}, {_lanes(i)})")
+    if op == "vext":
+        return _setv(i.rd, f"vext({V(i.rn)}, {V(i.rm)}, {i.imm}, {i.q})")
+    if op == "vtbl":
+        return _setv(i.rd, f"vtbl(c, {V(i.rd)}, {V(i.rm)}, {i.rn}, {i.nregs}, {i.tbx}, {i.q})")
+    if op == "vaddv":
+        return _setv(i.rd, f"vrep64(vaddv({V(i.rn)}, {i.esize}, {(16 if i.q else 8) // i.esize}), 0)")
+    if op == "vimm":
+        pat = hx(i.imm)
+        if i.kind == "mov":
+            return _setv(i.rd, f"vrep64({pat}, {i.q})")
+        o = "|" if i.kind == "orr" else "& ~"
+        hi = f"c->v[{i.rd}].d[1] {o} {pat}" if i.q else "0"
+        return [f"{{ uint64_t lo_ = c->v[{i.rd}].d[0] {o} {pat}, hi_ = {hi}; c->v[{i.rd}].d[0] = lo_; "
+                f"c->v[{i.rd}].d[1] = hi_; }}"]
+    if op == "vdup_elem":
+        return _setv(i.rd, f"vdup_elem({V(i.rn)}, {i.esize}, {i.index}, {_lanes(i)})")
+    if op == "vins_elem":
+        return [f"{{ uint64_t e_ = velem(c, {i.rn}, {i.esize}, {i.src}); vset_elem(c, {i.rd}, {i.esize}, "
+                f"{i.index}, e_); }}"]
+    if op == "vbitsel":
+        return _setv(i.rd, f"vbitsel({V(i.rd)}, {V(i.rn)}, {V(i.rm)}, {i.kind}, {i.q})")
+    if op in ("vld1lane", "vst1lane", "vld1r"):
+        base = rd_(i.rn, 1)
+        lines = [f"uint64_t a_ = {base};"]
+        n = i.esize
+        ld = {1: "ld8", 2: "ld16", 4: "ld32", 8: "ld64"}[n]
+        st = {1: "st8", 2: "st16", 4: "st32", 8: "st64"}[n]
+        if op == "vld1lane":
+            lines.append(f"vset_elem(c, {i.rt}, {n}, {i.index}, {ld}(a_));")
+        elif op == "vst1lane":
+            lines.append(f"{st}(a_, velem(c, {i.rt}, {n}, {i.index}));")
+        else:
+            lines.append(f"{{ V128 r_ = vrep64(vrep({ld}(a_), {n}), {i.q}); c->v[{i.rt}] = r_; }}")
+        if i.wb == "imm":
+            lines.append(wr_(i.rn, 1, f"a_ + {i.step}"))
+        elif i.wb == "reg":
+            lines.append(wr_(i.rn, 1, f"a_ + {rd_(i.rm, 1)}"))
+        return ["{ " + " ".join(lines) + " }"]
+    raise LiftError(f"no vector lifting rule for {i!r}")
+
+
 # ---- functions -----------------------------------------------------------------------------------------------
 
 @dataclass
@@ -499,7 +612,7 @@ def branch_targets(insns: Iterable[Insn]) -> Set[int]:
     return out
 
 
-TERMINATORS = {"b", "br", "ret", "brk"}
+TERMINATORS = {"b", "br", "ret", "brk", "udf_trap"}
 
 
 def lift_function(code: bytes, base: int, fn: Function, ctx_args: Optional[dict] = None,

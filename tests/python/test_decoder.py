@@ -27,7 +27,10 @@ KNOWN = {
     0x1E222820: ("fp2", {"kind": "fadd", "rd": 0, "rn": 1, "rm": 2, "n": 4}),  # fadd s0, s1, s2
     0x1E2E1000: ("fmov_imm", {"rd": 0, "n": 4, "imm": 0x3F800000}),  # fmov s0, #1.0
     0x1E03E900: ("int_to_fp", {"rd": 0, "rn": 8, "n": 4, "unsigned": True, "fbits": 6}),  # ucvtf s0, w8, #6
-    0x2E20DC00: ("unsupported", {}),  # fmul v0.2s, v0.2s, v0.2s: vector FP not lifted yet
+    0x2E20DC00: ("vfp3", {"kind": "mul", "rd": 0, "rn": 0, "rm": 0, "esize": 4, "q": 0}),  # fmul v0.2s, v0.2s, v0.2s
+    0x4EA1D800: ("vfp2", {"kind": "recpe", "rd": 0, "rn": 0, "esize": 4, "q": 1}),  # frecpe v0.4s, v0.4s
+    0xE7FFDEFE: ("udf_trap", {}),  # toolchain trap word for unreachable code
+    0x4E284800: ("unsupported", {}),  # aese v0.16b, v0.16b: crypto extension not lifted yet
 }
 
 

@@ -70,7 +70,34 @@ TEMPLATES: Dict[str, Tuple[int, int]] = {
     "fp_int": (0x7FA0FC00, 0x1E200000),
     "fp_int_v": (0xDFBFFC00, 0x5E21D800),
     "fp_fixed": (0x7FA00000, 0x1E000000),
+    # vector Advanced SIMD
+    "vec_3same": (0x9F200400, 0x0E200400),
+    "vec_3same_fp": (0x9F20C400, 0x0E20C400),
+    "vec_2misc": (0x9F3E0C00, 0x0E200800),
+    "vec_2misc_fp": (0x9FBE0C00, 0x0EA00800),
+    "vec_shift": (0x9F800400, 0x0F000400),
+    "vec_elem": (0x9F000400, 0x0F000000),
+    "vec_elem_fp": (0x9F800400, 0x0F800000),
+    "vec_elem_scalar": (0xDF800400, 0x5F800000),
+    "vec_ins": (0xFFE08400, 0x6E000400),
+    "vec_dup": (0xBFE0FC00, 0x0E000400),
+    "vec_perm": (0xBF208C00, 0x0E000800),
+    "vec_ext": (0xBFE08400, 0x2E000000),
+    "vec_tbl": (0xBFE08C00, 0x0E000000),
+    "vec_addv": (0xBF3FFC00, 0x0E31B800),
+    "vec_imm": (0x9FF80400, 0x0F000400),
+    "vec_ld1": (0xBF9F0000, 0x0D000000),
+    "vec_ld1_post": (0xBF800000, 0x0D800000),
+    "vec_bsl": (0xBF20FC00, 0x2E201C00),
+    "vec_shll": (0x9F80FC00, 0x0F00A400),
+    "vec_xtn": (0xBF3FFC00, 0x0E212800),
+    "vec_mul_elem": (0xBF00F400, 0x0F008000),
+    "vec_int3_add": (0x9F20F400, 0x0E208400),
+    "vec_widen": (0x9F200C00, 0x0E200000),
+    "vec_mla": (0x9F20FC00, 0x0E209400),
+    "vec_addp_scalar": (0xFFFFFC00, 0x5EF1B800),
 }
+VEC_FP_OPS = ("vfp3", "vfp2", "vfp_elem")
 
 # Floating-point bit patterns that exercise the A64/x86 differences (fp.h): zeros, infinities, quiet and
 # signalling NaNs with payloads, subnormals, rounding ties, integer-conversion limits.
@@ -113,7 +140,7 @@ FIXED = {
 }
 
 # Ops the random test cannot compare meaningfully against Unicorn.
-SKIP_OPS = {"unsupported", "svc", "brk"}
+SKIP_OPS = {"unsupported", "svc", "brk", "udf_trap"}
 SKIP_SYSREGS = {"cntvct_el0", "cntfrq_el0", "fpcr", "fpsr", "dczid_el0"}
 
 EDGE = [0, 1, 2, 0x7F, 0x80, 0xFF, 0xFFFF, 0x7FFFFFFF, 0x80000000, 0xFFFFFFFF, 0x100000000,
@@ -193,9 +220,40 @@ def make_state(rng: random.Random, i: Insn, pc: int) -> Optional[List[int]]:
             inf, zero = (0x7FF0000000000000, 0) if i.f.get("n") == 8 else (0x7F800000, 0)
             s[I_V + 2 * i.f["rn"]] = inf | (rng.getrandbits(1) << (63 if i.f.get("n") == 8 else 31))
             s[I_V + 2 * i.f["rm"]] = zero | (rng.getrandbits(1) << (63 if i.f.get("n") == 8 else 31))
+    if i.op in VEC_FP_OPS:  # every lane gets an interesting single/double, operands often related
+        dbl = i.f.get("esize") == 8
+        for r in range(32):
+            if dbl:
+                s[I_V + 2 * r], s[I_V + 2 * r + 1] = random_fp64(rng), random_fp64(rng)
+            else:
+                lanes = [random_fp32(rng) for _ in range(4)]
+                s[I_V + 2 * r] = lanes[0] | (lanes[1] << 32)
+                s[I_V + 2 * r + 1] = lanes[2] | (lanes[3] << 32)
+        if rng.random() < 0.4 and "rm" in i.f:
+            flip = 0x8000000000000000 if dbl else 0x8000000080000000
+            flip = flip if rng.random() < 0.5 else 0
+            s[I_V + 2 * i.f["rm"]] = s[I_V + 2 * i.f["rn"]] ^ flip
+            s[I_V + 2 * i.f["rm"] + 1] = s[I_V + 2 * i.f["rn"] + 1] ^ flip
+    if i.op == "vtbl":  # mostly in-range indices, some just outside the table
+        span = 16 * i.f["nregs"] + 8
+        idx = [rng.randrange(span) for _ in range(16)]
+        s[I_V + 2 * i.f["rm"]] = int.from_bytes(bytes(idx[:8]), "little")
+        s[I_V + 2 * i.f["rm"] + 1] = int.from_bytes(bytes(idx[8:]), "little")
     f = i.f
     mem_ops = ("ld", "st", "ld_reg", "st_reg", "ldp", "stp", "ldar", "stlr", "ldxr", "stxr",
-               "vld", "vst", "vld_reg", "vst_reg", "vldp", "vstp")
+               "vld", "vst", "vld_reg", "vst_reg", "vldp", "vstp", "vld1lane", "vst1lane", "vld1r")
+    if i.op in ("vld1lane", "vst1lane", "vld1r"):
+        if f["wb"] == "reg":
+            if f["rm"] == f["rn"]:
+                return None
+            s[f["rm"]] = rng.randrange(-0x40, 0x40) & (2**64 - 1)
+        base = SCRATCH_MID + rng.randrange(-0x200, 0x200)
+        if f["rn"] == SP:
+            base &= ~0xF
+            s[I_SP] = base
+        else:
+            s[f["rn"]] = base
+        return s
     if i.op in mem_ops:
         align = f["nbytes"] if i.op in ("ldar", "stlr", "ldxr", "stxr") else 1
         target = SCRATCH_MID + (rng.randrange(-0x200, 0x200) & ~(align - 1) if align > 1 else

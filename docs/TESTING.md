@@ -43,6 +43,9 @@ subnormais, limites de conversão para inteiro) e operandos relacionados (x−x,
 .venv/Scripts/python tests/diff/insn_diff.py --seed 31 --count 8000 --states 4 --only fp_
 ```
 
+`--only vec_` faz o mesmo para o SIMD vetorial (todas as lanes recebem valores de ponto flutuante de borda; índices
+de `TBL` caem dentro e logo fora da tabela).
+
 ### Funções inteiras (`tests/diff/func_diff.py`)
 
 `tests/diff/cases/programs.c` (recursão, laços, ordenação, bytes com sinal, `switch` com tabela de salto,
@@ -56,7 +59,12 @@ e Unicorn também precisam concordar em todos os registradores e no `.data/.bss`
 .venv/Scripts/python tests/diff/func_diff.py --opt O2,O1,O0,Os --seeds 8
 ```
 
-O Clang é chamado com `-fno-vectorize -fno-slp-vectorize` porque aritmética SIMD ainda não é suportada.
+Por padrão o Clang é chamado com `-fno-vectorize -fno-slp-vectorize`; `--vectorize` liga a vetorização
+automática, para que o programa guest tenha SIMD gerado pelo compilador:
+
+```bash
+.venv/Scripts/python tests/diff/func_diff.py --vectorize --seeds 8
+```
 
 ### Teste de mutação (validação dos próprios testes)
 

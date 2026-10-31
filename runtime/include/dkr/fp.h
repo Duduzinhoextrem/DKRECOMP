@@ -21,6 +21,14 @@
 #pragma STDC FP_CONTRACT OFF
 #endif
 
+#if defined(__clang__) || defined(__GNUC__)
+#define DKR_FMAF __builtin_fmaf
+#define DKR_FMA __builtin_fma
+#else
+#define DKR_FMAF fmaf
+#define DKR_FMA fma
+#endif
+
 /* ---- bit casts and classification ---------------------------------------------------------------------- */
 DKR_INLINE float f32_of(uint32_t b) { float f; memcpy(&f, &b, 4); return f; }
 DKR_INLINE uint32_t bits32(float f) { uint32_t b; memcpy(&b, &f, 4); return b; }
@@ -156,21 +164,13 @@ DKR_INLINE uint32_t fmadd32(uint32_t addend, uint32_t n, uint32_t m) {
     uint32_t r;
     if (qnan32(addend) && ((inf32(n) && zero32(m)) || (zero32(n) && inf32(m)))) return F32_DNAN;
     if (nans3_32(addend, n, m, &r)) return r;
-#if defined(__clang__) || defined(__GNUC__)
-    return gen32(__builtin_fmaf(f32_of(n), f32_of(m), f32_of(addend)));
-#else
-    return gen32(fmaf(f32_of(n), f32_of(m), f32_of(addend)));
-#endif
+    return gen32(DKR_FMAF(f32_of(n), f32_of(m), f32_of(addend)));
 }
 DKR_INLINE uint64_t fmadd64(uint64_t addend, uint64_t n, uint64_t m) {
     uint64_t r;
     if (qnan64(addend) && ((inf64(n) && zero64(m)) || (zero64(n) && inf64(m)))) return F64_DNAN;
     if (nans3_64(addend, n, m, &r)) return r;
-#if defined(__clang__) || defined(__GNUC__)
-    return gen64(__builtin_fma(f64_of(n), f64_of(m), f64_of(addend)));
-#else
-    return gen64(fma(f64_of(n), f64_of(m), f64_of(addend)));
-#endif
+    return gen64(DKR_FMA(f64_of(n), f64_of(m), f64_of(addend)));
 }
 
 DKR_INLINE uint32_t fsqrt32(uint32_t a) {

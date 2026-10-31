@@ -83,8 +83,16 @@ def _u(addr, word, reason):
     return Insn(addr, word, "unsupported", {"reason": reason})
 
 
+# 0xE7FFDEFE: the trap word Nintendo's toolchain emits for unreachable code (it is the first instruction of
+# rs_fatal_error in Tropical Freeze's main). It is unallocated in A64, so it raises an Undefined Instruction
+# exception: the lifter turns it into a runtime trap instead of reporting it as unsupported.
+UDF_TRAP_WORD = 0xE7FFDEFE
+
+
 def decode(word: int, addr: int = 0) -> Insn:
     w = word
+    if w == UDF_TRAP_WORD:
+        return Insn(addr, w, "udf_trap", {})
     op0 = bits(w, 25, 4)
     if op0 in (0b1000, 0b1001):
         return _dp_imm(w, addr)
@@ -259,6 +267,8 @@ def _ldst_inner(w, a):
     v = bits(w, 26, 1)
     if bits(w, 24, 6) == 0b001000 and not v:  # exclusive / acquire-release
         return _ldst_excl(w, a, rt, base)
+    if w & 0xBF9F0000 == 0x0D000000 or w & 0xBF800000 == 0x0D800000:  # SIMD single structure
+        return _ldst_simd_single(w, a, rt, base)
     if bits(w, 27, 3) == 0b101:  # load/store pair
         mode = bits(w, 23, 3)
         if v:  # SIMD&FP pair: S, D or Q registers
@@ -478,6 +488,11 @@ def _simd(w, a):
             return Insn(a, w, "umov", {"rd": rd, "rn": rn, "esize": 1 << esize_log, "index": index})
         if op == 0 and imm4 == 1 and not (esize_log == 3 and not q):
             return Insn(a, w, "dup_gp", {"rd": rd, "rn": rn, "esize": 1 << esize_log, "q": q})
+        if op == 0 and imm4 == 0 and not (esize_log == 3 and not q):  # DUP (element), vector
+            return Insn(a, w, "vdup_elem", {"rd": rd, "rn": rn, "esize": 1 << esize_log, "index": index, "q": q})
+        if op == 1 and q:  # INS (element): MOV Vd.T[i], Vn.T[j]
+            return Insn(a, w, "vins_elem", {"rd": rd, "rn": rn, "esize": 1 << esize_log, "index": index,
+                                            "src": imm4 >> esize_log})
         return _u(a, w, "simd copy: not in subset")
     if w & 0xFFE0FC00 == 0x5E000400:  # DUP (element), scalar: MOV Bd/Hd/Sd/Dd, Vn.T[i]
         imm5 = bits(w, 16, 5)
@@ -488,8 +503,8 @@ def _simd(w, a):
                                          "index": imm5 >> (esize_log + 1)})
     if w & 0x9F20FC00 == 0x0E201C00:  # three same, logical: AND BIC ORR ORN EOR (BSL/BIT/BIF excluded)
         u, size, q = bits(w, 29, 1), bits(w, 22, 2), bits(w, 30, 1)
-        if u and size:
-            return _u(a, w, "simd logic: bsl/bit/bif")
+        if u and size:  # BSL, BIT, BIF
+            return Insn(a, w, "vbitsel", {"rd": rd, "rn": rn, "rm": rm, "kind": size - 1, "q": q})
         kind = "eor" if u else {0: "and", 1: "bic", 2: "orr", 3: "orn"}[size]
         return Insn(a, w, "vlogic", {"rd": rd, "rn": rn, "rm": rm, "kind": kind, "q": q})
     if w & 0x9FF8FC00 == 0x0F00E400 and bits(w, 29, 1):  # MOVI 64-bit (op=1, cmode=1110)
@@ -499,7 +514,208 @@ def _simd(w, a):
             if imm8 & (1 << k):
                 imm |= 0xFF << (8 * k)
         return Insn(a, w, "movi64", {"rd": rd, "imm": imm, "q": bits(w, 30, 1)})
-    return _u(a, w, "fp/simd")
+    v = _simd_vec(w, a, rd, rn, rm)
+    return v if v is not None else _u(a, w, "fp/simd")
+
+
+# --- Advanced SIMD vector ------------------------------------------------------------------------------------
+
+VFP3 = {(0, 0, 0b11010): "add", (0, 1, 0b11010): "sub", (1, 0, 0b11011): "mul", (0, 0, 0b11011): "mulx",
+        (1, 1, 0b11010): "abd", (1, 0, 0b11111): "div", (0, 0, 0b11110): "max", (0, 1, 0b11110): "min",
+        (0, 0, 0b11000): "maxnm", (0, 1, 0b11000): "minnm", (0, 0, 0b11111): "recps", (0, 1, 0b11111): "rsqrts",
+        (0, 0, 0b11100): "cmeq", (1, 0, 0b11100): "cmge", (1, 1, 0b11100): "cmgt", (1, 0, 0b11010): "addp",
+        (1, 0, 0b11110): "maxp", (1, 1, 0b11110): "minp", (0, 0, 0b11001): "fmla", (0, 1, 0b11001): "fmls"}
+VINT3 = {(0, 0b10000): "add", (1, 0b10000): "sub", (0, 0b10011): "mul", (1, 0b10001): "cmeq",
+         (0, 0b00110): "cmgt", (0, 0b00111): "cmge", (1, 0b00110): "cmhi", (1, 0b00111): "cmhs",
+         (0, 0b10001): "cmtst", (0, 0b10111): "addp", (0, 0b10010): "mla", (1, 0b10010): "mls"}
+VFP2 = {(0, 1, 0b11101): "recpe", (1, 1, 0b11101): "rsqrte", (0, 1, 0b01111): "abs", (1, 1, 0b01111): "neg",
+        (1, 1, 0b11111): "sqrt", (0, 1, 0b01100): "cmgt0", (0, 1, 0b01101): "cmeq0", (0, 1, 0b01110): "cmlt0",
+        (1, 1, 0b01100): "cmge0", (1, 1, 0b01101): "cmle0", (0, 0, 0b11101): "scvtf", (1, 0, 0b11101): "ucvtf",
+        (0, 1, 0b11011): "fcvtzs", (1, 1, 0b11011): "fcvtzu"}
+VINT2 = {(0, 0b00000): "rev64", (1, 0b00000): "rev32", (0, 0b00001): "rev16", (0, 0b00101): "cnt",
+         (1, 0b00101): "not", (0, 0b01000): "cmgt0", (1, 0b01000): "cmge0", (0, 0b01001): "cmeq0",
+         (1, 0b01001): "cmle0", (0, 0b01010): "cmlt0", (0, 0b01011): "abs", (1, 0b01011): "neg"}
+
+
+def adv_simd_expand_imm(op: int, cmode: int, imm8: int) -> int:
+    """AdvSIMDExpandImm(): the 64-bit pattern of a modified-immediate instruction."""
+    c = cmode >> 1
+    if c == 0:
+        return imm8 * 0x0000000100000001
+    if c == 1:
+        return (imm8 << 8) * 0x0000000100000001
+    if c == 2:
+        return (imm8 << 16) * 0x0000000100000001
+    if c == 3:
+        return (imm8 << 24) * 0x0000000100000001
+    if c == 4:
+        return imm8 * 0x0001000100010001
+    if c == 5:
+        return (imm8 << 8) * 0x0001000100010001
+    if c == 6:
+        v = ((imm8 << 8) | 0xFF) if not cmode & 1 else ((imm8 << 16) | 0xFFFF)
+        return v * 0x0000000100000001
+    if not cmode & 1:
+        if not op:
+            return imm8 * 0x0101010101010101
+        return sum(0xFF << (8 * k) for k in range(8) if imm8 & (1 << k))
+    if not op:  # FMOV single, replicated
+        return vfp_expand_imm(imm8, 4) * 0x0000000100000001
+    return vfp_expand_imm(imm8, 8)
+
+
+def _esize_from_imm5(imm5):
+    return (imm5 & -imm5).bit_length() - 1 if imm5 & 0xF else None
+
+
+def _simd_vec(w, a, rd, rn, rm):
+    """Vector Advanced SIMD classes; None when the word is in none of them."""
+    q, u, size = bits(w, 30, 1), bits(w, 29, 1), bits(w, 22, 2)
+    if w & 0x9F200400 == 0x0E200400:  # three same
+        opc = bits(w, 11, 5)
+        if opc >= 0b11000:
+            sz = size & 1
+            kind = VFP3.get((u, size >> 1, opc))
+            if kind is None:
+                return _u(a, w, "simd fp three-same: not in subset")
+            if sz and not q:
+                return _u(a, w, "simd fp three-same: reserved (2d needs Q)")
+            return Insn(a, w, "vfp3", {"kind": kind, "rd": rd, "rn": rn, "rm": rm, "esize": 4 << sz, "q": q})
+        kind = VINT3.get((u, opc))
+        if kind is None or (size == 3 and not q) or (kind in ("mul", "mla", "mls") and size == 3):
+            return _u(a, w, "simd int three-same: not in subset")
+        return Insn(a, w, "vint3", {"kind": kind, "rd": rd, "rn": rn, "rm": rm, "esize": 1 << size, "q": q})
+    if w & 0x9F200C00 == 0x0E200000:  # three different: widening multiply(-accumulate), add, subtract
+        opc = bits(w, 12, 4)
+        kind = {0b0000: "addl", 0b0010: "subl", 0b1000: "mlal", 0b1010: "mlsl", 0b1100: "mull"}.get(opc)
+        if kind is None or size == 3:
+            return _u(a, w, "simd three-different: not in subset")
+        return Insn(a, w, "vwiden", {"kind": kind, "rd": rd, "rn": rn, "rm": rm, "esize": 1 << size,
+                                     "signed": not u, "upper": q})
+    if w & 0xFFFFFC00 == 0x5EF1B800:  # ADDP (scalar): Dd = Vn.D[0] + Vn.D[1]
+        return Insn(a, w, "vaddp_scalar", {"rd": rd, "rn": rn})
+    if w & 0x9F3E0C00 == 0x0E200800:  # two-register misc
+        opc = bits(w, 12, 5)
+        kind = VFP2.get((u, size >> 1, opc))
+        if kind is not None and (opc >= 0b01100 and opc != 0b10010):
+            sz = size & 1
+            if sz and not q:
+                return _u(a, w, "simd fp two-reg: reserved (2d needs Q)")
+            return Insn(a, w, "vfp2", {"kind": kind, "rd": rd, "rn": rn, "esize": 4 << sz, "q": q})
+        if opc == 0b10010 and not u:  # XTN / XTN2
+            if size == 3:
+                return _u(a, w, "xtn: reserved size")
+            return Insn(a, w, "vxtn", {"rd": rd, "rn": rn, "esize": 1 << size, "upper": q})
+        kind = VINT2.get((u, opc))
+        if kind is None:
+            return _u(a, w, "simd int two-reg: not in subset")
+        if kind in ("cnt", "not") and size:
+            return _u(a, w, "simd two-reg: rbit or reserved size")
+        rev_limit = {"rev64": 2, "rev32": 1, "rev16": 0}.get(kind)
+        if (rev_limit is not None and size > rev_limit) or (size == 3 and not q):
+            return _u(a, w, "simd int two-reg: reserved size")
+        return Insn(a, w, "vint2", {"kind": kind, "rd": rd, "rn": rn, "esize": 1 << size, "q": q})
+    if w & 0x9F800400 == 0x0F000400 and bits(w, 19, 4):  # shift by immediate
+        immh, opc = bits(w, 19, 4), bits(w, 11, 5)
+        elog = immh.bit_length() - 1
+        esize, immhb = 1 << elog, (immh << 3) | bits(w, 16, 3)
+        if opc == 0b10100:  # SSHLL / USHLL (SXTL / UXTL)
+            if elog == 3:
+                return _u(a, w, "sshll: reserved")
+            return Insn(a, w, "vshll", {"rd": rd, "rn": rn, "esize": esize, "shift": immhb - 8 * esize,
+                                        "signed": not u, "upper": q})
+        if elog == 3 and not q:
+            return _u(a, w, "simd shift: reserved")
+        if opc == 0b00000:  # SSHR / USHR
+            return Insn(a, w, "vshift", {"rd": rd, "rn": rn, "esize": esize, "q": q, "kind": 2 if u else 1,
+                                         "shift": 16 * esize - immhb})
+        if opc == 0b01010 and not u:  # SHL
+            return Insn(a, w, "vshift", {"rd": rd, "rn": rn, "esize": esize, "q": q, "kind": 0,
+                                         "shift": immhb - 8 * esize})
+        return _u(a, w, "simd shift: not in subset")
+    scalar_idx = w & 0xDF000400 == 0x5F000000
+    if w & 0x9F000400 == 0x0F000000 or scalar_idx:  # vector (or scalar) x indexed element
+        opc, L, M, H, rm4 = bits(w, 12, 4), bits(w, 21, 1), bits(w, 20, 1), bits(w, 11, 1), bits(w, 16, 4)
+        if size >> 1:  # floating point, size<0> = sz
+            sz = size & 1
+            if sz and L:
+                return _u(a, w, "fp by element: reserved")
+            index = H if sz else (H << 1) | L
+            kind = {(0, 0b0001): "fmla", (0, 0b0101): "fmls", (0, 0b1001): "mul", (1, 0b1001): "mulx"}.get((u, opc))
+            if kind is None or (sz and not q and not scalar_idx):
+                return _u(a, w, "fp by element: not in subset")
+            return Insn(a, w, "vfp_elem", {"kind": kind, "rd": rd, "rn": rn, "rm": (M << 4) | rm4,
+                                           "esize": 4 << sz, "q": q, "index": index, "scalar": scalar_idx})
+        if not scalar_idx and not u and opc == 0b1000 and size in (1, 2):  # MUL by element
+            index, reg = ((H << 2) | (L << 1) | M, rm4) if size == 1 else ((H << 1) | L, (M << 4) | rm4)
+            return Insn(a, w, "vmul_elem", {"rd": rd, "rn": rn, "rm": reg, "esize": 1 << size, "q": q,
+                                            "index": index})
+        return _u(a, w, "simd by element: not in subset")
+    if w & 0xBF208C00 == 0x0E000800:  # permute: UZP, TRN, ZIP
+        opc = bits(w, 12, 3)
+        if opc in (0, 4) or (size == 3 and not q):
+            return _u(a, w, "simd permute: unallocated")
+        return Insn(a, w, "vperm", {"rd": rd, "rn": rn, "rm": rm, "op": opc, "esize": 1 << size, "q": q})
+    if w & 0xBFE08400 == 0x2E000000:  # EXT
+        imm4 = bits(w, 11, 4)
+        if not q and imm4 >= 8:
+            return _u(a, w, "ext: reserved")
+        return Insn(a, w, "vext", {"rd": rd, "rn": rn, "rm": rm, "imm": imm4, "q": q})
+    if w & 0xBFE08C00 == 0x0E000000:  # TBL / TBX
+        return Insn(a, w, "vtbl", {"rd": rd, "rn": rn, "rm": rm, "nregs": bits(w, 13, 2) + 1,
+                                   "tbx": bits(w, 12, 1), "q": q})
+    if w & 0xBF3FFC00 == 0x0E31B800:  # ADDV
+        if size == 3 or (size == 2 and not q):
+            return _u(a, w, "addv: reserved")
+        return Insn(a, w, "vaddv", {"rd": rd, "rn": rn, "esize": 1 << size, "q": q})
+    if w & 0x9FF80400 == 0x0F000400:  # modified immediate: MOVI, MVNI, ORR, BIC, FMOV (vector)
+        op, cmode, o2 = u, bits(w, 12, 4), bits(w, 11, 1)
+        if o2:
+            return _u(a, w, "fmov vector fp16")
+        if cmode == 0b1111 and op and not q:
+            return _u(a, w, "fmov 2d needs Q")
+        imm8 = (bits(w, 16, 3) << 5) | bits(w, 5, 5)
+        pattern = adv_simd_expand_imm(op, cmode, imm8)
+        if (cmode & 0b1001) == 0b0001 or (cmode & 0b1101) == 0b1001:  # 0xx1 / 10x1: ORR or BIC
+            return Insn(a, w, "vimm", {"rd": rd, "imm": pattern, "q": q, "kind": "bic" if op else "orr"})
+        invert = op and cmode < 0b1110  # MVNI
+        return Insn(a, w, "vimm", {"rd": rd, "imm": pattern ^ ((1 << 64) - 1) if invert else pattern, "q": q,
+                                   "kind": "mov"})
+    return None
+
+
+def _ldst_simd_single(w, a, rt, base):
+    """LD1/ST1 (single structure, one lane) and LD1R, optionally post-indexed."""
+    q, load, r, opc, s, size = bits(w, 30, 1), bits(w, 22, 1), bits(w, 21, 1), bits(w, 13, 3), bits(w, 12, 1), \
+        bits(w, 10, 2)
+    post = bool(bits(w, 23, 1))
+    rm = bits(w, 16, 5)
+    if not post and rm:
+        return _u(a, w, "simd single structure: unallocated")
+    if r or opc & 1:
+        return _u(a, w, "ld2/ld3/ld4 single structure")
+    scale = opc >> 1
+    f = {"rt": rt, "rn": base, "wb": ("imm" if rm == 31 else "reg") if post else None, "rm": rm}
+    if scale == 3:
+        if not load or s:
+            return _u(a, w, "ld1r: unallocated")
+        f.update(esize=1 << size, q=q)
+        f["step"] = 1 << size
+        return Insn(a, w, "vld1r", f)
+    if scale == 0:
+        esize, index = 1, (q << 3) | (s << 2) | size
+    elif scale == 1:
+        if size & 1:
+            return _u(a, w, "ld1 h: unallocated")
+        esize, index = 2, (q << 2) | (s << 1) | (size >> 1)
+    elif size == 0:
+        esize, index = 4, (q << 1) | s
+    elif size == 1 and not s:
+        esize, index = 8, q
+    else:
+        return _u(a, w, "ld1/st1 single: unallocated")
+    f.update(esize=esize, index=index, step=esize)
+    return Insn(a, w, "vld1lane" if load else "vst1lane", f)
 
 
 def _ldst_excl(w, a, rt, base):

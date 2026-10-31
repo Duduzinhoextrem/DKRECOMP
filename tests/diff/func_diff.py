@@ -31,13 +31,13 @@ STACK_SIZE = 0x40000
 RET_MAGIC = STACK  # bottom of the stack region: mapped, never executed, Unicorn stops when pc reaches it
 
 
-def build_guest(workdir: str, opt: str) -> str:
-    out = os.path.join(workdir, f"programs_{opt}.elf")
-    # Vector SIMD arithmetic is not lifted yet, so keep Clang from vectorising (scalar FP is fine).
+def build_guest(workdir: str, opt: str, vectorize: bool = False) -> str:
+    out = os.path.join(workdir, f"programs_{opt}{'_vec' if vectorize else ''}.elf")
+    # By default Clang's auto-vectoriser is off; --vectorize turns it on, so the guest has compiler-made SIMD.
     # -ffp-contract=off matches the native build's roundings (no FMADD fusion on one side only).
     # -g keeps the symbol table, which Zig strips at -Os; it does not change the code.
     cmd = D.zig_cc() + ["-target", "aarch64-freestanding-none", f"-{opt}", "-g", "-ffreestanding", "-fno-builtin",
-                        "-fno-vectorize", "-fno-slp-vectorize", "-ffp-contract=off", "-fno-math-errno", "-nostdlib",
+                        *([] if vectorize else ["-fno-vectorize", "-fno-slp-vectorize"]), "-ffp-contract=off", "-fno-math-errno", "-nostdlib",
                         "-fno-stack-protector", "-fno-sanitize=undefined",
                         f"-Wl,--image-base={BASE:#x}", "-Wl,-e,_start", PROGRAM, "-o", out]
     subprocess.run(cmd, check=True)
@@ -65,10 +65,10 @@ def regions_for(elf: E.Elf):
     return regs
 
 
-def run(opt: str, nseeds: int, workdir: str) -> int:
+def run(opt: str, nseeds: int, workdir: str, vectorize: bool = False) -> int:
     os.makedirs(workdir, exist_ok=True)
     t0 = time.time()
-    elf = E.parse(open(build_guest(workdir, opt), "rb").read())
+    elf = E.parse(open(build_guest(workdir, opt, vectorize), "rb").read())
     text = next(s for s in elf.segments if s.flags & 1)
     funcs = [Function(f.value, f.value + f.size, f.name) for f in elf.functions()
              if text.vaddr <= f.value < text.vaddr + len(text.data)]
@@ -125,8 +125,9 @@ def main():
     ap.add_argument("--opt", default="O2,O1,O0,Os")
     ap.add_argument("--seeds", type=int, default=8)
     ap.add_argument("--workdir", default=os.path.join(ROOT, "build", "tests", "func"))
+    ap.add_argument("--vectorize", action="store_true", help="let Clang auto-vectorise the guest program")
     a = ap.parse_args()
-    total = sum(run(o, a.seeds, a.workdir) for o in a.opt.split(","))
+    total = sum(run(o, a.seeds, a.workdir, a.vectorize) for o in a.opt.split(","))
     print("RESULT:", "PASS" if total == 0 else f"FAIL ({total} runs)")
     return 1 if total else 0
 

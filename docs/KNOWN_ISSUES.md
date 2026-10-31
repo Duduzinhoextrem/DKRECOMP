@@ -9,8 +9,10 @@
 
 ## Limitações do recompilador
 
-- **SIMD vetorial ainda não é suportado** (FP em vetores, `frecpe`/`frsqrte`, `tbl`, `zip`, comparações
-  vetoriais...). Ponto flutuante **escalar** é suportado. Isso bloqueia 287 das 57.776 funções do `main`.
+- O decodificador cobre 100% do `main` e do `subsdk0`. **No `sdk` faltam** as extensões de criptografia (AES,
+  SHA-1, SHA-256, PMULL), CRC32, `CNTPCT_EL0`, `CTR_EL0` e formas saturadas (`sqadd`, `sqrshrn`): 67 funções.
+- Os auxiliares SIMD (`simd.h`) usam laços genéricos por elemento: corretos, mas lentos. Especializar por tamanho de
+  elemento é trabalho de desempenho para depois do primeiro boot.
 - **Só FPCR = 0 é modelado**: arredondamento ao mais próximo, sem flush-to-zero e sem modo default-NaN. Se o jogo
   escrever outro valor em FPCR, o resultado de FP pode divergir. Ainda não há aviso em tempo de execução para isso.
   As flags acumuladas de exceção do FPSR não são mantidas.

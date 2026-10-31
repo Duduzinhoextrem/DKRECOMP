@@ -174,6 +174,10 @@ H4 confirmada (SDK 4.4.0); H6 **parcialmente**: o jogo usa muito FP, mas quase t
 `subsdk0` 99,997%. Restam SIMD vetorial (287 funções do `main`) e, no `sdk`, AES/SHA/CRC32 e dois registradores
 de sistema.
 
+**Atualização (SIMD vetorial, 2026-10-31):** `main` e `subsdk0` 100% decodificáveis e recompiláveis; `sdk`
+99,79% das instruções (faltam criptografia em hardware, CRC32, dois registradores de sistema). A frente de CPU está
+praticamente fechada; o risco passa a estar no carregamento do executável, na camada de sistema e nos gráficos.
+
 ## 7. Conclusão (atualizada com a ExeFS)
 
 A frente de CPU ficou bem menor do que se temia: com ponto flutuante escalar, cripto em hardware e alguns

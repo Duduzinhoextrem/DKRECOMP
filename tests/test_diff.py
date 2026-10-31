@@ -28,6 +28,16 @@ def test_scalar_fp_matches_unicorn():
     assert not failures, [f"{i!r}: {m[:3]}" for i, _, m in failures[:10]]
 
 
+def test_vector_simd_matches_unicorn():
+    _, failures = insn_diff.run(404, 2500, 3, os.path.join(ROOT, "build", "tests", "pytest_vec"), verbose=False,
+                                only="vec_")
+    assert not failures, [f"{i!r}: {m[:3]}" for i, _, m in failures[:10]]
+
+
 @pytest.mark.parametrize("opt", ["O0", "O2"])
 def test_whole_functions_match_unicorn_and_native(opt):
     assert func_diff.run(opt, 4, os.path.join(ROOT, "build", "tests", "pytest_func")) == 0
+
+
+def test_auto_vectorised_functions_match_unicorn_and_native():
+    assert func_diff.run("O2", 4, os.path.join(ROOT, "build", "tests", "pytest_func_vec"), vectorize=True) == 0

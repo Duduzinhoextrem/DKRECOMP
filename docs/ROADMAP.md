@@ -23,11 +23,12 @@ Estado atual de cada um: `docs/PROGRESS.md`.
 **Critério**: uma rotina ARM64 de teste é recompilada e executada corretamente no Windows.
 **Evidência exigida**: `tests/diff/func_diff.py` — funções compiladas para ARM64, recompiladas, com resultado igual ao
 Unicorn e ao C nativo, em vários níveis de otimização; `tests/diff/insn_diff.py` sem falhas.
-**Estado**: concluído para o subconjunto inteiro + movimentação SIMD/FP (2026-10-30).
+**Estado**: concluído (2026-10-30); desde 2026-10-31 o decodificador cobre 100% das instruções do `main` do jogo.
 
 Próximos passos dentro da Fase 4 (ordem guiada pela cobertura medida no jogo):
 1. ~~FP escalar~~ **feito** (2026-10-30): `main` em 99,89% das instruções e 99,5% das funções.
-2. SIMD vetorial que resta no `main` (287 funções): `fmul`/`fadd` vetoriais, `frecpe`/`frecps`/`frsqrte`/`frsqrts`
+2. ~~SIMD vetorial do `main`~~ **feito** (2026-10-31): `main` e `subsdk0` 100%. Resta no `sdk` (67 funções):
+   AES/SHA/PMULL, CRC32, `CNTPCT_EL0`, `CTR_EL0`, formas saturadas. Antes, a lista era: `fmul`/`fadd` vetoriais, `frecpe`/`frecps`/`frsqrte`/`frsqrts`
    (estimativas com tabela da Arm — precisam ser bit-exatas), `dup`/`mov` de elemento, `sshll`, `tbl`, `ld1`/`st1`,
    `zip`, `ext`, comparações vetoriais. No `sdk`: AES/SHA, CRC32, `CNTPCT_EL0`, `CTR_EL0`.
 3. Descoberta de funções para `sdk`/`subsdk0` (os exports cobrem só ~65% do código deles): alvos de `BL`,
