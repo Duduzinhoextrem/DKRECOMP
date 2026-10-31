@@ -48,8 +48,11 @@ aplicado no Unicorn por um hook de interrupção. Os SVCs reais do Horizon perte
 
 **Critério**: tentativa verificável de iniciar o jogo real: o `main` recompilado roda a partir do ponto de entrada,
 com log de cada SVC/serviço até o primeiro ponto em que falta implementação.
-**Pré-requisitos**: MVP 2b, cobertura SIMD/FP, loader NSO com relocações e layout dos módulos, `rtld`
-substituído pelo host, TLS/TLR por thread, SVCs básicos (memória, threads, sincronização, tempo), `sm:` e os
+**Pré-requisitos**: ~~MVP 2b~~, ~~cobertura SIMD/FP~~, ~~gerar e compilar o `main` inteiro~~ (feitos em
+2026-10-31); falta: loader NSO no runtime (mapear segmentos no endereço base, aplicar relocações `R_AARCH64_RELATIVE`
+e as de símbolo, zerar `.bss`), layout definitivo dos módulos (hoje base provisória `0x800000000`), gerar e compilar
+`sdk`/`subsdk0` (com descoberta de funções além dos exports e o que falta de cripto/CRC), ligação entre módulos por
+símbolo no lugar do `rtld`, TLS/TLR por thread, SVCs básicos (memória, threads, sincronização, tempo), `sm:` e os
 primeiros serviços. Nenhum gráfico ainda.
 
 ## MVP 6 — Gameplay

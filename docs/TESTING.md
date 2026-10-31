@@ -113,6 +113,25 @@ PYTHONIOENCODING=utf-8 PYTHONPATH=tools .venv/Scripts/python -m dkrecomp.coverag
 O segundo mede quantas instruções de cada módulo o decodificador aceita (cerca de 20 s). Repetir depois de cada
 avanço do lifter.
 
+## Gerar e compilar um módulo inteiro do jogo
+
+Gera o C do `main` (funções exportadas mais alvos de `BL` fora delas), um `build.ninja` e liga um executável de
+sonda que confere a tabela de despacho sem executar código do jogo. Tudo vai para `generated/` (ignorada pelo Git):
+
+```bash
+PYTHONIOENCODING=utf-8 PYTHONPATH=tools .venv/Scripts/python -m dkrecomp.gen user_files/exefs/main --out generated/dkctf_v0/main --base 0x800000000
+```
+
+```bash
+.venv/Scripts/ninja -C generated/dkctf_v0/main -j 16
+```
+
+```bash
+generated/dkctf_v0/main/probe.exe
+```
+
+O endereço base (`--base`) fica gravado no C gerado; o runtime terá de carregar o módulo nesse endereço.
+
 ## Resultados registrados
 
 Ver `docs/PROGRESS.md`. Regra: resultado só entra na documentação se foi produzido por um comando acima.

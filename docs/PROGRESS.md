@@ -2,6 +2,27 @@
 
 Somente o que foi executado e verificado. Cada linha aponta para o comando que a reproduz (`docs/TESTING.md`).
 
+## 2026-10-31 — O `main` inteiro do jogo compila e liga
+
+Nova ferramenta `tools/dkrecomp/gen.py` (`python -m dkrecomp.gen`): gera o C de um módulo NSO inteiro, dividido em
+arquivos, com a tabela de despacho e um `build.ninja`; `runtime/src/probe_main.c` liga um executável de sonda que
+confere a tabela sem executar código do jogo.
+
+| Medida (ExeFS 1.0.0, `main`, base provisória `0x800000000`) | Resultado |
+|---|---|
+| Funções geradas | 58.606 (57.776 com nome + 830 alvos de `BL` sem símbolo) |
+| Instruções recompiladas | 2.987.362, **0 não suportadas** |
+| Tempo de geração (Python, 1 processo) | 23,5 s |
+| C gerado | 310 MB em 99 arquivos (maior: 7,9 MB) |
+| Compilação (Clang do Zig, `-O1`, 12 processos, Ryzen 7 5700X) | 276 s, 0 erros; memória ~3 GB no total, ≤ 0,4 GB por processo |
+| Objetos / executável de sonda | 439 MB / 65 MB |
+| Sonda: tabela ordenada e cada entrada encontrável por `rt_lookup` | 58.606 entradas, 0 erros |
+| Forma do código | 177.127 chamadas diretas, 37.249 chamadas por `rt_dispatch`, 5.725 funções com despacho local de `BR`; maior função com 29.862 linhas de C |
+
+**O que isso prova e o que não prova:** o gerador aguenta o tamanho real e o C gerado é válido para o compilador.
+Nenhuma linha do jogo foi executada: falta carregar o módulo na memória (segmentos, relocações, `.bss`), ligar com
+o `sdk`, criar threads/TLS e implementar SVCs e serviços (MVP 5).
+
 ## 2026-10-31 — SIMD vetorial: `main` 100% coberto
 
 Novo: `runtime/include/dkr/simd.h` e as classes vetoriais no decodificador/lifter:

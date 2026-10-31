@@ -33,6 +33,16 @@
   `QueryPerformanceCounter`; não foi comparado com hardware.
 - Floating point de host: nada de FPCR/arredondamento é aplicado ainda (não há aritmética FP).
 
+## Módulo gerado
+
+- O endereço base do `main` (`0x800000000`) é **provisório** e fica embutido no C gerado; mudar o layout exige
+  regerar e recompilar (~5 minutos).
+- 5.725 funções usam o despacho local por `switch` em `BR` (tabelas de salto não resolvidas estaticamente) e
+  37.249 chamadas passam por `rt_dispatch`: correto, mas pesa no tamanho e no desempenho.
+- As 830 funções descobertas por alvo de `BL` vão até o próximo início conhecido; uma delas pode ter fim impreciso.
+- Nada do código gerado foi executado ainda; a correção dele só é garantida instrução a instrução pelos testes
+  diferenciais.
+
 ## Testes
 
 - O teste de função usa `-fno-vectorize` e evita `__builtin_popcountll`, porque o Clang gera NEON para eles.
