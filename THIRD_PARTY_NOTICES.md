@@ -11,6 +11,20 @@ cabeçalho original.
 |---|---|---|---|
 | — | — | — | — |
 
+## Dependências gráficas locais
+
+Obtidas por `tools/fetch_gfx_deps.py` em `toolchain/` (ignorada pelo Git). Não há instalação no sistema.
+O código do back-end Vulkan foi escrito para o DKRecomp; ainda não foi copiado código gráfico dos projetos de referência.
+
+| Componente | Origem e revisão | Licença | Usado em |
+|---|---|---|---|
+| Vulkan-Headers | [KhronosGroup/Vulkan-Headers](https://github.com/KhronosGroup/Vulkan-Headers), `v1.4.321`, commit `2cd90f9d20df57eac214c148f3aed885372ddcfe`; SHA-256 do arquivo baixado `cace1d5832fc00287c9b10b27577c41033b2c86434e884eef5c8dcea098d5118` | Apache-2.0 OR MIT; textos em `toolchain/vulkan-headers/LICENSES/`, avisos preservados nos headers | Declarações da API em `runtime/gfx/vk.c`, opção CMake `DKR_BUILD_GFX`; loader vem do driver do Windows |
+| Vulkan-ValidationLayers (ferramenta de teste) | [KhronosGroup/Vulkan-ValidationLayers](https://github.com/KhronosGroup/Vulkan-ValidationLayers), snapshot oficial examinado em 2026-10-31: commit `16a40098c4279a6caf24204bf388c744bc6c30cf`, asset `694805805`, SHA-256 `09d2387d9929557a6d064bfb111681bc3b1ea6fc365482992ac42b43bfb36657` | Apache-2.0, com exceções mais permissivas descritas no LICENSE do projeto; texto salvo junto à ferramenta | Apenas validação de desenvolvimento, inclusive sincronização; não ligada ao runtime nem incluída no executável gerado |
+
+`--validation` obtém o snapshot nightly oficial disponível no momento, verifica o digest publicado pelo GitHub
+e registra commit/digest em `toolchain/vulkan-validation/source.txt`. O snapshot é variável; o registro local
+identifica o que foi realmente testado. Os headers têm versão/digest fixos no script.
+
 ## Ferramentas usadas no desenvolvimento e nos testes (não distribuídas)
 
 | Ferramenta | Versão | Licença | Uso |

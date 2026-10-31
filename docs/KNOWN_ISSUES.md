@@ -77,6 +77,17 @@
 - O boot executa código gerado dos três módulos e inicia uma segunda thread. Isso e os testes diferenciais não
   comprovam todo o comportamento do jogo; gráficos, áudio e gameplay continuam pendentes.
 
+## Gráficos
+
+- O back-end do host apresenta e captura clears Vulkan, mas ainda não está ligado ao jogo e não implementa
+  geometria, shaders, texturas ou NVN. O boot real ainda para em `nvdrv:Initialize`.
+- A janela atual é Win32 e usa uma fila com graphics+present, Vulkan 1.1 e swapchain RGBA/BGRA UNORM com suporte
+  a transferência/readback. Outros formatos e plataformas ainda não foram implementados.
+- A camada de validação é opcional no build, mas foi usada localmente com sincronização ativa. A ferramenta
+  nightly é identificada pelo commit/digest em `toolchain/vulkan-validation/source.txt` e não é distribuída.
+- O loader local registra um manifesto antigo ausente do overlay Epic e avisos de nomes Galaxy. Nenhuma
+  configuração do sistema foi alterada; esses diagnósticos gerais ficam no log e não contam como erros VUID.
+
 ## Testes
 
 - O teste de função usa `-fno-vectorize` por padrão e oferece `--vectorize` para também testar NEON.

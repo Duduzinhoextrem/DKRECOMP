@@ -2,6 +2,28 @@
 
 Somente o que foi executado e verificado. Cada linha aponta para o comando que a reproduz (`docs/TESTING.md`).
 
+## 2026-10-31 — Janela e apresentação Vulkan verificadas na GPU
+
+Novo back-end próprio em `runtime/gfx/vk.c`, com API `dkr/gfx.h`: loader dinâmico do Windows, instância/device,
+janela Win32, swapchain, comandos de clear, apresentação, resize e readback para BMP. Independente do jogo e
+do estado da CPU guest. Headers Khronos fixados por revisão/SHA-256; camada de validação local, sem instalar SDK.
+
+| Evidência | Resultado |
+|---|---|
+| `dkr_gfx_smoke` | RTX 5060 Ti, API do device **1.4.357**, família de fila 0, swapchain de três imagens BGRA8 UNORM |
+| `vulkan_present` | **8 apresentações**, janela 640×360 → 320×240; os **76.800 pixels** do readback conferem com a cor pedida |
+| `vulkan_validation` | **32 apresentações**, resize e readback; **0 erros**, com `VK_LAYER_KHRONOS_validation` e validação de sincronização ativas, inclusive teardown |
+| Execução visível `--hold-seconds 30` | janela nativa inspecionada por captura; área cliente azul preenchida; programa termina com exit 0 |
+| CMake/ctest com `DKR_BUILD_GFX=ON` | **6/6 passam**, incluindo os quatro testes anteriores |
+
+A validação de sincronização detectou uma corrida entre a aquisição da imagem e sua transição de layout.
+Corrigida fazendo o escopo de origem da barreira corresponder ao estágio esperado pelo semáforo de aquisição.
+Os semáforos de apresentação são individuais por imagem da swapchain. Erros gerais do loader sobre overlays
+antigos do sistema são registrados separadamente; não são classificados como erros de validação da aplicação.
+
+**O jogo ainda não usa esse back-end.** O boot continua parando em `nvdrv:Initialize` (292 SVCs). Este teste
+prova apresentação/clear/readback, não desenho de geometria, shaders, NVN ou imagem do jogo.
+
 ## 2026-10-31 — Montagem do save: inicialização gráfica alcança nvdrv
 
 `fsp-srv:OpenSaveDataFileSystem` (51) cria/abre a pasta do save de conta sob

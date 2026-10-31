@@ -1,6 +1,7 @@
 # Integração gráfica: avaliação inicial
 
-Estado em 2026-10-31: **nenhum front-end NVN ou back-end Vulkan foi incorporado**. O boot chega a
+Estado em 2026-10-31: existe um **back-end Vulkan próprio de janela/clear/apresentação**, testado sem o jogo.
+Nenhum front-end NVN ou back-end da referência foi incorporado. O boot chega a
 `nv::InitializeGraphics` (`sdk+0x264dac`) e para em `nvdrv:Initialize` (comando 3), depois de criar transfer memory
 de 8 MiB. A análise abaixo é um roteiro de integração, não evidência de renderização.
 
@@ -42,9 +43,10 @@ também atribui código a jhaizhou/d2r-mobile, via MacNativeGames, e a outros pr
    nesta máquina. Avaliar primeiro uma ferramenta managed/self-contained sem NativeAOT, ou uma distribuição
    permissiva verificável, mantendo instalações dentro do workspace. Ainda não foi compilado nem testado aqui.
 
-Há `C:\Windows\System32\vulkan-1.dll`, versão de arquivo **1.4.357.0**. Isso só confirma a presença do loader;
-não substitui a criação de instância/device nem um teste de apresentação. Os headers e bibliotecas de SDL3,
-Vulkan e VMA não foram encontrados dentro do checkout da referência examinado.
+Há `C:\Windows\System32\vulkan-1.dll`, versão de arquivo **1.4.357.0**. O teste próprio criou instância/device na
+RTX 5060 Ti e uma swapchain, apresentou 32 clears com resize/readback e terminou sem erros de validação de
+sincronização. Headers Vulkan e camada de validação foram obtidos localmente. SDL3 e VMA ainda não foram usados:
+a janela atual é Win32. O checkout da referência não trazia essas dependências de compilação.
 
 ## Rota de implementação
 
@@ -52,7 +54,7 @@ Priorizar a fronteira **NVN → front-end do host → Vulkan** em vez de assumir
 ioctls de `nvdrv` renderizaria por si só: a execução do NVN original também produziria comandos Maxwell que
 exigiriam um interpretador/driver próprio. Esse desvio não é necessário para a rota com front-end NVN.
 
-1. Criar uma janela e um teste Vulkan independente do jogo, com dependências locais e atribuição completa.
+1. **Feito:** janela e teste Vulkan independentes do jogo, com dependências locais e atribuição.
 2. Adaptar o registro de procs e um conjunto inicial de builders/objetos, com validação da ABI alvo.
 3. Criar overrides explícitos por símbolo no gerador para os pontos de entrada NVN necessários. Manter uma
    parada identificável para procs ainda ausentes; não anunciar inicialização de GPU antes de existir um back-end.
@@ -61,5 +63,5 @@ exigiriam um interpretador/driver próprio. Esse desvio não é necessário para
 5. Voltar ao boot real, registrar os nomes pedidos e seguir até a primeira apresentação. Depois vêm imagem
    correta, áudio/entrada, gameplay e só então medições de desempenho.
 
-`refs/` permanece somente leitura. Nenhum código ou binário da referência foi copiado nesta avaliação; não há
-dependência nova instalada nem marco gráfico concluído.
+`refs/` permanece somente leitura. Nenhum código ou binário da referência foi copiado. As dependências de teste
+ficam no workspace; nenhum SDK foi instalado no sistema. O teste de apresentação não conclui a integração gráfica do jogo.

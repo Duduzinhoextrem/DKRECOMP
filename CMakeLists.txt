@@ -41,6 +41,32 @@ if(WIN32)
   add_test(NAME romfs_storage COMMAND dkr_fs_test)
 endif()
 
+# The optional host graphics target uses only pinned headers and the Windows Vulkan loader, no system SDK.
+option(DKR_BUILD_GFX "Build the Vulkan presentation backend and GPU smoke test" OFF)
+if(DKR_BUILD_GFX)
+  if(NOT WIN32)
+    message(FATAL_ERROR "The current graphics window backend targets Windows")
+  endif()
+  set(DKR_VULKAN_HEADERS "${CMAKE_SOURCE_DIR}/toolchain/vulkan-headers/include" CACHE PATH "Vulkan header directory")
+  if(NOT EXISTS "${DKR_VULKAN_HEADERS}/vulkan/vulkan.h")
+    message(FATAL_ERROR "Run .venv/Scripts/python tools/fetch_gfx_deps.py first")
+  endif()
+  add_library(dkr_gfx STATIC runtime/gfx/vk.c)
+  target_include_directories(dkr_gfx PUBLIC runtime/include PRIVATE "${DKR_VULKAN_HEADERS}")
+  target_link_libraries(dkr_gfx PUBLIC user32 gdi32)
+  add_executable(dkr_gfx_smoke tests/native/gfx_smoke.c)
+  target_link_libraries(dkr_gfx_smoke PRIVATE dkr_gfx)
+  add_test(NAME vulkan_present COMMAND dkr_gfx_smoke --hidden --capture "${CMAKE_BINARY_DIR}/gfx-smoke.bmp")
+  set_tests_properties(vulkan_present PROPERTIES TIMEOUT 30)
+  set(DKR_VK_VALIDATION_DIR "${CMAKE_SOURCE_DIR}/toolchain/vulkan-validation" CACHE PATH "Optional local Vulkan validation layer")
+  if(EXISTS "${DKR_VK_VALIDATION_DIR}/VkLayer_khronos_validation.json")
+    add_test(NAME vulkan_validation COMMAND dkr_gfx_smoke --hidden --validation --frames 32
+      --capture "${CMAKE_BINARY_DIR}/gfx-smoke-validation.bmp")
+    set_tests_properties(vulkan_validation PROPERTIES TIMEOUT 30 ENVIRONMENT
+      "VK_LAYER_PATH=${DKR_VK_VALIDATION_DIR};VK_LOADER_LAYERS_DISABLE=~implicit~;VK_VALIDATION_VALIDATE_SYNC=1")
+  endif()
+endif()
+
 # Optional: the differential-test harness built around a lifted C file (tests/diff/func_diff.py --msvc).
 set(DKR_LIFTED_C "" CACHE FILEPATH "Lifted C file to build into dkr_harness")
 if(DKR_LIFTED_C)

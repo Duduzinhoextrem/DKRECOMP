@@ -92,6 +92,18 @@ main/sdk NSO ──► decoder ARM64 ──► lifter ──► C gerado ──�
   a última SVC e a espera de cada thread. O escalonamento continua sendo do Windows; núcleos e prioridades do
   Horizon não têm preempção própria nem herança de prioridade.
 
+## Gráficos do host
+
+- `runtime/include/dkr/gfx.h` define uma API independente de CPU guest; `runtime/gfx/vk.c` cria janela Win32,
+  instância, device, fila e swapchain Vulkan. As funções são carregadas do loader de sistema, sem biblioteca
+  de importação nem Windows SDK externo. O contexto pede Vulkan 1.1; não há pipeline de desenho NVN ainda.
+- Um fence protege o command buffer e os recursos de cada submissão. Cada imagem da swapchain tem seu próprio
+  semáforo de conclusão para apresentação. Resize aguarda o device e recria as imagens e recursos de readback.
+- Capturas copiam os pixels da imagem da swapchain para memória host-visible, esperam a conclusão e invalidam
+  caches se a memória não for coerente. O BMP permite testar o conteúdo que a GPU produziu.
+- O build gráfico é ativado com `DKR_BUILD_GFX=ON`. Os headers e a camada de validação opcional ficam na pasta
+  local `toolchain/`, com revisão/digest e avisos em `THIRD_PARTY_NOTICES.md`. O contexto ainda não é ligado ao boot.
+
 ## RomFS
 
 - `tools/dkrecomp/romfs.py` converte uma pasta já extraída em uma imagem RomFS crua: header de 0x50 bytes,
@@ -121,7 +133,7 @@ main/sdk NSO ──► decoder ARM64 ──► lifter ──► C gerado ──�
 | `runtime/include/dkr/` | `cpu.h` (estado e auxiliares para o código gerado), `rt.h` (API do host) | Pronto |
 | `runtime/src/core.c` | Despacho, CAS, barreiras, mapeamento fixo, contador de sistema, tratadores de trap | Pronto |
 | `runtime/src/horizon.c`, `kernel.c`, `ipc.c`, `services.c`, `fs.c`, `save.c` | Boot, SVCs, threads, sincronização, IPC, serviços, RomFS e montagem de save | Parcial, guiado pelo boot |
-| `runtime/gfx/` | NVN → Vulkan | *(planejado)* |
+| `runtime/gfx/` | Janela/apresentação Vulkan próprias verificadas; adaptação NVN pendente | Parcial, independente do jogo |
 | `runtime/audio/`, `runtime/input/`, `runtime/config/` | Áudio (SDL3), entrada, configuração | *(planejado)* |
 | `tests/python/` | Testes unitários (formatos, decodificador × Capstone) | Pronto |
 | `tests/diff/` | Testes diferenciais: instrução isolada e funções inteiras | Pronto |

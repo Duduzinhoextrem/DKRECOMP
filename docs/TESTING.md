@@ -120,6 +120,35 @@ SwitchExtract/nstool.exe -t romfs --fstree user_files/romfs.bin
 
 Esse comando não exige chaves para uma imagem crua; o aviso de ausência de keyfile não impede a leitura da RomFS.
 
+## Teste gráfico independente do jogo
+
+Obter os headers Khronos fixados por SHA-256. `--validation` também baixa um snapshot oficial da camada de
+validação de teste, confere o digest do asset e registra a revisão em `toolchain/vulkan-validation/source.txt`.
+Tudo fica em `toolchain/`, sem instalação ou registro global. O snapshot da camada pode variar; os headers são fixos.
+
+```bash
+.venv/Scripts/python tools/fetch_gfx_deps.py --validation
+.venv/Scripts/cmake -S . -B build/zig -DDKR_BUILD_GFX=ON
+.venv/Scripts/cmake --build build/zig
+.venv/Scripts/ctest --test-dir build/zig --output-on-failure
+```
+
+Usar a configuração da toolchain Zig descrita acima na primeira criação de `build/zig`. São seis testes no
+ambiente com a camada local: quatro anteriores, `vulkan_present` (8 frames) e `vulkan_validation` (32 frames).
+O segundo exige a camada e ativa sincronização por `VK_VALIDATION_VALIDATE_SYNC=1`; as variáveis são definidas
+somente para esse teste. `DKR_VK_VALIDATION_DIR` pode apontar para outra camada já disponível.
+
+Os dois testes gráficos criam uma janela oculta, apresentam, redimensionam 640×360 → 320×240 e conferem todos
+os pixels do BMP lido de volta da GPU. Também incluem no resultado os erros emitidos durante a destruição.
+Capturas ficam em `build/zig/gfx-smoke*.bmp`. Para inspeção visível:
+
+```bash
+build/zig/dkr_gfx_smoke.exe --capture reports/gfx-visible.bmp --hold-seconds 30
+```
+
+Esse teste verifica clear/apresentação/readback; não executa o jogo, não traduz shaders e não comprova NVN.
+O loader pode imprimir avisos de overlays instalados no sistema; erros de validação são identificados à parte.
+
 ## Identificação dos arquivos do usuário
 
 ```bash
