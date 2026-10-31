@@ -7,6 +7,8 @@ permanecem somente leitura. Arquivos adaptados preservam origem e avisos; cópia
 
 | Componente | Origem e commit | Licença | Usado em |
 |---|---|---|---|
+| Layout block-linear de texturas NVN (tamanho, alinhamento, altura de bloco) | [deko3d](https://github.com/devkitPro/deko3d) `source/dk_image.cpp`, Copyright (C) 2018-2020 fincs, via MacNativeGames `b75be8cfa704df3701e86130c8ced268e79d6b11` (`games/totk/third_party/d2r_gfx/gfx/nvn/nvn_tex.c`) e TotK Recomp `c3b9a4e7f6ec3d1f0a8c84b66b1703b15639a784` (`runtime/nvn_tex.c`) | zlib (aviso reproduzido no cabeçalho do arquivo); MIT nas camadas intermediárias, textos em `runtime/gfx/third_party/LICENSE-*.txt` | `runtime/gfx/nvn_tex.c`, `runtime/gfx/nvn_tex.h` (adaptados: descritor próprio, sem a configuração do TotK) |
+| Casos de teste de layout de textura (40 consultas ao SDK original) | MacNativeGames `games/totk/tests/texture_auto_layout/probe.c` @ `b75be8cf`, Copyright (c) 2026 jhaizhou, via TotK Recomp `runtime/nvn_tex_probe.c` @ `c3b9a4e7` | MIT | `tests/native/nvn_tex_test.c` (só os números dos casos) |
 | Lista de nomes públicos NVN | [TotK Recomp](https://github.com/valentderah/totk-pc-recomp), `c3b9a4e7f6ec3d1f0a8c84b66b1703b15639a784`, `runtime/nvn_procs.inc`, Copyright (c) 2026 Valiantsin Dzerakh; a referência atribui a lista a [MacNativeGames](https://github.com/ly05010419/MacNativeGames), `b75be8cfa704df3701e86130c8ced268e79d6b11`, Copyright (c) 2026 MacNativeGames contributors | MIT; textos em `runtime/gfx/third_party/LICENSE-*.txt` | `runtime/gfx/third_party/nvn_procs.inc`: nomes de API para o registro de procs; nenhum código ou asset do jogo |
 
 ## Dependências gráficas locais

@@ -27,6 +27,10 @@
 extern const DkrModule dkr_modules[];
 extern const size_t dkr_module_count;
 extern const uint64_t dkr_sym_init_start, dkr_sym_nn_main, dkr_main_thread_stack_size;
+#ifdef DKR_ENABLE_GFX
+extern const DkrNvnOriginal dkr_nvn_originals[]; /* nvn_originals.c, written by gen.py --gfx */
+extern const size_t dkr_nvn_original_count;
+#endif
 
 /* ---- address space (39-bit; regions chosen for DKRecomp, reported to the guest through GetInfo) ------------ */
 #define ASLR_BASE 0x0008000000ull
@@ -397,6 +401,22 @@ static void cb_returned(Cpu *c) { hos_stop(c, "the guest main thread returned to
 static void cb_thread_returned(Cpu *c) { (void)c; } /* a thread's entry returned: kernel.c ends the thread */
 
 /* Ends the run after `seconds` with every thread's state: hangs and deadlocks become a report, not silence. */
+/* A host fault (bad guest pointer, runtime bug) ends the run with the guest thread's registers and frame chain
+ * instead of a silent exit. Registers are those last written back to the thread's Cpu. */
+static LONG WINAPI crash_report(EXCEPTION_POINTERS *e) {
+    const EXCEPTION_RECORD *r = e->ExceptionRecord;
+    hos_log("\nboot: host exception %#lx at host %p", (unsigned long)r->ExceptionCode, r->ExceptionAddress);
+    if (r->ExceptionCode == EXCEPTION_ACCESS_VIOLATION && r->NumberParameters >= 2)
+        hos_log(" (%s %#llx)", r->ExceptionInformation[0] == 1 ? "write" : r->ExceptionInformation[0] == 8 ? "execute" : "read",
+                (unsigned long long)r->ExceptionInformation[1]);
+    hos_log(" on thread %#x\n", kern_current_handle());
+    Cpu *c = kern_current_cpu();
+    if (c) hos_stop(c, "host exception %#lx", (unsigned long)r->ExceptionCode);
+    if (g_log) fclose(g_log);
+    ExitProcess(5);
+    return EXCEPTION_CONTINUE_SEARCH;
+}
+
 static DWORD WINAPI watchdog(void *p) {
     Sleep((DWORD)(uintptr_t)p * 1000);
     hos_log("\nboot: watchdog after %u s, %llu SVCs; threads:\n", (unsigned)(uintptr_t)p, (unsigned long long)g_svc_count);
@@ -418,6 +438,7 @@ int main(int argc, char **argv) {
     const char *save_root = getenv("DKR_SAVE_ROOT");
     hos_save_configure(save_root ? save_root : default_save_root, PROGRAM_ID);
     g_log = fopen("dkctf_boot.log", "w");
+    SetUnhandledExceptionFilter(crash_report);
     if (rt_load_modules(dkr_modules, dkr_module_count, dir)) return 2;
     for (size_t i = 0; i < dkr_module_count; i++) {
         const DkrModule *m = &dkr_modules[i];
@@ -436,7 +457,7 @@ int main(int argc, char **argv) {
     for (size_t i = 0; i < dkr_module_count; i++) g_fixed_used += dkr_modules[i].size;
     dkr_svc_hook = svc_handler;
 #ifdef DKR_ENABLE_GFX
-    dkr_nvn_register();
+    dkr_nvn_register(dkr_nvn_originals, dkr_nvn_original_count);
 #endif
 
     Cpu *c;

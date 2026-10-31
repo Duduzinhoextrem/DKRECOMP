@@ -214,6 +214,22 @@ O ponto de parada medido mais recente fica em `docs/PROGRESS.md`; a contagem pod
 O Ninja usa depfiles de Clang para recompilar objetos afetados por alterações em headers.
 O boot também registra a entrada em `nnMain`, o resultado passado a `SetTerminateResult` e, numa parada,
 os frames guest acessíveis por frame pointer. Esses frames ajudam a localizar um abort do SDK sem desativá-lo.
+Uma exceção do host (ponteiro guest inválido, bug do runtime) é relatada da mesma forma, com o código e o
+endereço da falha (`boot: host exception ...`).
+
+### Driver NVN original do SDK
+
+O NVN do alvo está ligado no `sdk`. Para conferir layouts e decidir o que roda como código original:
+
+```bash
+PYTHONPATH=tools .venv/Scripts/python -m dkrecomp.nvnmap user_files/exefs --purity
+PYTHONPATH=tools .venv/Scripts/python -m dkrecomp.nvnmap user_files/exefs --dis "^nvnTextureBuilderSet"
+```
+
+A saída descreve o código do usuário: imprimir ou guardar em `generated/`, nunca versionar. Com `--gfx`, o
+gerador grava `nvn_originals.c` com os procs puros e o manifesto conta `pure_nvn_procs`.
+`tests/python/test_nvnmap.py` (sem dados do jogo) e o teste CMake `nvn_texture_layout` cobrem a análise e o
+cálculo de tamanho de texturas.
 
 ## Resultados registrados
 

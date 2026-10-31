@@ -1,11 +1,32 @@
 # Integração gráfica: avaliação inicial
 
-Estado em 2026-10-31: existe um **back-end Vulkan próprio de janela/clear/apresentação**, testado sem o jogo,
-e uma ponte de entrada NVN ligada ao SDK por overrides. A lista MIT de nomes públicos foi incorporada;
-implementações de objetos/comandos da referência ainda não foram portadas. No modo gráfico o boot cria
-device/swapchain do host em `nv::InitializeGraphics`, configura HID, desserializa o NativeWindow e conecta o
-produtor VI/Binder. Para em `nvnDeviceBuilderSetDefaults`, primeira chamada NVN (416 SVCs). O modo legado
-continua parando em `nvdrv:Initialize`. Nenhum frame do jogo foi submetido.
+Estado em 2026-10-31 (atualizado): a **inicialização gráfica NVN do jogo completa** e o boot segue até o áudio
+(2876 SVCs). Nada é desenhado ainda: os comandos são gravados e aceitos, mas não há replay Vulkan nem tradutor
+de shaders. O modo legado continua parando em `nvdrv:Initialize`.
+
+### Como o front-end NVN está montado
+
+- **Driver original como fonte da verdade.** O NVN do alvo está ligado no `sdk`. `python -m dkrecomp.nvnmap
+  user_files/exefs --list | --purity | --dis REGEX` mapeia os 477 nomes às rotinas originais e mostra o código.
+  Layouts de builders, views e campos do device foram lidos dessas rotinas (offsets citados nos comentários
+  de `runtime/gfx/nvn_obj.c`). Tamanhos de objeto: limites inferiores pelos maiores offsets dos getters
+  originais (textura ≥ 0xac, sampler ≥ 0x50, command buffer ≥ 0x90, janela ≥ 0xc0), além do NVNsync de 0x40
+  confirmado pelo passo do array do jogo. O header 53.105 da referência subestima textura e sampler.
+- **Rotinas originais puras.** `gen.py --gfx` gera `nvn_originals.c` com os procs cuja rotina só usa argumentos e
+  dados constantes (`Purity`, com rastreio da origem dos ponteiros). `nvn.c` usa o original para builders,
+  estados, texture views, getters de pools de descritores, encoders de handle e modos do device.
+- **Host.** `nvn.c` (device, registro de procs) e `nvn_obj.c` (sync, pools, buffers, eventos, filas, texturas,
+  samplers, pools de descritores, programas, command buffers, janela/present). `nvn_tex.c` calcula tamanhos
+  block-linear (deko3d via TotK Recomp; 40 casos do SDK original passam).
+
+### Próximos passos gráficos
+
+1. Replay Vulkan dos registros de comando, capturando no momento da gravação o conteúdo dos ponteiros que cada
+   comando usa (hoje só registradores são guardados).
+2. Tradutor de shaders Maxwell → SPIR-V (avaliar o do Ryujinx/TotK Recomp, MIT) e cache.
+3. Texturas: desentrelaçamento block-linear, formatos e upload; apresentação pelo `vk.c`.
+4. Conferir o tamanho automático de bloco do NVN 53.105 contra texturas empacotadas reais (os casos de teste vêm
+   do NVN 55).
 
 ## Referência examinada
 

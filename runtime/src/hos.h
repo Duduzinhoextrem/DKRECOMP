@@ -110,6 +110,7 @@ uint32_t kern_thread_core(uint32_t handle, int set, int core, int *out);
 uint32_t kern_thread_id(uint32_t handle, uint64_t *out);
 int kern_is_thread(uint32_t handle);
 int kern_current_core(void);
+Cpu *kern_current_cpu(void); /* the calling guest thread's registers, NULL on host-only threads */
 uint32_t kern_current_handle(void);
 uint32_t kern_arbitrate_lock(uint32_t owner, uint64_t addr, uint32_t requester);
 uint32_t kern_arbitrate_unlock(uint64_t addr);

@@ -58,8 +58,8 @@
 
 ## Serviços (runtime/src/services.c)
 
-- Bloqueio atual com gráficos do host: primeira chamada NVN, `nvnDeviceBuilderSetDefaults`, após configurar HID,
-  desserializar o NativeWindow pelo SDK e conectar o produtor Binder (API 2).
+- Bloqueio atual com gráficos do host: **`audren:u` comando 1** (GetWorkBufferSize), depois da inicialização
+  gráfica NVN completa (2876 SVCs). O renderizador de áudio ainda não existe.
   Os rings HID ainda não publicam entrada; controles ficam desconectados.
   A lista de vibração registra os dispositivos ativados, mas rumble do host e envio de valores ainda faltam.
 - VI expõe somente Default 1280×720. Há limite de 64 layers; as identidades gerenciadas ainda duram até o fim
@@ -91,12 +91,21 @@
 
 ## Gráficos
 
-- O back-end do host apresenta e captura clears Vulkan. A inicialização gráfica já está ligada ao boot, mas
-  ainda não há geometria, shaders, texturas ou implementação dos objetos/comandos NVN. O jogo não submeteu frames.
-- A lista MIT de nomes NVN não representa cobertura de implementação: procs reconhecidos recebem um endereço,
-  mas os ausentes encerram a execução quando chamados; nomes desconhecidos devolvem NULL.
-- No carregamento do alvo, `nvnDeviceApplyDeferredFinalizes` e `nvnQueueAcquireTexture` não existem na lista mais
-  nova e devolvem NULL. Foram consultados, ainda não chamados. Acrescentar/adaptar as APIs antigas conforme o alvo.
+- **Nada é desenhado.** Os objetos NVN existem e os comandos são gravados e aceitos no submit, mas não há replay
+  Vulkan, tradutor de shaders nem upload de texturas. Toda submissão conta como concluída na hora (fences e
+  syncs sinalizam imediatamente). O present só cadencia a 60 Hz/intervalo; a janela não mostra o jogo.
+- Os registros de comando guardam só os registradores de argumento. Ponteiros (arrays de viewports, estados,
+  dados de uniform) não têm o conteúdo capturado na gravação; o replay terá que fazer isso por comando.
+- Memória de comando e de controle do jogo nunca é consumida: os getters relatam tudo livre e o callback de falta
+  de memória nunca roda.
+- Pools físicos/virtuais (MapVirtual) param com relatório; `QueueGetError` não escreve o info (layout do 53.105
+  desconhecido). `nvnTextureBuilderGetZCullStorageSize`, `GetSparseTileLayout` e `TextureViewCompare` ainda param.
+- O tamanho automático de bloco das texturas segue a regra medida no NVN 55; os 40 casos de teste também vêm do
+  NVN 55. Conferir contra texturas empacotadas reais do jogo.
+- A análise de pureza é conservativa e depende de offsets do `sdk` 1.0.0 (`nvnmap.py`); outra versão do SDK
+  falha na verificação de ordenação dos nomes.
+- A lista MIT de nomes NVN não representa cobertura de implementação: procs sem implementação encerram a
+  execução quando chamados; nomes desconhecidos devolvem NULL.
 - A janela atual é Win32 e usa uma fila com graphics+present, Vulkan 1.1 e swapchain RGBA/BGRA UNORM com suporte
   a transferência/readback. Outros formatos e plataformas ainda não foram implementados.
 - A camada de validação é opcional no build, mas foi usada localmente com sincronização ativa. A ferramenta

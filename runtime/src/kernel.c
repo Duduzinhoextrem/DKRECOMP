@@ -355,6 +355,7 @@ uint32_t kern_thread_id(uint32_t h, uint64_t *out) {
 }
 
 int kern_current_core(void) { return t_self ? t_self->core : 0; }
+Cpu *kern_current_cpu(void) { return t_self ? &t_self->cpu : NULL; }
 uint32_t kern_current_handle(void) { return t_self ? t_self->handle : 0; }
 
 void kern_note_svc(const char *name, uint64_t pc) {

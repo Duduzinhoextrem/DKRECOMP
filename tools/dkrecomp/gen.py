@@ -12,6 +12,7 @@ Output (all derived from the game, so it stays out of version control):
     <out>/<module>/table.c    dkr_fn_table_<module>, sorted by address
     <out>/<module>.img        the linked module image (text|ro|data, relocations applied; bss not stored)
     <out>/layout.c            module descriptors and the boot symbols for the runtime
+    <out>/nvn_originals.c     with --gfx: NVN procs whose original sdk routine is pure (dkrecomp.nvnmap)
     <out>/manifest.json       counts and timings
     <out>/build.ninja         compiles everything and links <out>/dkctf.exe with the runtime
 Files whose content did not change are not rewritten, so Ninja only recompiles what changed.
@@ -311,6 +312,19 @@ def write_layout(mods: List[linker.LinkedModule], syms: Dict[str, int], npdm_sta
     write_if_changed(os.path.join(out, "layout.c"), "\n".join(lines) + "\n")
 
 
+def write_nvn_originals(mods: List[linker.LinkedModule], out: str) -> int:
+    """List the NVN procs whose original driver routine only works on its arguments and constant data."""
+    from . import nvnmap
+    sdk = next(m for m in mods if m.name == "sdk")
+    pure = nvnmap.Purity(sdk)
+    rows = [(n, sdk.base + off) for n, off in nvnmap.proc_map(sdk).items() if off is not None and pure(off) == "pure"]
+    lines = [C_PRELUDE, '#include "dkr/nvn.h"', "", "const DkrNvnOriginal dkr_nvn_originals[] = {"]
+    lines += [f'    {{"{n}", 0x{a:x}ull}},' for n, a in rows]
+    lines += ["};", f"const size_t dkr_nvn_original_count = {len(rows)};"]
+    write_if_changed(os.path.join(out, "nvn_originals.c"), "\n".join(lines) + "\n")
+    return len(rows)
+
+
 def write_ninja(out: str, modules: List[Dict], gfx: bool = False) -> None:
     py = sys.executable.replace("\\", "/")
     inc = os.path.join(ROOT, "runtime", "include").replace("\\", "/")
@@ -355,10 +369,12 @@ def write_ninja(out: str, modules: List[Dict], gfx: bool = False) -> None:
         objs.append(o)
         lines.append(f"build {o}: cc_runtime {esc(os.path.join(ROOT, 'runtime', 'src', src))}")
     if gfx:
-        for src in ("vk.c", "nvn.c"):
+        for src in ("vk.c", "nvn.c", "nvn_obj.c", "nvn_tex.c"):
             o = f"obj/gfx/{src[:-2]}.o"
             objs.append(o)
             lines.append(f"build {o}: cc_gfx {esc(os.path.join(ROOT, 'runtime', 'gfx', src))}")
+        objs.append("obj/nvn_originals.o")
+        lines.append("build obj/nvn_originals.o: cc nvn_originals.c")
     objs.append("obj/layout.o")
     lines.append("build obj/layout.o: cc layout.c")
     lines.append(f"build dkctf.exe: link {' '.join(objs)}")
@@ -387,9 +403,10 @@ def generate(exefs: str, out: str, per_file: int, gfx: bool = False) -> Dict:
             with open(img, "wb") as fh:
                 fh.write(lm.image)
     write_layout(mods, syms, stack, out)
+    pure_nvn = write_nvn_originals(mods, out) if gfx else 0
     write_ninja(out, results, gfx)
     manifest = {"modules": [{k: v for k, v in r.items() if k != "files"} for r in results],
-                "seconds": round(time.time() - t0, 1), "graphics_hle": gfx}
+                "seconds": round(time.time() - t0, 1), "graphics_hle": gfx, "pure_nvn_procs": pure_nvn}
     with open(os.path.join(out, "manifest.json"), "w") as fh:
         json.dump(manifest, fh, indent=2)
     return manifest

@@ -63,8 +63,10 @@ Continuar guiado pelo primeiro comando ou salto pendente do log:
    usando aliases reais do Windows. Ativação/configuração de Npad e lista de vibração passam no boot; rings ainda
    vazios, back-end de entrada pendente. **VI inicial implementado:** display e parcel NativeWindow aceitos pelo SDK,
    Binder com refs/evento rastreados. Connect/Disconnect e escala implementados; Connect do SDK passa.
-   **Próximo:** `nvnDeviceBuilderSetDefaults` e layouts/semântica dos objetos NVN do alvo.
-   Boot gráfico medido em **416 SVCs**, com nove threads guest iniciadas. Modo legado revalidado em `nvdrv` (292 SVCs).
+   **Inicialização gráfica NVN completa** (2026-10-31): layouts medidos no driver NVN original do `sdk`, 211 procs
+   puros rodam o código original, o resto no host. Comandos são gravados mas não desenhados (sem replay/shaders).
+   Boot gráfico medido em **2876 SVCs**, parando em **`audren:u`**. Modo legado revalidado em `nvdrv` (292 SVCs).
+9. **Próximo:** renderizador de áudio (`audren:u`) e, em paralelo, replay Vulkan dos comandos NVN gravados.
 
 Critério original:
 

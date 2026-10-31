@@ -2,6 +2,32 @@
 
 Somente o que foi executado e verificado. Cada linha aponta para o comando que a reproduz (`docs/TESTING.md`).
 
+## 2026-10-31 — Inicialização gráfica NVN completa (sem renderização); boot chega ao áudio
+
+O driver NVN original está dentro do `sdk`. `dkrecomp.nvnmap` lê a tabela nome→rotina dele (477 nomes,
+`sdk+0x2e01e0` busca binária, tabela estática pela GOT `sdk+0x99b808`). Com isso os layouts de builders e
+objetos foram **medidos nas rotinas originais**, não copiados do NVN 55 do TotK. A análise de pureza separa as
+rotinas que só usam argumentos e dados constantes: **211** procs (builders, estados, views, encoders de handle,
+modos do device) passam a rodar o código original recompilado. A primeira versão da análise aceitava ponteiros
+lidos da memória e deixou passar `nvnTextureBuilderGetStorageSize`, que segue `builder->device` e lê estado
+interno do device: o boot falhou ali e a análise passou a rastrear a origem dos ponteiros (teste novo).
+
+O host implementa device, sync, memory pools, buffers, eventos, filas, texturas (layout block-linear do Tegra,
+adaptado do deko3d via TotK Recomp), samplers, pools de descritores com tabela de registros, programas
+(guardam o shader como o jogo entrega), command buffers e janela. **Modelo de GPU atual:** os comandos são
+gravados (proc + registradores de argumento) e aceitos no submit; ainda não existe replay Vulkan nem tradutor
+de shaders, então **nada é desenhado**. O present só cadencia a 60 Hz/intervalo e conta quadros.
+
+| Evidência | Resultado |
+|---|---|
+| Build incremental + boot de 30 s (`DKR_GFX_HIDDEN=1 tools/boot.sh 30`) | **2876 SVCs** (antes 416). Device API 53.105, fila, 9 memory pools, pools de 4096 samplers e 8448 texturas, **32 texturas** (render targets 1920×1080 RGBA8 de 0x870000 bytes), janela de 2 texturas 1920×1080 com intervalo 1. Para em **`audren:u` comando 1** (GetWorkBufferSize) |
+| `nvn_texture_layout` | **40/40** casos de tamanho/altura de bloco medidos no SDK original (NVN 55), pitch e layout empacotado |
+| `test_nvnmap.py` | setter puro; `builder->device->campo`, global gravável, `br` e ponteiro lido passado a call são impuros |
+| CMake/ctest; pytest | **10/10 passam**; **52 passam, 1 pulado** |
+
+Crashes do host agora são relatados com registradores e frames do guest (`crash_report` em `horizon.c`),
+em vez de terminar em silêncio.
+
 ## 2026-10-31 — Binder Connect aceito; primeira chamada NVN alcançada
 
 O parser de parcels valida limites/offsets e o token UTF-16 `android.gui.IGraphicBufferProducer`. Aceita os
