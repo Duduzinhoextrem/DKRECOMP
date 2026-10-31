@@ -10,12 +10,13 @@
 ## Limitações do recompilador
 
 - O decodificador cobre 100% do `main` e do `subsdk0`. **No `sdk` faltam** as extensões de criptografia (AES,
-  SHA-1, SHA-256, PMULL), CRC32, `CNTPCT_EL0`, `CTR_EL0` e formas saturadas (`sqadd`, `sqrshrn`): 67 funções.
+  SHA-1, SHA-256, PMULL), CRC32 e outras formas fora do subconjunto. A contagem antiga de 67 funções antecede
+  o suporte a SQADD/UQADD e narrowing saturado usado pelo áudio; precisa de nova medição de cobertura.
 - Os auxiliares SIMD (`simd.h`) usam laços genéricos por elemento: corretos, mas lentos. Especializar por tamanho de
   elemento é trabalho de desempenho para depois do primeiro boot.
 - **Só FPCR = 0 é modelado**: arredondamento ao mais próximo, sem flush-to-zero e sem modo default-NaN. Se o jogo
   escrever outro valor em FPCR, o resultado de FP pode divergir. Ainda não há aviso em tempo de execução para isso.
-  As flags acumuladas de exceção do FPSR não são mantidas.
+  As flags acumuladas de exceção do FPSR não são mantidas; FPSR.QC das novas operações inteiras saturadas é mantido.
 - O C gerado exige **CPU com FMA** (`-mfma`, Haswell/Zen ou mais novo), porque o FMADD precisa de multiplicação-soma
   fundida exata. É o mesmo requisito do TotK Recomp e do LAS Recomp.
 - Não suportados também: `DC ZVA` (o `DCZID_EL0` informa proibido), CRC32, LSE (ARMv8.1, não esperado no Switch),
@@ -58,12 +59,13 @@
 
 ## Serviços (runtime/src/services.c)
 
-- Parada atual: `audren:u:OpenAudioRenderer` (0). GetWorkBufferSize (1) aceita REV1–4 e execução DSP/automática;
-  REV5+, CPU/manual, IAudioRenderer, RequestUpdate, evento periódico e saída de som ainda faltam.
-  O SDK aceitou 0x9e000 de work buffer; isso não comprova processamento de áudio.
+- No modo gráfico, o áudio usa o servidor CPU/manual recompilado do SDK 4.4. O boot abriu renderer e saída WinMM,
+  capturou 200 quadros silenciosos e passou do antigo bloqueio. Ainda faltam validar som não silencioso,
+  Close/reabertura e uso prolongado. Outros SDKs/layouts e 32 kHz não são suportados nesse caminho.
+  O modo IPC legado continua implementando apenas GetWorkBufferSize REV1–4.
 
-- Bloqueio atual com gráficos do host: **`audren:u` comando 0** (OpenAudioRenderer), depois da inicialização
-  dos recursos NVN sem renderização (3102 SVCs na execução mais recente). O objeto de áudio ainda não existe.
+- Bloqueio atual com gráficos do host: **IFileSystem(save):GetEntryType (7)**, em 1.251.486 SVCs nessa execução.
+  Já há primeira chamada de apresentação NVN, mas nada é desenhado: replay Vulkan e shaders continuam pendentes.
   Os rings HID ainda não publicam entrada; controles ficam desconectados.
   A lista de vibração registra os dispositivos ativados, mas rumble do host e envio de valores ainda faltam.
 - VI expõe somente Default 1280×720. Há limite de 64 layers; as identidades gerenciadas ainda duram até o fim

@@ -53,7 +53,7 @@ def test_existing_c_chunks_migrate_to_stable_layout(tmp_path):
 
 
 def test_host_override_executes_for_direct_and_indirect_calls(tmp_path):
-    # caller: bl target; ret. Original target: add x0, x0, #1; ret. The host replacement must win both ways.
+    # caller: bl target; ret. The override delegates to the preserved add, then applies host behavior.
     code = struct.pack('<4I', 0x94000002, 0xd65f03c0, 0x91000400, 0xd65f03c0)
     module = Nso('', 0, [Segment('text', 0, len(code), None)], 0, code,
                  symbols=[Symbol('caller', 0, 8, 1, 2, 1), Symbol('canonical_target', 8, 8, 1, 2, 1),
@@ -69,18 +69,28 @@ def test_host_override_executes_for_direct_and_indirect_calls(tmp_path):
 extern void f_800000000(Cpu *);
 extern const DkrFnEntry dkr_fn_table_test[];
 extern const size_t dkr_fn_count_test;
+extern const DkrOriginal dkr_originals_test[];
+extern const size_t dkr_original_count_test;
 static int called;
-void test_override(Cpu *c) { called++; c->x[0] = c->x[0] * c->x[1] + 17; }
+void test_override(Cpu *c) {
+    called++;
+    rt_call_original(c, "test_override");
+    c->x[0] = c->x[0] * c->x[1] + 17;
+}
 int main(void) {
+    const DkrModule module = {.name = "test", .originals = dkr_originals_test,
+                             .original_count = &dkr_original_count_test};
+    rt_set_modules(&module, 1);
+    if (!rt_original("test_override") || rt_original("missing")) return 3;
     Cpu cpu = {0};
     cpu.x[0] = 5; cpu.x[1] = 7; cpu.x[19] = 0x12345678; cpu.nzcv = 0x60000000;
     f_800000000(&cpu);
-    if (called != 1 || cpu.x[0] != 52 || cpu.x[19] != 0x12345678 || cpu.nzcv != 0x60000000) return 1;
+    if (called != 1 || cpu.x[0] != 59 || cpu.x[19] != 0x12345678 || cpu.nzcv != 0x60000000) return 1;
     rt_register_table(dkr_fn_table_test, dkr_fn_count_test, 0x800000000ull, 0x800000010ull);
     cpu.x[0] = 2; cpu.x[1] = 3;
     rt_call(&cpu, 0x800000008ull);
-    if (called != 2 || cpu.x[0] != 23 || cpu.x[19] != 0x12345678) return 2;
-    puts("PASS: direct and indirect host overrides");
+    if (called != 2 || cpu.x[0] != 26 || cpu.x[19] != 0x12345678) return 2;
+    puts("PASS: direct and indirect host overrides with original delegation");
     return 0;
 }
 ''')

@@ -21,6 +21,10 @@ __attribute__((noreturn))
 #endif
 void hos_stop(Cpu *c, const char *fmt, ...);
 
+/* Host backend storage kept inside the guest address space and visible to QueryMemory. */
+uint64_t hos_backend_alloc(uint64_t size);
+void hos_backend_free(uint64_t address);
+
 /* ---- parsed request ------------------------------------------------------------------------------------- */
 typedef struct IpcBuf {
     uint64_t addr, size;

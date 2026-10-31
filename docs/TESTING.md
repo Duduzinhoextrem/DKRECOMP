@@ -20,7 +20,7 @@ usado para compilar o C gerado (x86-64) e os programas de teste (ARM64).
 
 Inclui testes unitários (formatos, decodificador × Capstone) e versões reduzidas dos testes diferenciais.
 O teste do gerador também compila/executa um módulo sintético para verificar overrides por alias em chamadas
-diretas e indiretas, preservando a passagem de argumentos/resultados e registradores não alterados pelo host.
+diretas e indiretas, com delegação explícita ao corpo original, argumentos/resultados e registradores preservados.
 
 As formas de narrowing saturado e soma saturada têm teste dedicado que também lê FPSR.QC com MRS:
 
@@ -191,9 +191,11 @@ Gera o C de todos os módulos da ExeFS, as imagens já ligadas, o `layout.c` e u
 PYTHONIOENCODING=utf-8 PYTHONPATH=tools .venv/Scripts/python -m dkrecomp.gen user_files/exefs --out generated/dkctf_v0
 ```
 
-Adicionar `--gfx` para ligar os overrides NVN e o back-end Vulkan ao executável. Sem essa opção, a geração
+Adicionar `--gfx` para ligar NVN/Vulkan e o renderizador CPU/manual do SDK 4.4 ao executável. Sem essa opção, a geração
 conserva o caminho original do SDK até os serviços/SVCs (`nvdrv` ainda não implementado). O modo gráfico exige
 os headers obtidos com `tools/fetch_gfx_deps.py`; no manifesto, `graphics_hle` identifica o modo escolhido.
+`DKR_AUDIO_NULL=1` mantém o processamento do SDK com temporizador e sem saída para o dispositivo Windows.
+O modo normal usa WinMM a 48 kHz estéreo. `audio_renderer` confere o decoder DeviceSink SDK 4 com dados sintéticos.
 
 ```bash
 .venv/Scripts/ninja -C generated/dkctf_v0 -j 12

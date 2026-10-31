@@ -46,6 +46,24 @@ GFX_OVERRIDES = {
     "_ZN2nv24FinalizeGraphicsDevtoolsEv": "dkr_nvn_devtools_finalize",
     "nvnBootstrapLoader": "dkr_nvn_bootstrap",
 }
+AUDIO_OVERRIDES = {
+    "_ZN2nn5audio30GetAudioRendererWorkBufferSizeERKNS0_22AudioRendererParameterE": "dkr_audio_work_size",
+    "_ZN2nn5audio17OpenAudioRendererEPNS0_19AudioRendererHandleERKNS0_22AudioRendererParameterEPvm": "dkr_audio_open",
+    "_ZN2nn5audio17OpenAudioRendererEPNS0_19AudioRendererHandleEPNS_2os11SystemEventERKNS0_22AudioRendererParameterEPvm": "dkr_audio_open_event",
+    "_ZN2nn5audio18CloseAudioRendererENS0_19AudioRendererHandleE": "dkr_audio_close",
+    "_ZN2nn5audio6server24AudioRendererManagerImpl17AudioRendererImpl29ExecuteAudioRendererRenderingEv": "dkr_audio_execute",
+}
+AUDIO_SYMBOLS = {
+    "execute": "_ZN2nn5audio29ExecuteAudioRendererRenderingENS0_19AudioRendererHandleE",
+    "lock": "_ZN2nn2os9LockMutexEPNS0_9MutexTypeE",
+    "unlock": "_ZN2nn2os11UnlockMutexEPNS0_9MutexTypeE",
+    "destroy_event": "_ZN2nn2os18DestroySystemEventEPNS0_15SystemEventTypeE",
+    "attach_event": "_ZN2nn2os17AttachSystemEventEPNS0_15SystemEventTypeEjbjbNS0_14EventClearModeE",
+    "create_thread": "_ZN2nn2os12CreateThreadEPNS0_10ThreadTypeEPFvPvES3_S3_mii",
+    "start_thread": "_ZN2nn2os11StartThreadEPNS0_10ThreadTypeE",
+    "wait_thread": "_ZN2nn2os10WaitThreadEPNS0_10ThreadTypeE",
+    "destroy_thread": "_ZN2nn2os13DestroyThreadEPNS0_10ThreadTypeE",
+}
 
 
 def write_if_changed(path: str, text: str) -> bool:
@@ -250,18 +268,23 @@ def lift_module(lm: linker.LinkedModule, out_dir: str, per_file: int, overrides=
             if host:
                 if not re.fullmatch(r"[A-Za-z_][A-Za-z_0-9]*", host):
                     raise ValueError(f"invalid host override identifier: {host}")
-                # Replace the lifted body itself: both C direct calls and table dispatch reach the override.
-                lines = [f"void {fname(base + s)}(Cpu *c) {{ /* {fn.name} */",
-                         f"    extern void {host}(Cpu *);", f"    {host}(c);", "}"]
-                unsup = []
-                overridden.append({"name": name, "address": hex(base + s), "host": host, "guest_words": (e - s) // 4})
+                # Keep an explicit trampoline to the original. Normal direct and indirect calls use the wrapper.
+                lines, unsup = lift_function(image, base, fn, {"is_function": is_fn})
+                definition = f"void {fname(base + s)}(Cpu *c)"
+                lines = [line.replace(definition, definition.replace("(Cpu", "_original(Cpu"), 1)
+                         if line.startswith(definition) else line for line in lines]
+                lines += [f"void {fname(base + s)}(Cpu *c) {{ /* host override */",
+                          f"    extern void {host}(Cpu *);", f"    {host}(c);", "}"]
+                overridden.append({"name": name, "address": hex(base + s), "host": host,
+                                   "original": fname(base + s) + "_original", "guest_words": (e - s) // 4})
             else:
                 lines, unsup = lift_function(image, base, fn, {"is_function": is_fn})
                 lifted_words += (e - s) // 4
             if name == BOOT_SYMBOLS["nn_main"]:
                 # Direct calls bypass rt_dispatch, so report the application entry inside its lifted body.
-                lines[1:1] = ["    extern void dkr_boot_entry(Cpu *, uint64_t);",
-                              f"    dkr_boot_entry(c, 0x{base + s:x}ull);"]
+                definition = next(k for k, line in enumerate(lines) if line.startswith(f"void {fname(base + s)}("))
+                lines[definition + 1:definition + 1] = ["    extern void dkr_boot_entry(Cpu *, uint64_t);",
+                                                        f"    dkr_boot_entry(c, 0x{base + s:x}ull);"]
             body += lines
             body.append("")
             defined.add(base + s)
@@ -281,6 +304,11 @@ def lift_module(lm: linker.LinkedModule, out_dir: str, per_file: int, overrides=
              f"const DkrFnEntry dkr_fn_table_{lm.name}[] = {{\n" +
              "".join(f"    {{0x{a:x}ull, {fname(a)}}},\n" for a in uniq) + "};\n" +
              f"const size_t dkr_fn_count_{lm.name} = {len(uniq)};\n")
+    table += "".join(f"void {entry['original']}(Cpu *c);\n" for entry in overridden)
+    table += f"const DkrOriginal dkr_originals_{lm.name}[] = {{\n"
+    table += "".join(f'    {{"{entry["host"]}", {entry["address"]}ull, {entry["original"]}}},\n'
+                     for entry in overridden) or "    {0},\n"
+    table += f"}};\nconst size_t dkr_original_count_{lm.name} = {len(overridden)};\n"
     written += write_if_changed(os.path.join(out_dir, "table.c"), table)
     files.append("table.c")
     return {"module": lm.name, "base": hex(base), "size": hex(lm.size), "functions": len(funcs),
@@ -291,17 +319,19 @@ def lift_module(lm: linker.LinkedModule, out_dir: str, per_file: int, overrides=
             "lift_seconds": round(time.time() - t0, 1)}
 
 
-def write_layout(mods: List[linker.LinkedModule], syms: Dict[str, int], npdm_stack: int, out: str) -> None:
+def write_layout(mods: List[linker.LinkedModule], syms: Dict[str, int], npdm_stack: int, out: str, gfx: bool = False) -> None:
     lines = [C_PRELUDE, '#include "dkr/rt.h"', ""]
     for lm in mods:
         lines.append(f"extern const DkrFnEntry dkr_fn_table_{lm.name}[];")
         lines.append(f"extern const size_t dkr_fn_count_{lm.name};")
+        lines.append(f"extern const DkrOriginal dkr_originals_{lm.name}[];")
+        lines.append(f"extern const size_t dkr_original_count_{lm.name};")
     lines.append("const DkrModule dkr_modules[] = {")
     for lm in mods:
         t_lo, t_hi = lm.text
         lines.append(f'    {{"{lm.name}", 0x{lm.base:x}ull, 0x{lm.size:x}ull, 0x{len(lm.image):x}ull, '
                      f'0x{t_lo:x}ull, 0x{t_hi:x}ull, 0x{lm.init or 0:x}ull, dkr_fn_table_{lm.name}, '
-                     f'&dkr_fn_count_{lm.name}}},')
+                     f'&dkr_fn_count_{lm.name}, dkr_originals_{lm.name}, &dkr_original_count_{lm.name}}},')
     lines.append("};")
     lines.append(f"const size_t dkr_module_count = {len(mods)};")
     for key, sym in BOOT_SYMBOLS.items():
@@ -309,6 +339,10 @@ def write_layout(mods: List[linker.LinkedModule], syms: Dict[str, int], npdm_sta
             raise SystemExit(f"boot symbol {sym} is not exported by any module")
         lines.append(f"const uint64_t dkr_sym_{key} = 0x{syms[sym]:x}ull; /* {sym} */")
     lines.append(f"const uint64_t dkr_main_thread_stack_size = 0x{npdm_stack:x}ull; /* main.npdm */")
+    if gfx:
+        lines += ['#include "dkr/audio_sdk.h"', 'const DkrAudioSdk dkr_audio_sdk = {']
+        lines += [f"    .{field} = 0x{syms[symbol]:x}ull," for field, symbol in AUDIO_SYMBOLS.items()]
+        lines.append('};')
     write_if_changed(os.path.join(out, "layout.c"), "\n".join(lines) + "\n")
 
 
@@ -336,7 +370,7 @@ def write_ninja(out: str, modules: List[Dict], gfx: bool = False) -> None:
         f"inc = -I{inc}",
         f"runtime_flags = {'-DDKR_ENABLE_GFX' if gfx else ''}",
         f"gfx_inc = -I{os.path.join(ROOT, 'toolchain', 'vulkan-headers', 'include').replace(chr(92), '/')}",
-        f"libs = {'-luser32 -lgdi32' if gfx else ''}",
+        f"libs = {'-luser32 -lgdi32 -lwinmm' if gfx else ''}",
         "rule cc",
         "  command = $cc $cflags $inc -MMD -MF $out.d -c $in -o $out",
         "  depfile = $out.d",
@@ -369,6 +403,11 @@ def write_ninja(out: str, modules: List[Dict], gfx: bool = False) -> None:
         objs.append(o)
         lines.append(f"build {o}: cc_runtime {esc(os.path.join(ROOT, 'runtime', 'src', src))}")
     if gfx:
+        for src in ("audio_sdk.c", "audio_pcm.c"):
+            o = f"obj/rt/{src[:-2]}.o"
+            objs.append(o)
+            lines.append(f"build {o}: cc_runtime {esc(os.path.join(ROOT, 'runtime', 'src', src))}")
+    if gfx:
         for src in ("vk.c", "nvn.c", "nvn_obj.c", "nvn_tex.c"):
             o = f"obj/gfx/{src[:-2]}.o"
             objs.append(o)
@@ -390,19 +429,20 @@ def generate(exefs: str, out: str, per_file: int, gfx: bool = False) -> Dict:
     if gfx:
         if not os.path.isfile(os.path.join(ROOT, "toolchain", "vulkan-headers", "include", "vulkan", "vulkan.h")):
             raise SystemExit("run .venv/Scripts/python tools/fetch_gfx_deps.py before --gfx")
-        for symbol in ("_ZN2nv18InitializeGraphicsEPvm", "nvnBootstrapLoader"):
+        for symbol in ("_ZN2nv18InitializeGraphicsEPvm", "nvnBootstrapLoader", *AUDIO_OVERRIDES, *AUDIO_SYMBOLS.values()):
             if symbol not in syms:
                 raise SystemExit(f"--gfx requires exported SDK symbol {symbol}")
     os.makedirs(out, exist_ok=True)
     stack = npdm.parse(open(os.path.join(exefs, "main.npdm"), "rb").read()).main_thread_stack_size
     results = []
     for lm in mods:
-        results.append(lift_module(lm, os.path.join(out, lm.name), per_file, GFX_OVERRIDES if gfx else None))
+        results.append(lift_module(lm, os.path.join(out, lm.name), per_file,
+                                   GFX_OVERRIDES | AUDIO_OVERRIDES if gfx else None))
         img = os.path.join(out, f"{lm.name}.img")
         if not os.path.exists(img) or open(img, "rb").read() != bytes(lm.image):
             with open(img, "wb") as fh:
                 fh.write(lm.image)
-    write_layout(mods, syms, stack, out)
+    write_layout(mods, syms, stack, out, gfx)
     pure_nvn = write_nvn_originals(mods, out) if gfx else 0
     write_ninja(out, results, gfx)
     manifest = {"modules": [{k: v for k, v in r.items() if k != "files"} for r in results],

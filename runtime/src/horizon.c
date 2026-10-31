@@ -12,6 +12,7 @@
 #include "hos.h"
 #ifdef DKR_ENABLE_GFX
 #include "dkr/nvn.h"
+#include "dkr/audio_sdk.h"
 #endif
 
 #include <stdarg.h>
@@ -81,6 +82,52 @@ static void region_set(uint64_t base, uint64_t span, uint64_t size, uint32_t sta
         if (g_regions[i].base < base || g_regions[i].base >= base + span) g_regions[j++] = g_regions[i];
     g_nregions = j;
     if (size) region_add(base, size, state, perm);
+}
+
+static struct { uint64_t base, size; } g_backend[32];
+static uint64_t g_backend_next = 0x7000000000ull;
+
+uint64_t hos_backend_alloc(uint64_t size) {
+    if (!size || size > 0x10000000) return 0;
+    size = (size + 0xffff) & ~0xffffull;
+    kern_lock();
+    unsigned slot;
+    for (slot = 0; slot < 32 && g_backend[slot].base; slot++) {}
+    if (slot == 32 || g_nregions >= 255) { kern_unlock(); return 0; }
+    uint64_t base = g_backend_next;
+    /* Guest ASLR mappings can occupy this range too. Skip every tracked overlap. */
+    for (int i = 0; i < g_nregions; i++)
+        if (base < g_regions[i].base + g_regions[i].size && g_regions[i].base < base + size)
+            base = (g_regions[i].base + g_regions[i].size + 0xffff) & ~0xffffull;
+    if (base + size > 0x7800000000ull) { kern_unlock(); return 0; }
+    uint64_t mapped = 0;
+    for (; mapped < size; mapped += 0x10000) if (rt_map_fixed(base + mapped, 0x10000)) break;
+    if (mapped != size) {
+        for (uint64_t p = 0; p < mapped; p += 0x10000) rt_unmap(base + p);
+        kern_unlock();
+        return 0;
+    }
+    g_backend_next = base + size;
+    g_backend[slot].base = base;
+    g_backend[slot].size = size;
+    region_add(base, size, MS_NORMAL, 3);
+    g_fixed_used += size;
+    kern_unlock();
+    return base;
+}
+
+void hos_backend_free(uint64_t address) {
+    if (!address) return;
+    kern_lock();
+    for (unsigned i = 0; i < 32; i++) if (g_backend[i].base == address) {
+        uint64_t size = g_backend[i].size;
+        for (uint64_t p = address; p < address + size; p += 0x10000) rt_unmap(p);
+        region_set(address, size, 0, 0, 0);
+        g_fixed_used -= size;
+        g_backend[i].base = g_backend[i].size = 0;
+        break;
+    }
+    kern_unlock();
 }
 
 /* ---- logging and stopping --------------------------------------------------------------------------------- */
@@ -458,6 +505,7 @@ int main(int argc, char **argv) {
     dkr_svc_hook = svc_handler;
 #ifdef DKR_ENABLE_GFX
     dkr_nvn_register(dkr_nvn_originals, dkr_nvn_original_count);
+    dkr_audio_register();
 #endif
 
     Cpu *c;

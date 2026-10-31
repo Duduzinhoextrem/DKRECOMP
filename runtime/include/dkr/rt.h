@@ -14,6 +14,13 @@ typedef struct DkrFnEntry {
     GuestFn fn;
 } DkrFnEntry;
 
+/* A host override can explicitly delegate to the preserved guest implementation. */
+typedef struct DkrOriginal {
+    const char *host;
+    uint64_t addr;
+    GuestFn fn;
+} DkrOriginal;
+
 /* Indirect branches look addresses up in the registered tables, then in the host functions. */
 void rt_register_table(const DkrFnEntry *table, size_t count, uint64_t lo, uint64_t hi);
 GuestFn rt_lookup(uint64_t addr);
@@ -26,6 +33,8 @@ const char *rt_hostfn_name(uint64_t addr);
 
 /* Call guest code from the host: x0..x7 = args, then returns when the guest function returns. */
 void rt_call(Cpu *c, uint64_t addr);
+const DkrOriginal *rt_original(const char *host);
+void rt_call_original(Cpu *c, const char *host);
 
 /* A generated, statically linked module (tools/dkrecomp/gen.py writes the table of these in layout.c). */
 typedef struct DkrModule {
@@ -36,6 +45,8 @@ typedef struct DkrModule {
     uint64_t init;             /* DT_INIT, 0 if none */
     const DkrFnEntry *table;
     const size_t *count;
+    const DkrOriginal *originals;
+    const size_t *original_count;
 } DkrModule;
 
 /* SVC dispatch: the Horizon layer installs its handler here. */

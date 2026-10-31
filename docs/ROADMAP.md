@@ -66,7 +66,9 @@ Continuar guiado pelo primeiro comando ou salto pendente do log:
    **Inicialização gráfica NVN completa** (2026-10-31): layouts medidos no driver NVN original do `sdk`, 211 procs
    puros rodam o código original, o resto no host. Comandos são gravados mas não desenhados (sem replay/shaders).
    Boot gráfico medido em **2876 SVCs**, parando em **`audren:u`**. Modo legado revalidado em `nvdrv` (292 SVCs).
-9. **Próximo:** renderizador de áudio (`audren:u`) e, em paralelo, replay Vulkan dos comandos NVN gravados.
+9. **Áudio CPU/manual do SDK ligado**: renderer abre, WinMM recebe quadros silenciosos e o boot chega ao primeiro
+   present NVN, depois para em GetEntryType do save. **Próximo:** operações do save e continuação do boot,
+   seguida da captura completa/replay Vulkan e tradução dos shaders.
 
 Critério original:
 
@@ -79,8 +81,9 @@ comandos restantes, instruções ainda não suportadas se executadas e demais su
 
 ## MVP 6 — Gameplay
 
-Etapa A do plano em andamento: work buffer do áudio aceito em 0x9e000 bytes; próximo comando é
-`audren:u:OpenAudioRenderer` (0). Ainda não há processamento/som, controles publicados ou imagem do jogo.
+O servidor CPU/manual do SDK substitui a proposta inicial de simular áudio silencioso por IPC. Abertura e
+processamento de 200 quadros silenciosos medidos; não há áudio audível confirmado, controles publicados ou
+imagem do jogo. O primeiro present NVN aparece, mas o boot ainda para no save antes do critério de 600 presents.
 
 Avaliação da integração gráfica: `docs/GRAPHICS_PORT.md`. O back-end próprio do host passa no teste de
 clear/apresentação, resize e readback, inclusive validação de sincronização. Ainda não há frame do jogo nem NVN.

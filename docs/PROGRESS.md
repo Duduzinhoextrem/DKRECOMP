@@ -2,6 +2,25 @@
 
 Somente o que foi executado e verificado. Cada linha aponta para o comando que a reproduz (`docs/TESTING.md`).
 
+## 2026-10-31 — Áudio CPU do SDK abre; primeira apresentação NVN e próxima parada no save
+
+`--gfx` agora intercepta GetWorkBufferSize/Open/Close do AudioRenderer e utiliza o servidor CPU/manual já
+presente no SDK 4.4. O gerador preserva um trampoline para a implementação original de cada override, acessível
+por `rt_call_original`; chamadas normais continuam chegando ao host. Teste sintético confere delegação direta e indireta.
+
+| Evidência | Resultado |
+|---|---|
+| Boot incremental de 30 s | Para em **IFileSystem(save):GetEntryType (7)**, após **1.251.486 SVCs**, em aproximadamente 6 s |
+| Armazenamento do renderer | Jogo recebe **0x9e000**; servidor CPU precisa de **0xa0000**, alocado pelo host em região guest rastreada |
+| Thread/evento | Thread criada pelo próprio SDK, com TLR/ThreadType válidos; evento local substituído por handles do mesmo evento de kernel |
+| Saída Windows | WinMM abriu **48 kHz estéreo, 4 × 240 amostras**; captura registrou **200 quadros do SDK, todos silenciosos** |
+| Gráficos | Primeira chamada **`nvn: present #1`**; **nenhuma imagem**, pois replay/shaders ainda não existem |
+| Recursos posteriores | Log chegou a **Texture #1431**, depois do antigo bloqueio de áudio |
+
+`audio_renderer` também confere captura DeviceSink SDK 4: estéreo, clipping, downmix de seis canais, índice inválido,
+buffer curto, comando desativado e lista truncada. O teste não comprova som do jogo. Close/reabertura e estabilidade
+prolongada ainda precisam ser exercitados. Pesquisa e fontes: `PLAYABLE_RESEARCH.md`.
+
 ## 2026-10-31 — SIMD do renderizador CPU de áudio
 
 O boot com o servidor CPU do SDK executou `SQRSHRN` e `SQADD`, antes ausentes. Foram implementadas as formas

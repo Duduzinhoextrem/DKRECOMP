@@ -37,7 +37,7 @@ if(WIN32)
   target_link_libraries(dkr_shared_test PRIVATE dkr_runtime)
   add_executable(dkr_vi_test tests/native/vi_test.c runtime/src/vi.c runtime/src/ipc.c)
   target_link_libraries(dkr_vi_test PRIVATE dkr_runtime)
-  add_executable(dkr_audio_test tests/native/audio_test.c runtime/src/audio.c runtime/src/ipc.c)
+  add_executable(dkr_audio_test tests/native/audio_test.c runtime/src/audio.c runtime/src/audio_pcm.c runtime/src/ipc.c)
   target_link_libraries(dkr_audio_test PRIVATE dkr_runtime)
 endif()
 

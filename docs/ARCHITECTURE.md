@@ -66,8 +66,9 @@ main/sdk NSO ──► decoder ARM64 ──► lifter ──► C gerado ──�
   com relatório.
 - O corpo recompilado de `nnMain` registra sua entrada no log, inclusive se for chamado diretamente pelo SDK.
 - Overrides de host são resolvidos pelos endereços dos símbolos, incluindo aliases, e substituem o corpo C
-  da função. Assim chamadas diretas e indiretas chegam ao mesmo tratador. O manifesto identifica as funções
-  substituídas e não conta suas instruções como recompiladas. A opção `--gfx` habilita os overrides gráficos.
+  normal da função. Chamadas diretas e indiretas chegam ao mesmo tratador. O corpo original fica num trampoline
+  separado, listado por módulo e acessível explicitamente por `rt_call_original`; isso permite delegar ao SDK
+  depois de ajustar argumentos. O manifesto separa esses corpos das funções normais. `--gfx` habilita NVN e áudio CPU.
 
 ## IPC e serviços
 
@@ -155,7 +156,15 @@ main/sdk NSO ──► decoder ARM64 ──► lifter ──► C gerado ──�
 
 O serviço `audren:u` começa em `runtime/src/audio.c`, com dimensionamento do work buffer REV1–4 sobre o
 parâmetro interno de 0x34 bytes. A fórmula DSP é adaptada do nxnative MIT (origem/licença nos avisos de terceiros).
-Abertura do renderer, atualização de estado e saída de áudio permanecem pendentes.
+No modo `--gfx`, `audio_sdk.c` converte o parâmetro público para CPU/manual e delega ao servidor/processador
+recompilados do SDK 4.4, incluindo parsing de updates, vozes e efeitos. O host preserva o orçamento DSP e aloca
+armazenamento adicional em regiões guest visíveis a QueryMemory. A thread é criada pelo SDK e usa sua própria
+ThreadType/TLR. O evento é de kernel, com dois handles compartilhando a mesma identidade.
+
+O hook de execução serializa geração, processamento e captura com o mutex de Update do SDK. `audio_pcm.c`
+extrai o DeviceSink SDK 4 e converte para PCM estéreo de 16 bits. WinMM devolve os buffers tocados para cadenciar
+a thread. Sem dispositivo ou com `DKR_AUDIO_NULL=1`, o renderer usa um temporizador e registra a ausência de som.
+O boot comprovou abertura e processamento de quadros silenciosos; ainda não comprovou áudio audível do jogo.
 
 | Pasta | Conteúdo | Estado |
 |---|---|---|
@@ -170,7 +179,8 @@ Abertura do renderer, atualização de estado e saída de áudio permanecem pend
 | `runtime/src/core.c` | Despacho, CAS, barreiras, mapeamento fixo, contador de sistema, tratadores de trap | Pronto |
 | `runtime/src/horizon.c`, `kernel.c`, `ipc.c`, `services.c`, `fs.c`, `save.c`, `shared.c`, `hid.c`, `vi.c` | Boot, SVCs, threads, sincronização, IPC, serviços, RomFS, save, shared memory/HID e display/VI | Parcial, guiado pelo boot |
 | `runtime/gfx/` | Janela/apresentação Vulkan próprias verificadas; adaptação NVN pendente | Parcial, independente do jogo |
-| `runtime/audio/`, `runtime/input/`, `runtime/config/` | Áudio (SDL3), entrada, configuração | *(planejado)* |
+| `runtime/src/audio*.c` | Dimensionamento IPC, servidor CPU do SDK e saída WinMM | Quadros silenciosos medidos no boot |
+| `runtime/input/`, `runtime/config/` | Entrada do host, configuração | *(planejado)* |
 | `tests/python/` | Testes unitários (formatos, decodificador × Capstone) | Pronto |
 | `tests/diff/` | Testes diferenciais: instrução isolada e funções inteiras | Pronto |
 | `tests/native/` | Testes de valor conhecido do `cpu.h`, via CMake | Pronto |

@@ -74,6 +74,26 @@ void rt_set_modules(const DkrModule *mods, size_t count) {
     g_nmods = count;
 }
 
+const DkrOriginal *rt_original(const char *host) {
+    for (size_t i = 0; i < g_nmods; i++) {
+        const DkrModule *m = &g_mods[i];
+        size_t n = m->original_count ? *m->original_count : 0;
+        for (size_t j = 0; j < n; j++)
+            if (!strcmp(m->originals[j].host, host)) return &m->originals[j];
+    }
+    return NULL;
+}
+
+void rt_call_original(Cpu *c, const char *host) {
+    const DkrOriginal *original = rt_original(host);
+    if (!original) {
+        fprintf(stderr, "dkr: no preserved guest implementation for %s\n", host);
+        abort();
+    }
+    c->pc = original->addr;
+    original->fn(c);
+}
+
 const char *rt_describe(uint64_t addr, char *buf, size_t n) {
     for (size_t i = 0; i < g_nmods; i++)
         if (addr >= g_mods[i].base && addr < g_mods[i].base + g_mods[i].size) {

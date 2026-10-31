@@ -2,6 +2,7 @@
  * REV4 0x308000 fixture: nxnative t_audren_work.c @ 5474c6f3, MIT, Copyright (c) 2026 seedds.
  * License: runtime/third_party/LICENSE-nxnative.txt. No renderer or audio data from a game is embedded. */
 #include "../../runtime/src/hos.h"
+#include "dkr/audio_sdk.h"
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -15,7 +16,34 @@ void hos_stop(Cpu *c, const char *fmt, ...) {
 void kern_sync_poke(uint32_t handle) { (void)handle; }
 Service *hos_get_service(const char *name) { (void)name; return NULL; }
 
+static void test_device_sink(void) {
+    uint8_t commands[0x160] = {0};
+    uint64_t base = (uint64_t)(uintptr_t)commands, sink = base + 0x20;
+    int32_t mix[6][4] = {{40000, -40000, 7, -8}, {-32000, 32000, -9, 10}};
+    int16_t pcm[8] = {0};
+    st32(base + 4, 1); st64(base + 8, (uint64_t)(uintptr_t)mix);
+    st32(base + 0x10, 6); st32(base + 0x14, 4); st32(base + 0x18, 48000);
+    st32(sink, 0xcafebabe); st16(sink + 4, 0x130); st16(sink + 6, 0xf); st8(sink + 0x10, 1);
+    st32(sink + 0x120, 2); st8(sink + 0x124, 0); st8(sink + 0x125, 1);
+    CHECK(dkr_audio_capture_sdk4(commands, sizeof commands, pcm, 8) == 4);
+    CHECK(pcm[0] == 32767 && pcm[2] == -32768 && pcm[1] == -32000 && pcm[3] == 32000);
+    CHECK(pcm[4] == 7 && pcm[5] == -9 && pcm[6] == -8 && pcm[7] == 10);
+    CHECK(!dkr_audio_capture_sdk4(commands, sizeof commands, pcm, 7));
+    CHECK(!dkr_audio_capture_sdk4(commands, 0x14f, pcm, 8));
+    st8(sink + 0x125, 0xff);
+    CHECK(!dkr_audio_capture_sdk4(commands, sizeof commands, pcm, 8));
+    st8(sink + 0x125, 1); st8(sink + 0x10, 0);
+    CHECK(!dkr_audio_capture_sdk4(commands, sizeof commands, pcm, 8));
+    st8(sink + 0x10, 1); st32(base + 4, 2); /* malformed command after the valid sink */
+    CHECK(!dkr_audio_capture_sdk4(commands, sizeof commands, pcm, 8));
+    st32(base + 4, 1); st32(sink + 0x120, 6);
+    for (unsigned i = 0; i < 6; i++) { st8(sink + 0x124 + i, i); mix[i][0] = 1000; }
+    CHECK(dkr_audio_capture_sdk4(commands, sizeof commands, pcm, 8) == 4);
+    CHECK(pcm[0] == 2664 && pcm[1] == 2664);
+}
+
 int main(void) {
+    test_device_sink();
     const uint32_t fixture[13] = {48000, 240, 132, 19, 138, 1, 16, 0, 0, 0, 0, 0, 0x34564552};
     uint32_t parameter[13];
     memcpy(parameter, fixture, sizeof parameter);
@@ -54,6 +82,6 @@ int main(void) {
     memcpy(&result, msg + 0x18, 4); memcpy(&size, msg + 0x20, 8);
     CHECK(result == HOS_OK && size == 0x308000 && (size & 0xfff) == 0);
     hos_close_handle(session);
-    printf("AudioRenderer sizing: %s (REV4 service fixture, bounds, revision, padding, IPC)\n", failures ? "FAIL" : "PASS");
+    printf("AudioRenderer: %s (REV4 sizing/IPC; SDK 4 DeviceSink stereo, downmix, clipping, malformed lists)\n", failures ? "FAIL" : "PASS");
     return failures ? 1 : 0;
 }
