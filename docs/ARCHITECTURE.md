@@ -108,7 +108,9 @@ main/sdk NSO ──► decoder ARM64 ──► lifter ──► C gerado ──�
   local `toolchain/`, com revisão/digest e avisos em `THIRD_PARTY_NOTICES.md`.
 - `runtime/gfx/nvn.c` liga o SDK ao host no boot com `--gfx`: registra endereços para nomes públicos NVN antes
   das threads, cria o contexto Vulkan em `nv::InitializeGraphics` e fornece o lookup de procs. Funções ainda
-  ausentes param com seu nome; objetos e comandos de desenho NVN ainda não foram portados.
+  ausentes param com seu nome. `nvn_obj.c` mantém os objetos e grava comandos; `nvn_tex.c` calcula layouts.
+  `nvn_originals.c` gerado fornece 211 rotinas puras do próprio driver recompilado (builders, estados, views),
+  selecionadas por `nvnmap.py`. O modelo atual aceita submits, sem replay Vulkan nem shaders; nenhum desenho.
 
 ## Memória compartilhada e HID
 

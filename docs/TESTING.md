@@ -231,6 +231,21 @@ gerador grava `nvn_originals.c` com os procs puros e o manifesto conta `pure_nvn
 `tests/python/test_nvnmap.py` (sem dados do jogo) e o teste CMake `nvn_texture_layout` cobrem a análise e o
 cálculo de tamanho de texturas.
 
+Comparação diferencial dos dois builders de device contra o SDK 4.4.0 do usuário (os endereços pertencem a esse
+build; imagem e relatório permanecem ignorados):
+
+```bash
+PYTHONPATH=tools .venv/Scripts/python -m dkrecomp.testing.nvn_probe \
+  --image generated/dkctf_v0/sdk.img --base 0x806e00000 --memory-size 0xa89000 \
+  --resolver 0x8070deef8 --ready-flag 0x807869a00 --native build/zig/dkr_nvn_test.exe \
+  --cases 512 --out reports/nvn_builder_probe.json
+```
+
+O probe marca uma guarda de inicialização **somente dentro do Unicorn**, resolve as funções originais e compara
+as escritas em regiões aleatórias com canaries contra o bridge nativo. Não inicializa a GPU original. O modo
+binário `--builder-probe` do teste C não contém código do jogo. Medido: 512 casos, zero diferenças; SetDefaults
+zera exatamente 16 bytes e SetFlags altera somente os 32 bits iniciais.
+
 ## Resultados registrados
 
 O teste nativo `shared_memory` usa dados sintéticos para verificar aliases reais host/guest, bases de 4 KiB,

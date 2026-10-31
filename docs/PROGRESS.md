@@ -2,6 +2,19 @@
 
 Somente o que foi executado e verificado. Cada linha aponta para o comando que a reproduz (`docs/TESTING.md`).
 
+## 2026-10-31 — Estado NVN atual revalidado e builders comparados com o SDK
+
+Após a integração dos objetos NVN, build incremental + boot confirmam a parada posterior em **`audren:u`
+comando 1 (GetWorkBufferSize)**, desta vez em **2615 SVCs**. O renderer solicitado tem 48 kHz, 240 amostras e
+revisão REV4. A contagem varia com o escalonamento; o ponto de parada coincide com o avanço inicial de 2876 SVCs.
+
+`dkrecomp.testing.nvn_probe` compara o bridge nativo com o SDK original sob Unicorn: **512 casos, zero diferenças**
+para DeviceBuilderSetDefaults/SetFlags, incluindo regiões aleatórias e guardas de escrita. O resolver e a guarda
+de inicialização são informados pela CLI; a guarda só é marcada no emulador, sem executar a inicialização GPU.
+Relatório local: `reports/nvn_builder_probe.json`; imagem SHA-256 `5ce080b39a770f512fac8b1b77a21d7eb057dbabf2e23c5d63e26482597b0766`.
+
+Suítes atuais executadas: **10/10 CMake/ctest**, **52 testes Python passam, 1 pulado**. Nenhum frame do jogo.
+
 ## 2026-10-31 — Inicialização gráfica NVN completa (sem renderização); boot chega ao áudio
 
 O driver NVN original está dentro do `sdk`. `dkrecomp.nvnmap` lê a tabela nome→rotina dele (477 nomes,

@@ -4,6 +4,8 @@
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <fcntl.h>
+#include <io.h>
 
 static int failures;
 #define CHECK(cond) do { if (!(cond)) { printf("FAIL %s:%d %s\n", __FILE__, __LINE__, #cond); failures++; } } while (0)
@@ -12,11 +14,31 @@ void hos_stop(Cpu *c, const char *fmt, ...) {
     (void)c; va_list ap; va_start(ap, fmt); vprintf(fmt, ap); va_end(ap); exit(3);
 }
 
-int main(void) {
+static int builder_probe(uint64_t defaults, uint64_t flags) {
+    /* Binary test protocol: records {u64 operation, u64 flags, 64 bytes including guards}; return 64 bytes.
+     * This allows a local original-SDK oracle to compare the actual host bridge without embedding game code. */
+    _setmode(_fileno(stdin), _O_BINARY);
+    _setmode(_fileno(stdout), _O_BINARY);
+    for (;;) {
+        uint64_t header[2];
+        uint8_t memory[64];
+        size_t n = fread(header, 1, sizeof header, stdin);
+        if (!n && feof(stdin)) return 0;
+        if (n != sizeof header || fread(memory, 1, sizeof memory, stdin) != sizeof memory || header[0] > 1) return 2;
+        Cpu cpu = {0};
+        cpu.x[0] = (uint64_t)(uintptr_t)(memory + 16);
+        cpu.x[1] = header[1];
+        rt_call(&cpu, header[0] ? flags : defaults);
+        if (fwrite(memory, 1, sizeof memory, stdout) != sizeof memory) return 2;
+    }
+}
+
+int main(int argc, char **argv) {
     dkr_nvn_register(NULL, 0);
     uint64_t defaults = dkr_nvn_proc_address("nvnDeviceBuilderSetDefaults");
     uint64_t flags = dkr_nvn_proc_address("nvnDeviceBuilderSetFlags");
     uint64_t lookup = dkr_nvn_proc_address("nvnDeviceGetProcAddress");
+    if (argc == 2 && !strcmp(argv[1], "--builder-probe")) return builder_probe(defaults, flags);
     CHECK(defaults && flags && lookup);
     CHECK(dkr_nvn_proc_address("nvnDeviceApplyDeferredFinalizes"));
     CHECK(dkr_nvn_proc_address("nvnQueueAcquireTexture"));
