@@ -28,6 +28,7 @@
  * One GOB is 64 bytes x 8 rows (512 bytes). The block height (in GOBs, log2) is chosen from height x 1.5 truncated
  * to whole GOB rows, as the NVN SDK does; packaged textures carry their own block height and depth. */
 #include "nvn_tex.h"
+#include <string.h>
 
 typedef struct { uint8_t bpb, bw, bh; } Fmt; /* bytes per block, block width and height (1x1 when uncompressed) */
 
@@ -156,4 +157,54 @@ void nvn_tex_layout(const NvnTexDesc *d, NvnTexLayout *o) {
     o->layer_size = ls;
     o->size = layered ? ls * z : ls;
     o->align = 512;
+}
+
+int nvn_tex_level(const NvnTexDesc *d, unsigned level, unsigned layer, NvnTexLevel *o) {
+    memset(o, 0, sizeof *o);
+    if (!d->width || !d->height || d->width > 16384 || d->height > 16384 || d->depth > 2048 ||
+        level >= (d->levels ? d->levels : 1) || level >= 15 || d->samples > 1 || d->target == 5 || d->target == 6 || d->target == 10) return -1;
+    Fmt t = fmt_of(d->format);
+    if (!t.bpb) return -1;
+    NvnTexLayout layout; nvn_tex_layout(d, &layout);
+    if (layer >= layout.layers) return -1;
+    unsigned dpl; int layered; uint32_t w, h, z;
+    shape(d, &dpl, &layered, &w, &h, &z);
+    o->width = mip(w, level); o->height = mip(h, level); o->depth = dpl == 3 ? mip(z, level) : 1;
+    o->block_width = t.bw; o->block_height = t.bh;
+    o->row_bytes = blk(o->width, t.bw) * t.bpb; o->rows = blk(o->height, t.bh);
+    o->linear_size = (uint64_t)o->row_bytes * o->rows * o->depth;
+    if (d->flags & 0x50) {
+        if (level || layer || dpl > 2 || layered) return -1;
+        unsigned align = d->flags & 0x40 ? 128 : 32;
+        o->linear_stride = d->stride ? d->stride : (o->row_bytes + align - 1) & ~(align - 1);
+        return o->linear_stride >= o->row_bytes ? 0 : -1;
+    }
+    o->offset = (uint64_t)layer * layout.layer_size + level_offset(d, level, dpl, w, h, z, layout.tile_h, layout.tile_d, t);
+    o->tile_h = adj_tile(layout.tile_h, 8, o->rows); o->tile_d = adj_tile(layout.tile_d, 1, o->depth);
+    return 0;
+}
+
+/* Tegra GOB addressing, adapted from MacNativeGames nvn_deswizzle.c via TotK Recomp tex_deswizzle.c
+ * c3b9a4e7f6ec3d1f0a8c84b66b1703b15639a784, MIT, Copyright (c) 2026 jhaizhou.
+ * Full MIT notice: third_party/LICENSE-MacNativeGames.txt. Bounds checking/copy interface below is DKRecomp's. */
+uint64_t nvn_tex_block_offset(uint32_t x, uint32_t y, uint32_t z, uint32_t row_bytes, uint32_t rows, unsigned th, unsigned td) {
+    uint32_t bh = 1u << th, bd = 1u << td;
+    uint64_t columns = (row_bytes + 63) / 64, block_rows = (rows + 8 * bh - 1) / (8 * bh), block = 512ull * bh * bd;
+    uint32_t gob = (x % 64 / 32)*256 + (y % 8 / 2)*64 + (x % 32 / 16)*32 + (y % 2)*16 + x % 16;
+    return (z / bd)*columns*block_rows*block + (y / (8*bh))*columns*block + (x / 64)*block +
+           ((z % bd)*bh + (y % (8*bh))/8)*512ull + gob;
+}
+
+int nvn_tex_linearize(const NvnTexDesc *d, const void *storage, uint64_t size, unsigned level, unsigned layer,
+                      void *linear, uint64_t bytes) {
+    NvnTexLevel l;
+    if (!storage || !linear || nvn_tex_level(d, level, layer, &l) || bytes < l.linear_size) return -1;
+    for (uint32_t z = 0; z < l.depth; z++) for (uint32_t y = 0; y < l.rows; y++) for (uint32_t x = 0; x < l.row_bytes; x += 16) {
+        uint32_t n = l.row_bytes - x < 16 ? l.row_bytes - x : 16;
+        uint64_t offset = l.offset + (l.linear_stride ? (uint64_t)y*l.linear_stride + x :
+            nvn_tex_block_offset(x, y, z, l.row_bytes, l.rows, l.tile_h, l.tile_d));
+        if (offset > size || n > size - offset) return -1;
+        memcpy((uint8_t *)linear + ((uint64_t)z*l.rows + y)*l.row_bytes + x, (const uint8_t *)storage + offset, n);
+    }
+    return 0;
 }

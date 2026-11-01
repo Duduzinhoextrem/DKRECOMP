@@ -2,6 +2,7 @@
  * Batches currently complete synchronously. This intentionally favors a verifiable lifetime model before
  * introducing asynchronous submissions; there are no guessed "GPU complete" fences in this layer. */
 #include "vk_internal.h"
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -32,6 +33,7 @@ struct DkrVkResources {
     Framebuffer *framebuffers;
     VkDescriptorPool descriptors;
     VkPhysicalDeviceProperties properties;
+    DkrVkImage *snapshot;
 };
 
 static DkrVkResources *resources(DkrGfx *g) {
@@ -83,7 +85,10 @@ int dkr_vk_image_create(DkrGfx *g, const DkrVkImageInfo *info, DkrVkImage **out)
         (format.optimalTilingFeatures & VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT))
         image->usage |= VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
     if (format.optimalTilingFeatures & VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT) image->usage |= VK_IMAGE_USAGE_STORAGE_BIT;
-    VkImageCreateInfo create = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, .imageType = VK_IMAGE_TYPE_2D,
+    VkImageCreateFlags image_flags = info->aspect == VK_IMAGE_ASPECT_COLOR_BIT ? VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT : 0;
+    if (info->layers >= 6 && info->width == info->height) image_flags |= VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT;
+    VkImageCreateInfo create = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+        .flags = image_flags, .imageType = VK_IMAGE_TYPE_2D,
         .format = info->format, .extent = {info->width, info->height, 1}, .mipLevels = info->levels,
         .arrayLayers = info->layers, .samples = VK_SAMPLE_COUNT_1_BIT, .tiling = VK_IMAGE_TILING_OPTIMAL,
         .usage = image->usage, .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
@@ -107,6 +112,31 @@ int dkr_vk_image_create(DkrGfx *g, const DkrVkImageInfo *info, DkrVkImage **out)
         view.subresourceRange = (VkImageSubresourceRange){info->aspect, 0, 1, 0, 1};
         VK_TRY(g, g->vkCreateImageView(g->device, &view, NULL, &image->target_view));
     }
+    return 0;
+}
+
+int dkr_vk_image_view(DkrGfx *g, DkrVkImage *image, const DkrVkViewInfo *info, DkrVkView **out) {
+    if (!g || !image || image->owner != g || !info || !out) return -1;
+    *out = NULL;
+    if (!info->levels || !info->layers || info->base_level >= image->info.levels || info->levels > image->info.levels - info->base_level ||
+        info->base_layer >= image->info.layers || info->layers > image->info.layers - info->base_layer ||
+        !info->aspects || (info->aspects & ~image->info.aspect)) return dkr_vk_fail(g, "image view exceeds its storage");
+    for (DkrVkView *v = image->views; v; v = v->next) if (!memcmp(&v->info, info, sizeof *info)) { *out = v; return 0; }
+    VkFormatProperties format;
+    g->vkGetPhysicalDeviceFormatProperties(g->physical, info->format, &format);
+    VkImageUsageFlags usage = image->usage;
+    if (!(format.optimalTilingFeatures & VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT)) usage &= ~VK_IMAGE_USAGE_STORAGE_BIT;
+    if (!(format.optimalTilingFeatures & VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT)) usage &= ~VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+    if (!(format.optimalTilingFeatures & VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT)) usage &= ~VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
+    if (!(format.optimalTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT)) usage &= ~VK_IMAGE_USAGE_SAMPLED_BIT;
+    DkrVkView *v = calloc(1, sizeof *v);
+    if (!v) return dkr_vk_fail(g, "out of memory creating image view");
+    v->image = image; v->info = *info; v->next = image->views; image->views = v; *out = v;
+    VkImageViewUsageCreateInfo limited = {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_USAGE_CREATE_INFO, .usage = usage};
+    VkImageViewCreateInfo create = {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO, .pNext = &limited,
+        .image = image->image, .viewType = info->type, .format = info->format, .components = info->components,
+        .subresourceRange = {info->aspects, info->base_level, info->levels, info->base_layer, info->layers}};
+    VK_TRY(g, g->vkCreateImageView(g->device, &create, NULL, &v->view));
     return 0;
 }
 
@@ -189,6 +219,8 @@ void dkr_vk_image_destroy(DkrGfx *g, DkrVkImage *image) {
     while (*link && *link != image) link = &(*link)->next;
     if (!*link) return;
     *link = image->next;
+    while (image->views) { DkrVkView *view = image->views; image->views = view->next;
+        if (view->view) g->vkDestroyImageView(g->device, view->view, NULL); free(view); }
     if (image->view) g->vkDestroyImageView(g->device, image->view, NULL);
     if (image->target_view) g->vkDestroyImageView(g->device, image->target_view, NULL);
     if (image->image) g->vkDestroyImage(g->device, image->image, NULL);
@@ -268,6 +300,17 @@ int dkr_vk_image_clear(DkrGfx *g, DkrVkImage *image, const float color[4]) {
     return 0;
 }
 
+int dkr_vk_image_clear_depth(DkrGfx *g, DkrVkImage *image, VkImageAspectFlags aspects, float depth, uint32_t stencil) {
+    if (!g || !g->batch_active || !image) return -1;
+    if (!aspects || (aspects & ~image->info.aspect) || (aspects & VK_IMAGE_ASPECT_COLOR_BIT))
+        return dkr_vk_fail(g, "invalid depth/stencil clear aspects");
+    if (dkr_vk_image_ready(g, image)) return -1;
+    VkClearDepthStencilValue value = {depth, stencil};
+    VkImageSubresourceRange range = {aspects, 0, 1, 0, 1};
+    g->vkCmdClearDepthStencilImage(g->command, image->image, VK_IMAGE_LAYOUT_GENERAL, &value, 1, &range);
+    return 0;
+}
+
 static size_t level_bytes(VkFormat format, uint32_t width, uint32_t height) {
     unsigned pixel = 0;
     switch (format) {
@@ -277,6 +320,7 @@ static size_t level_bytes(VkFormat format, uint32_t width, uint32_t height) {
     case VK_FORMAT_B8G8R8A8_SRGB: case VK_FORMAT_R32_SFLOAT: case VK_FORMAT_R8G8B8A8_UINT: pixel = 4; break;
     case VK_FORMAT_R16G16B16A16_SFLOAT: case VK_FORMAT_R32G32_SFLOAT: pixel = 8; break;
     case VK_FORMAT_R32G32B32A32_SFLOAT: pixel = 16; break;
+    case VK_FORMAT_BC1_RGB_UNORM_BLOCK: case VK_FORMAT_BC1_RGB_SRGB_BLOCK:
     case VK_FORMAT_BC1_RGBA_UNORM_BLOCK: case VK_FORMAT_BC1_RGBA_SRGB_BLOCK:
     case VK_FORMAT_BC4_UNORM_BLOCK: case VK_FORMAT_BC4_SNORM_BLOCK:
         return (size_t)((width + 3) / 4) * ((height + 3) / 4) * 8;
@@ -290,17 +334,47 @@ static size_t level_bytes(VkFormat format, uint32_t width, uint32_t height) {
 }
 
 int dkr_vk_image_upload(DkrGfx *g, DkrVkImage *image, unsigned level, unsigned layer, const void *data, size_t size) {
+    if (!image || level >= image->info.levels) return -1;
+    unsigned width = image->info.width >> level, height = image->info.height >> level;
+    return dkr_vk_image_upload_region(g, image, level, layer, 0, 0, width ? width : 1, height ? height : 1, data, size);
+}
+
+int dkr_vk_image_upload_region(DkrGfx *g, DkrVkImage *image, unsigned level, unsigned layer,
+                                unsigned x, unsigned y, unsigned width, unsigned height, const void *data, size_t size) {
     if (!g || !g->batch_active || !image || image->owner != g || !data) return -1;
     if (level >= image->info.levels || layer >= image->info.layers || image->info.aspect != VK_IMAGE_ASPECT_COLOR_BIT)
         return dkr_vk_fail(g, "invalid image upload subresource");
-    uint32_t width = image->info.width >> level, height = image->info.height >> level;
-    if (!width) width = 1; if (!height) height = 1;
+    unsigned full_width = image->info.width >> level, full_height = image->info.height >> level;
+    if (!full_width) full_width = 1; if (!full_height) full_height = 1;
+    if (!width || !height || x > full_width || width > full_width - x || y > full_height || height > full_height - y)
+        return dkr_vk_fail(g, "image upload rectangle exceeds its mip");
     size_t expected = level_bytes(image->info.format, width, height);
     if (!expected || expected != size) return dkr_vk_fail(g, "unsupported format or wrong image upload size (%zu/%zu)", size, expected);
     DkrVkBuffer *staging;
     if (dkr_vk_buffer_temporary(g, data, size, &staging) || dkr_vk_image_ready(g, image)) return -1;
-    VkBufferImageCopy region = {.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, level, layer, 1}, .imageExtent = {width, height, 1}};
+    VkBufferImageCopy region = {.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, level, layer, 1},
+        .imageOffset = {(int32_t)x, (int32_t)y, 0}, .imageExtent = {width, height, 1}};
     g->vkCmdCopyBufferToImage(g->command, staging->buffer, image->image, VK_IMAGE_LAYOUT_GENERAL, 1, &region);
+    return 0;
+}
+
+int dkr_vk_image_copy(DkrGfx *g, DkrVkImage *source, unsigned sl, unsigned sa, unsigned sx, unsigned sy,
+                      DkrVkImage *destination, unsigned dl, unsigned da, unsigned dx, unsigned dy, unsigned width, unsigned height) {
+    if (!g || !g->batch_active || !source || !destination || source->owner != g || destination->owner != g) return -1;
+    if (source == destination || source->info.format != destination->info.format || source->info.aspect != destination->info.aspect ||
+        sl >= source->info.levels || dl >= destination->info.levels || sa >= source->info.layers || da >= destination->info.layers)
+        return dkr_vk_fail(g, "image copy needs matching distinct images/subresources");
+    unsigned sw = source->info.width >> sl, sh = source->info.height >> sl, dw = destination->info.width >> dl, dh = destination->info.height >> dl;
+    if (!sw) sw = 1; if (!sh) sh = 1; if (!dw) dw = 1; if (!dh) dh = 1;
+    if (!width || !height || sx > sw || width > sw-sx || sy > sh || height > sh-sy || dx > dw || width > dw-dx || dy > dh || height > dh-dy)
+        return dkr_vk_fail(g, "image copy rectangle exceeds storage");
+    if (dkr_vk_image_ready(g, source) || dkr_vk_image_ready(g, destination)) return -1;
+    VkImageCopy regions[2]; unsigned n = 0;
+    const VkImageAspectFlags aspects[] = {VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_ASPECT_DEPTH_BIT, VK_IMAGE_ASPECT_STENCIL_BIT};
+    for (unsigned i = 0; i < 3; i++) if (source->info.aspect & aspects[i])
+        regions[n++] = (VkImageCopy){.srcSubresource = {aspects[i], sl, sa, 1}, .srcOffset = {(int32_t)sx, (int32_t)sy, 0},
+            .dstSubresource = {aspects[i], dl, da, 1}, .dstOffset = {(int32_t)dx, (int32_t)dy, 0}, .extent = {width, height, 1}};
+    g->vkCmdCopyImage(g->command, source->image, VK_IMAGE_LAYOUT_GENERAL, destination->image, VK_IMAGE_LAYOUT_GENERAL, n, regions);
     return 0;
 }
 
@@ -335,7 +409,8 @@ static int shader_module(DkrGfx *g, const DkrVkShaderInfo *shader, VkShaderModul
     VkShaderModuleCreateInfo create = {.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, .codeSize = shader->bytes, .pCode = words};
     VkResult result = g->vkCreateShaderModule(g->device, &create, NULL, out);
     free(words);
-    return result == VK_SUCCESS ? 0 : dkr_vk_fail(g, "vkCreateShaderModule failed: %d", result);
+    if (result != VK_SUCCESS) return dkr_vk_fail(g, "vkCreateShaderModule failed: %d", result);
+    return g->validation_errors ? dkr_vk_fail(g, "shader module reported Vulkan validation errors") : 0;
 }
 
 int dkr_vk_program_create(DkrGfx *g, const DkrVkShaderInfo *shaders, unsigned count,
@@ -455,7 +530,7 @@ static int pipeline(DkrGfx *g, DkrVkProgram *program, const DkrVkPipelineInfo *i
         .pDepthStencilState = &depth, .pColorBlendState = &blend, .pDynamicState = &dynamic,
         .layout = program->layout, .renderPass = p->pass};
     VK_TRY(g, g->vkCreateGraphicsPipelines(g->device, VK_NULL_HANDLE, 1, &create, NULL, &p->pipeline));
-    return 0;
+    return g->validation_errors ? dkr_vk_fail(g, "graphics pipeline reported Vulkan validation errors") : 0;
 }
 
 static int bind_descriptors(DkrGfx *g, const DkrVkDraw *draw, VkDescriptorSet sets[DKR_VK_STAGES]) {
@@ -496,14 +571,55 @@ static int bind_descriptors(DkrGfx *g, const DkrVkDraw *draw, VkDescriptorSet se
             if (!need_image && !need_sampler) return dkr_vk_fail(g, "descriptor type %d is not implemented", b->type);
             if ((need_sampler && (!d->sampler || d->sampler->owner != g)) || (need_image && (!d->image || d->image->owner != g)))
                 return dkr_vk_fail(g, "invalid image/sampler descriptor");
+            DkrVkImage *src_image = d->image;
+            DkrVkView *src_view = d->view;
             if (need_image) {
-                for (unsigned j = 0; j < draw->pipeline.color_count; j++)
-                    if (draw->colors[j] == d->image) return dkr_vk_fail(g, "render-target texture feedback requires a snapshot");
-                if (draw->depth == d->image) return dkr_vk_fail(g, "depth texture feedback requires a snapshot");
-                if (dkr_vk_image_ready(g, d->image)) return -1;
+                int feedback = 0;
+                for (unsigned j = 0; j < draw->pipeline.color_count; j++) {
+                    if (draw->colors[j] == src_image) {
+                        DkrVkView *tv = draw->color_views[j], *sv = src_view;
+                        unsigned tbl = tv ? tv->info.base_level : 0, tba = tv ? tv->info.base_layer : 0;
+                        unsigned sbl = sv ? sv->info.base_level : 0, sba = sv ? sv->info.base_layer : 0;
+                        unsigned slv = sv ? sv->info.levels : src_image->info.levels, sla = sv ? sv->info.layers : src_image->info.layers;
+                        if (tbl >= sbl && tbl < sbl + slv && tba >= sba && tba < sba + sla) {
+                            feedback = 1; break;
+                        }
+                    }
+                }
+                if (draw->depth == src_image) {
+                    DkrVkView *tv = draw->depth_view, *sv = src_view;
+                    unsigned tbl = tv ? tv->info.base_level : 0, tba = tv ? tv->info.base_layer : 0;
+                    unsigned sbl = sv ? sv->info.base_level : 0, sba = sv ? sv->info.base_layer : 0;
+                    unsigned slv = sv ? sv->info.levels : src_image->info.levels, sla = sv ? sv->info.layers : src_image->info.layers;
+                    if (tbl >= sbl && tbl < sbl + slv && tba >= sba && tba < sba + sla) feedback = 1;
+                }
+                if (feedback) {
+                    DkrVkResources *r = g->resources;
+                    if (!r->snapshot || memcmp(&r->snapshot->info, &src_image->info, sizeof src_image->info) != 0) {
+                        DkrVkImageInfo snap_info = src_image->info;
+                        if (dkr_vk_image_create(g, &snap_info, &r->snapshot)) return -1;
+                    }
+                    DkrVkImage *snap = r->snapshot;
+                    for (unsigned lyr = 0; lyr < src_image->info.layers; lyr++) {
+                        for (unsigned lvl = 0; lvl < src_image->info.levels; lvl++) {
+                            unsigned w = src_image->info.width >> lvl, h = src_image->info.height >> lvl;
+                            if (!w) w = 1; if (!h) h = 1;
+                            if (dkr_vk_image_copy(g, src_image, lvl, lyr, 0, 0, snap, lvl, lyr, 0, 0, w, h)) return -1;
+                        }
+                    }
+                    if (dkr_vk_image_ready(g, snap)) return -1;
+                    src_image = snap;
+                    if (src_view) {
+                        DkrVkView *snap_view = NULL;
+                        if (dkr_vk_image_view(g, snap, &src_view->info, &snap_view)) return -1;
+                        src_view = snap_view;
+                    }
+                }
+                if (dkr_vk_image_ready(g, src_image)) return -1;
             }
+            if (src_view && (!need_image || src_view->image != src_image)) return dkr_vk_fail(g, "descriptor view belongs to another image");
             images[i] = (VkDescriptorImageInfo){need_sampler ? d->sampler->sampler : VK_NULL_HANDLE,
-                need_image ? d->image->view : VK_NULL_HANDLE, VK_IMAGE_LAYOUT_GENERAL};
+                need_image ? (src_view ? src_view->view : src_image->view) : VK_NULL_HANDLE, VK_IMAGE_LAYOUT_GENERAL};
             writes[i].pImageInfo = &images[i];
         }
     }
@@ -524,14 +640,17 @@ int dkr_vk_draw(DkrGfx *g, const DkrVkDraw *draw) {
     for (unsigned i = 0; i < info->color_count + (draw->depth != NULL); i++) {
         int depth = i == info->color_count;
         DkrVkImage *image = depth ? draw->depth : draw->colors[i];
+        DkrVkView *view = depth ? draw->depth_view : draw->color_views[i];
         VkImageUsageFlags usage = depth ? VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT : VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
         VkFormat format = depth ? info->depth : info->colors[i];
-        if (!image || image->owner != g || image->info.format != format || !(image->usage & usage))
+        if (!image || image->owner != g || (view ? view->info.format : image->info.format) != format ||
+            (view && view->image != image) || !(image->usage & usage))
             return dkr_vk_fail(g, "render target does not match its pipeline");
         if (dkr_vk_image_ready(g, image)) return -1;
-        if (image->info.width < width) width = image->info.width;
-        if (image->info.height < height) height = image->info.height;
-        views[view_count++] = image->target_view;
+        unsigned iw = image->info.width >> (view ? view->info.base_level : 0), ih = image->info.height >> (view ? view->info.base_level : 0);
+        if (!iw) iw = 1; if (!ih) ih = 1;
+        if (iw < width) width = iw; if (ih < height) height = ih;
+        views[view_count++] = view ? view->view : image->target_view;
     }
     if ((draw->depth == NULL) != (info->depth == VK_FORMAT_UNDEFINED)) return dkr_vk_fail(g, "missing depth target or format");
     if (!(draw->viewport.width > 0) || draw->viewport.height == 0 || draw->scissor.offset.x < 0 || draw->scissor.offset.y < 0 ||

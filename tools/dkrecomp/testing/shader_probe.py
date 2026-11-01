@@ -76,6 +76,19 @@ def run(executable, out, validator=None):
             assert checked.returncode == 0, checked.stdout + checked.stderr
         reflection = json.loads((out / f'{stage}.res.json').read_text())
         assert reflection['stage'] == stage and not reflection['notes'], reflection
+        raw = (out / f'{stage}.dkrspv').read_bytes()
+        assert raw[:8] == b'DKRSHD01'
+        version, nvn_stage, support, bindings, size, notes = struct.unpack_from('<6I', raw, 8)
+        assert (version, nvn_stage, support, notes) == (1, {'vs': 0, 'ps': 1, 'cs': 5}[stage], 1408, 0)
+        assert size == sizes[stage] and len(raw) == 64 + bindings * 32 + size
+        assert raw[32:64].hex() == executable.with_suffix('.id').read_text().strip()
+        assert struct.unpack_from('<IIi', raw, 64) == (0, 0, -1)  # support, excluded from the old reflection arrays
+        native = ROOT / 'build/zig/dkr_nvn_test.exe'
+        if native.exists():
+            checked = subprocess.run([str(native), '--cache-probe', str(out / f'{stage}.dkrspv')],
+                                     capture_output=True, text=True, timeout=15)
+            assert checked.returncode == 0, checked.stdout + checked.stderr
+            assert json.loads(checked.stdout) == {'stage': nvn_stage, 'support': support, 'bindings': bindings, 'bytes': size, 'notes': notes}
         if stage == 'ps':
             assert reflection['frag_out_map'] == 0xf, reflection
     assert not (out.parent / 'escape.spv').exists()

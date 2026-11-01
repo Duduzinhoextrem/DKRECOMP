@@ -18,5 +18,14 @@ typedef struct {
 
 void nvn_tex_layout(const NvnTexDesc *d, NvnTexLayout *out);
 int nvn_tex_bytes_per_block(int format); /* 0 for an unknown format */
+typedef struct NvnTexLevel {
+    uint32_t width, height, depth, block_width, block_height, row_bytes, rows, linear_stride;
+    uint64_t offset, linear_size;
+    unsigned tile_h, tile_d;
+} NvnTexLevel;
+int nvn_tex_level(const NvnTexDesc *desc, unsigned level, unsigned layer, NvnTexLevel *out);
+uint64_t nvn_tex_block_offset(uint32_t x_byte, uint32_t row, uint32_t slice, uint32_t row_bytes, uint32_t rows, unsigned tile_h, unsigned tile_d);
+int nvn_tex_linearize(const NvnTexDesc *desc, const void *storage, uint64_t storage_size, unsigned level, unsigned layer,
+                      void *linear, uint64_t linear_size);
 
 #endif

@@ -172,24 +172,53 @@ static int create_device(DkrGfx *g) {
     float priority = 1.0f;
     VkDeviceQueueCreateInfo queue = {.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
         .queueFamilyIndex = g->family, .queueCount = 1, .pQueuePriorities = &priority};
-    const char *extensions[2] = {VK_KHR_SWAPCHAIN_EXTENSION_NAME, VK_EXT_DEPTH_CLIP_CONTROL_EXTENSION_NAME};
+    const char *extensions[3] = {VK_KHR_SWAPCHAIN_EXTENSION_NAME};
     uint32_t extension_count = 1, available_count = 0;
     VK_TRY(g, g->vkEnumerateDeviceExtensionProperties(g->physical, NULL, &available_count, NULL));
     VkExtensionProperties *available = calloc(available_count ? available_count : 1, sizeof *available);
     if (!available) return fail(g, "out of memory reading draw capabilities");
     result = g->vkEnumerateDeviceExtensionProperties(g->physical, NULL, &available_count, available);
-    for (unsigned i = 0; result == VK_SUCCESS && i < available_count; i++)
-        if (!strcmp(available[i].extensionName, VK_EXT_DEPTH_CLIP_CONTROL_EXTENSION_NAME)) extension_count = 2;
+    int has_clip = 0, has_robustness = 0;
+    for (unsigned i = 0; result == VK_SUCCESS && i < available_count; i++) {
+        if (!strcmp(available[i].extensionName, VK_EXT_DEPTH_CLIP_CONTROL_EXTENSION_NAME)) has_clip = 1;
+        if (!strcmp(available[i].extensionName, VK_EXT_VERTEX_ATTRIBUTE_ROBUSTNESS_EXTENSION_NAME)) has_robustness = 1;
+    }
     free(available);
     if (result != VK_SUCCESS) return fail(g, "cannot read draw capabilities: %d", result);
-    VkPhysicalDeviceDepthClipControlFeaturesEXT clip = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DEPTH_CLIP_CONTROL_FEATURES_EXT};
+    if (has_clip) extensions[extension_count++] = VK_EXT_DEPTH_CLIP_CONTROL_EXTENSION_NAME;
+    if (has_robustness) extensions[extension_count++] = VK_EXT_VERTEX_ATTRIBUTE_ROBUSTNESS_EXTENSION_NAME;
+    VkPhysicalDeviceVertexAttributeRobustnessFeaturesEXT robust = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VERTEX_ATTRIBUTE_ROBUSTNESS_FEATURES_EXT
+    };
+    VkPhysicalDeviceDepthClipControlFeaturesEXT clip = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DEPTH_CLIP_CONTROL_FEATURES_EXT,
+        .pNext = has_robustness ? (void *)&robust : NULL
+    };
+    VkPhysicalDeviceVulkan11Features core11 = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES,
+        .pNext = has_clip ? (void *)&clip : (has_robustness ? (void *)&robust : NULL)
+    };
     VkPhysicalDeviceFeatures2 features = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2,
-        .pNext = extension_count == 2 ? &clip : NULL};
+        .pNext = &core11};
     g->vkGetPhysicalDeviceFeatures2(g->physical, &features);
-    g->depth_clip_control = extension_count == 2 && clip.depthClipControl;
+    g->depth_clip_control = has_clip && clip.depthClipControl;
+    g->vertex_attribute_robustness = has_robustness && robust.vertexAttributeRobustness;
+    VkPhysicalDeviceVertexAttributeRobustnessFeaturesEXT enable_robust = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VERTEX_ATTRIBUTE_ROBUSTNESS_FEATURES_EXT,
+        .vertexAttributeRobustness = g->vertex_attribute_robustness
+    };
+    VkPhysicalDeviceDepthClipControlFeaturesEXT enable_clip = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DEPTH_CLIP_CONTROL_FEATURES_EXT,
+        .pNext = g->vertex_attribute_robustness ? (void *)&enable_robust : NULL,
+        .depthClipControl = g->depth_clip_control
+    };
+    VkPhysicalDeviceVulkan11Features enable11 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES,
+        .pNext = g->depth_clip_control ? (void *)&enable_clip : (g->vertex_attribute_robustness ? (void *)&enable_robust : NULL),
+        .shaderDrawParameters = core11.shaderDrawParameters};
+    if (!enable11.shaderDrawParameters) return fail(g, "NVN shaders require shaderDrawParameters");
     VkDeviceCreateInfo device = {.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO, .queueCreateInfoCount = 1,
         .pQueueCreateInfos = &queue, .enabledExtensionCount = extension_count, .ppEnabledExtensionNames = extensions,
-        .pEnabledFeatures = &features.features, .pNext = extension_count == 2 ? &clip : NULL};
+        .pEnabledFeatures = &features.features, .pNext = &enable11};
     VK_TRY(g, g->vkCreateDevice(g->physical, &device, NULL, &g->device));
 #define LOAD_DEVICE(name) do { \
     g->vk##name = (PFN_vk##name)g->vkGetDeviceProcAddr(g->device, "vk" #name); \

@@ -16,6 +16,7 @@ typedef struct NvnProgramSnapshot {
 
 void nvn_shader_snapshot(Cpu *c, NvnShader *out, uint64_t control, uint64_t code);
 void nvn_shader_release(NvnShader *shader);
+void nvn_shader_digest(Cpu *c, const void *a, uint32_t a_size, const void *b, uint32_t b_size, char key[33]);
 void nvn_program_capture(Cpu *c, const NvnProgramSnapshot *program);
 const NvnProgramSnapshot *dkr_nvn_program_snapshot(Cpu *c, uint64_t program);
 #endif

@@ -29,7 +29,7 @@ static BOOL CALLBACK hash_initialize(PINIT_ONCE once, void *parameter, void **co
     return TRUE;
 }
 
-static void digest(Cpu *c, const void *a, uint32_t na, const void *b, uint32_t nb, char key[33]) {
+void nvn_shader_digest(Cpu *c, const void *a, uint32_t na, const void *b, uint32_t nb, char key[33]) {
     if (!InitOnceExecuteOnce(&g_hash_once, hash_initialize, NULL, NULL)) hos_stop(c, "nvn: cannot initialize SHA-256");
     uint8_t *object = malloc(g_hash_bytes), sum[32];
     BCRYPT_HASH_HANDLE hash = NULL;
@@ -97,7 +97,7 @@ void nvn_shader_snapshot(Cpu *c, NvnShader *out, uint64_t control, uint64_t code
         }
         s.stage = 5;
     }
-    digest(c, s.control, s.control_size, s.code, s.code_size, s.key);
+    nvn_shader_digest(c, s.control, s.control_size, s.code, s.code_size, s.key);
     *out = s;
 }
 
@@ -117,7 +117,7 @@ void nvn_program_capture(Cpu *c, const NvnProgramSnapshot *p) {
         hos_stop(c, "nvn: cannot create shader capture directory (%lu)", GetLastError());
     char keys[6 * 32], key[33];
     for (unsigned i = 0; i < p->count; i++) memcpy(keys + 32*i, p->shaders[i].key, 32);
-    digest(c, keys, p->count * 32, NULL, 0, key);
+    nvn_shader_digest(c, keys, p->count * 32, NULL, 0, key);
     if (swprintf(path, 4096, L"%ls/p_%hs.nvnprog", folder, key) < 0)
         hos_stop(c, "nvn: shader capture path is too long");
     if (GetFileAttributesW(path) != INVALID_FILE_ATTRIBUTES) return;

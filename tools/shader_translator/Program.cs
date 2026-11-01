@@ -24,6 +24,7 @@ using System.Runtime.InteropServices;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
+using System.Text;
 static class DkrShaderTranslator
 {
     // NVN 55 defaults. Jobs for the measured SDK 4.4 pass tex_base=0x20, tex_limit=0x120.
@@ -103,6 +104,7 @@ static class DkrShaderTranslator
         // come from registers (agl_technique_pfx compute b940aa86, dfe7662f) otherwise becomes an OpConstantComposite over
         // computed ids, which spirv-val rejects; false makes TexturePass emulate only non-constant offsets.
         public bool QueryHostSupportsNonConstantTextureOffset() => false;
+        public bool QueryHostSupportsFragmentShaderInterlock() => false; // the host has not enabled that optional feature
         // "softfloat64": true lowers FP64 operations to FP32 (Ryujinx's DoubleToFloat pass), for a host without shaderFloat64.
         public bool QueryHostSupportsShaderFloat64() => _job["softfloat64"] is not JsonValue v || !(v.TryGetValue<bool>(out bool b) && b);
         public bool QueryHostSupportsTextureShadowLod() => true;
@@ -116,7 +118,35 @@ static class DkrShaderTranslator
         // "subgroup": n: lanes per subgroup when the host cannot pin 32 (AMD GCN/Vega run 64): ballots and votes span n lanes.
         public int QueryHostSubgroupSize() => _job["subgroup"] is JsonNode n ? (int)n : 32;
     }
-    internal static string Translate(JsonObject job, string outDir)   // also called by the --service mode (Service.cs)
+    static void WriteCache(string outDir, string key, string stage, ShaderProgram program, int notes)
+    {
+        // Own, versioned little-endian bridge. Include the support buffer omitted by ShaderProgramInfo.CBuffers.
+        var records = new List<int[]> { new[] { 0, 0, -1, 0, 0, 0, 1, 0 } };
+        foreach (var b in program.Info.CBuffers) records.Add(new[] { b.Binding, 1, b.Slot, 0, 0, 0, 1, 0 });
+        foreach (var b in program.Info.SBuffers) records.Add(new[] { b.Binding, 2, b.Slot, b.SbCbSlot, b.SbCbOffset, 0, 1, (int)b.Flags });
+        foreach (var (list, image) in new[] { (program.Info.Textures, false), (program.Info.Images, true) })
+            foreach (var t in list) {
+                int kind = (t.Type & SamplerType.Mask) == SamplerType.TextureBuffer ? (image ? 8 : 7) :
+                    image ? 6 : t.Separate ? ((t.Type & SamplerType.Mask) == SamplerType.None ? 5 : 4) : 3;
+                records.Add(new[] { t.Binding, kind, 0, t.CbufSlot, t.HandleIndex, (int)t.Type, t.ArrayLength, (int)t.Flags });
+            }
+        byte[] identity = Convert.FromHexString(File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "dkr_shader_translator.id")).Trim());
+        if (identity.Length != 32) throw new ArgumentException("Invalid translator build identity");
+        string destination = Path.Combine(outDir, key + ".dkrspv"), temporary = destination + "." + Guid.NewGuid().ToString("N") + ".tmp";
+        try {
+            using (var writer = new BinaryWriter(File.Create(temporary))) {
+                writer.Write(Encoding.ASCII.GetBytes("DKRSHD01")); writer.Write(1);
+                writer.Write(stage switch { "vs" => 0, "ps" => 1, "gs" => 2, "tcs" => 3, "tes" => 4, _ => 5 });
+                writer.Write(SupportBuffer.RequiredSize); writer.Write(records.Count); writer.Write(program.BinaryCode.Length); writer.Write(notes);
+                writer.Write(identity);
+                foreach (var record in records) foreach (int value in record) writer.Write(value);
+                writer.Write(program.BinaryCode);
+            }
+            File.Move(temporary, destination, true);
+        } finally { if (File.Exists(temporary)) File.Delete(temporary); }
+    }
+
+    internal static string Translate(JsonObject job, string outDir)
     {
         string key = (string)job["key"];
             try
@@ -143,6 +173,7 @@ static class DkrShaderTranslator
                 {
                     ["key"] = key, ["stage"] = (string)job["stage"], ["notes"] = new JsonArray(acc.Notes.ConvertAll(n => (JsonNode)n).ToArray()),
                     ["cbufs"] = new JsonArray(), ["sbufs"] = new JsonArray(), ["textures"] = new JsonArray(), ["images"] = new JsonArray(),
+                    ["support_size"] = SupportBuffer.RequiredSize,
                     ["uses_frag_coord"] = p.Info.UsesFragCoord, ["frag_out_map"] = p.Info.FragmentOutputMap,
                     ["tex_queried"] = new JsonArray(acc.TexQueried.Select(x => (JsonNode)x).ToArray()), ["img_queried"] = new JsonArray(acc.ImgQueried.Select(x => (JsonNode)x).ToArray()),
                 };
@@ -151,6 +182,7 @@ static class DkrShaderTranslator
                 foreach (var (list, name) in new[] { (p.Info.Textures, "textures"), (p.Info.Images, "images") })
                     foreach (var t in list) res[name].AsArray().Add((JsonNode)new JsonObject { ["binding"] = t.Binding, ["type"] = (int)t.Type, ["format"] = t.Format.ToString(), ["cbuf_slot"] = t.CbufSlot, ["handle"] = t.HandleIndex, ["array"] = t.ArrayLength, ["separate"] = t.Separate, ["flags"] = (int)t.Flags });
                 File.WriteAllText(Path.Combine(outDir, key + ".res.json"), res.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
+                WriteCache(outDir, key, stage, p, acc.Notes.Count);
                 return null;
             }
             catch (Exception e) { if (Environment.GetEnvironmentVariable("DMSH_STACK") != null) Console.Error.WriteLine(e.StackTrace); return $"{e.GetType().Name}: {e.Message.Split('\n')[0]}"; }

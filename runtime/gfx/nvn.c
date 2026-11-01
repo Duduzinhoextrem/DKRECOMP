@@ -5,6 +5,7 @@
 
 #include "dkr/gfx.h"
 #include "nvn_internal.h"
+#include "nvn_replay.h"
 #include "../src/hos.h"
 
 #define WIN32_LEAN_AND_MEAN
@@ -49,6 +50,7 @@ static NvnProc g_procs[] = {
 #undef NVN_PROC
 
 static DkrGfx *g_graphics;
+DkrGfx *dkr_nvn_graphics(void) { return g_graphics; }
 static uint64_t g_work_memory, g_work_size, g_devtools_memory, g_devtools_size;
 static int g_registered;
 
@@ -204,6 +206,7 @@ static int original_allowed(const char *name) {
 
 static void cleanup_graphics(void) {
     if (!g_graphics) return;
+    dkr_nvn_replay_cleanup();
     uint32_t errors = dkr_gfx_destroy(g_graphics);
     g_graphics = NULL;
     if (errors) fprintf(stderr, "nvn: %u Vulkan validation errors during shutdown\n", errors);

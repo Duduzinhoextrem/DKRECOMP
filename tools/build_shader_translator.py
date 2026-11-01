@@ -43,6 +43,7 @@ def main():
     patches = sorted((REF / 'tools' / 'xlate' / 'patches').glob('*.patch'))
     if len(patches) != 9:
         raise SystemExit('The pinned reference must provide exactly nine reviewed translator patches')
+    patches += sorted((LOCAL / 'patches').glob('*.patch'))
     for patch in patches:
         identity.update(patch.name.encode() + b'\0' + patch.read_bytes())
         for check in (['--check'], []):

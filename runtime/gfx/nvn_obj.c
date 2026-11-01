@@ -11,6 +11,7 @@
 #include "nvn_tex.h"
 #include "nvn_commands.h"
 #include "nvn_shaders.h"
+#include "nvn_replay.h"
 #include "../src/hos.h"
 
 #define WIN32_LEAN_AND_MEAN
@@ -183,7 +184,7 @@ static void event_signal(Cpu *c) { /* void (NVNevent *, NVNeventSignalMode, uint
 
 /* ---- queues --------------------------------------------------------------------------------------------------- */
 #define QUEUE_MAGIC MAGIC('Q', 'U', 'E', 'U')
-typedef struct { uint32_t magic, flags; uint64_t device, memory, memory_size; } Queue;
+typedef struct { uint32_t magic, flags; uint64_t device, memory, memory_size; void *replay; } Queue;
 FITS(Queue, 0x2000);
 /* NVNqueueBuilder (sdk+0x2e4e04..0x2e4e68): device +0, flags +8, memory size +0x1c (u32), memory +0x28. */
 enum { QB_FLAGS = 0x08, QB_MEMORY_SIZE = 0x1c, QB_MEMORY = 0x28 };
@@ -196,14 +197,16 @@ static Queue *queue_of(Cpu *c, uint64_t addr) {
 
 static void queue_initialize(Cpu *c) { /* NVNboolean (NVNqueue *, const NVNqueueBuilder *) */
     uint64_t b = c->x[1];
-    Queue q = {QUEUE_MAGIC, rd32(b + QB_FLAGS), rd64(b), rd64(b + QB_MEMORY), rd32(b + QB_MEMORY_SIZE)};
+    Queue q = {QUEUE_MAGIC, rd32(b + QB_FLAGS), rd64(b), rd64(b + QB_MEMORY), rd32(b + QB_MEMORY_SIZE), NULL};
     *(Queue *)PTR(c->x[0]) = q;
     hos_log("nvn: Queue %#llx flags %#x memory %#llx+%#llx\n", (unsigned long long)c->x[0], q.flags,
             (unsigned long long)q.memory, (unsigned long long)q.memory_size);
     c->x[0] = 1;
 }
 
-static void queue_finalize(Cpu *c) { ((Queue *)PTR(c->x[0]))->magic = 0; }
+static void queue_finalize(Cpu *c) {
+    Queue *q = queue_of(c, c->x[0]); dkr_nvn_replay_queue_destroy(q->replay); q->replay = NULL; q->magic = 0;
+}
 static void queue_flush(Cpu *c) { queue_of(c, c->x[0]); } /* submitted work is already complete */
 static void queue_finish(Cpu *c) { queue_of(c, c->x[0]); }
 
@@ -363,37 +366,94 @@ static void desc_pool_initialize(Cpu *c, int kind) { /* NVNboolean (pool, const 
 static void texture_pool_initialize(Cpu *c) { desc_pool_initialize(c, 0); }
 static void sampler_pool_initialize(Cpu *c) { desc_pool_initialize(c, 1); }
 
+/* Caller holds g_tables_lock until the descriptor has been copied. */
 static void *desc_entry(Cpu *c, uint64_t pool_obj, int kind, int id) {
     DescPool *d = PTR(pool_obj);
     uint64_t memory = pool_of(c, d->pool)->mem + d->offset;
     void *e = NULL;
-    AcquireSRWLockShared(&g_tables_lock);
     for (size_t i = 0; i < sizeof g_tables / sizeof *g_tables; i++)
         if (g_tables[i].memory == memory && g_tables[i].kind == (uint32_t)kind && id >= 0 && (uint32_t)id < g_tables[i].count)
             e = (uint8_t *)g_tables[i].entries + (size_t)id * (kind ? sizeof(SampDesc) : sizeof(TexDesc));
-    ReleaseSRWLockShared(&g_tables_lock);
     if (!e) hos_stop(c, "nvn: descriptor %d is outside the %s pool at %#llx", id, kind ? "sampler" : "texture",
                      (unsigned long long)memory);
     return e;
 }
 
 static void texture_pool_register(Cpu *c) { /* RegisterTexture/RegisterImage (pool, int id, texture, view) */
+    AcquireSRWLockExclusive(&g_tables_lock);
     TexDesc *e = desc_entry(c, c->x[0], 0, (int)c->x[1]);
     memcpy(e->texture, texture_of(c, c->x[2]), sizeof(Texture));
     if (c->x[3]) memcpy(e->view, PTR(c->x[3]), sizeof e->view);
     else memset(e->view, 0, sizeof e->view);
+    ReleaseSRWLockExclusive(&g_tables_lock);
 }
 
 static void sampler_pool_register(Cpu *c) { /* RegisterSampler (pool, int id, const NVNsampler *) */
     Sampler *s = PTR(c->x[2]);
     if (s->magic != SAMP_MAGIC) hos_stop(c, "nvn: %#llx is not an initialized NVNsampler", (unsigned long long)c->x[2]);
+    AcquireSRWLockExclusive(&g_tables_lock);
     memcpy(desc_entry(c, c->x[0], 1, (int)c->x[1]), s, sizeof *s);
+    ReleaseSRWLockExclusive(&g_tables_lock);
 }
 
 static void sampler_pool_register_builder(Cpu *c) { /* RegisterSamplerBuilder (pool, int id, builder) */
     Sampler s = {SAMP_MAGIC, 0, {0}};
     memcpy(s.builder, PTR(c->x[2]), SB_SIZE);
+    AcquireSRWLockExclusive(&g_tables_lock);
     memcpy(desc_entry(c, c->x[0], 1, (int)c->x[1]), &s, sizeof s);
+    ReleaseSRWLockExclusive(&g_tables_lock);
+}
+
+static void texture_info(Cpu *c, const Texture *t, const uint8_t *view, NvnTextureInfo *o) {
+    if (t->magic != TEX_MAGIC) hos_stop(c, "nvn: texture descriptor is not initialized");
+    memset(o, 0, sizeof *o);
+    const uint8_t *b = t->builder;
+    uint16_t packaged; memcpy(&packaged, b + 0x58, 2);
+    o->desc = (NvnTexDesc){tex32(t, TB_FLAGS), tex32(t, TB_TARGET), tex32(t, TB_WIDTH), tex32(t, TB_HEIGHT),
+        tex32(t, TB_DEPTH), tex32(t, TB_LEVELS), tex32(t, TB_FORMAT), tex32(t, TB_SAMPLES), tex32(t, TB_STRIDE),
+        packaged & 1, (packaged >> 4) & 15, (packaged >> 8) & 15};
+    nvn_tex_layout(&o->desc, &o->layout);
+    o->address = pool_of(c, tex64(t, TB_POOL))->mem + tex64(t, TB_OFFSET);
+    o->serial = t->serial; o->format = o->desc.format; o->target = o->desc.target;
+    o->levels = o->desc.levels ? o->desc.levels : 1; o->layers = o->layout.layers;
+    o->ds_mode = tex32(t, TB_DSMODE);
+    for (unsigned i = 0; i < 4; i++) o->swizzle[i] = tex32(t, TB_SWIZZLE + 4*i);
+    /* SDK 4.4 TextureViewGet*: flags bit 0 levels (u8 +1/+2), 1 layers (u16 +4/+6),
+     * 2 format (+8), 3 swizzle (+c..18), 4 depth/stencil (+1c), 5 target (+20). */
+    if (view) {
+        unsigned flags = view[0];
+        if (flags & 1) { o->base_level = view[1]; o->levels = view[2] ? view[2] : o->levels - o->base_level; }
+        if (flags & 2) {
+            uint16_t base, count; memcpy(&base, view + 4, 2); memcpy(&count, view + 6, 2);
+            o->base_layer = base; o->layers = count ? count : o->layers - base;
+        }
+        if (flags & 4) memcpy(&o->format, view + 8, 4);
+        if (flags & 8) memcpy(o->swizzle, view + 0xc, 16);
+        if (flags & 16) memcpy(&o->ds_mode, view + 0x1c, 4);
+        if (flags & 32) memcpy(&o->target, view + 0x20, 4);
+    }
+    if (o->base_level >= (o->desc.levels ? o->desc.levels : 1) || o->levels > (o->desc.levels ? o->desc.levels : 1) - o->base_level ||
+        o->base_layer >= o->layout.layers || o->layers > o->layout.layers - o->base_layer || !o->levels || !o->layers)
+        hos_stop(c, "nvn: texture view subresource is outside its storage");
+}
+void dkr_nvn_texture_info(Cpu *c, uint64_t texture, const void *view, NvnTextureInfo *out) {
+    texture_info(c, texture_of(c, texture), view, out);
+}
+void dkr_nvn_texture_binding(Cpu *c, uint64_t pool, unsigned id, NvnTextureInfo *out) {
+    TexDesc entry;
+    AcquireSRWLockShared(&g_tables_lock);
+    memcpy(&entry, desc_entry(c, pool, 0, (int)id), sizeof entry);
+    ReleaseSRWLockShared(&g_tables_lock);
+    Texture t; memcpy(&t, entry.texture, sizeof t);
+    texture_info(c, &t, entry.view, out);
+}
+void dkr_nvn_sampler_binding(Cpu *c, uint64_t pool, unsigned id, uint8_t builder[0x48]) {
+    Sampler entry;
+    AcquireSRWLockShared(&g_tables_lock);
+    memcpy(&entry, desc_entry(c, pool, 1, (int)id), sizeof entry);
+    ReleaseSRWLockShared(&g_tables_lock);
+    if (entry.magic != SAMP_MAGIC) hos_stop(c, "nvn: sampler descriptor is not initialized");
+    memcpy(builder, entry.builder, SB_SIZE);
 }
 
 static void desc_pool_finalize(Cpu *c) { (void)c; } /* the table is replaced when its memory is initialized again */
@@ -619,7 +679,7 @@ static void trace_command(const NvnRecord *r, void *user) {
 }
 
 static void queue_submit(Cpu *c) { /* void (NVNqueue *, int n, const NVNcommandHandle *) */
-    queue_of(c, c->x[0]);
+    Queue *queue = queue_of(c, c->x[0]);
     int n = (int)c->x[1];
     if (n < 0 || (n && !c->x[2])) hos_stop(c, "nvn: QueueSubmitCommands with %d handles at %#llx", n, (unsigned long long)c->x[2]);
     for (int i = 0; i < n; i++) {
@@ -640,7 +700,8 @@ static void queue_submit(Cpu *c) { /* void (NVNqueue *, int n, const NVNcommandH
     if (trace_remaining)
         dkr_nvn_visit_commands(c, PTR(c->x[2]), n, trace_command, &trace_remaining);
     ReleaseSRWLockExclusive(&trace_lock);
-    InterlockedIncrement64(&g_submits); /* no back end yet: the recording is accepted, not replayed */
+    dkr_nvn_replay_submit(c, queue->device, &queue->replay, PTR(c->x[2]), n);
+    InterlockedIncrement64(&g_submits); /* synchronous backend: all replayed work is complete */
 }
 
 /* ---- windows and presentation --------------------------------------------------------------------------------- */
@@ -727,8 +788,9 @@ static void queue_present(Cpu *c) { /* void (NVNqueue *, NVNwindow *, int index)
     s->deadline.QuadPart += period;
     LONGLONG wait = s->deadline.QuadPart - now.QuadPart;
     if (wait > 0) Sleep((DWORD)(wait * 1000 / freq.QuadPart));
+    dkr_nvn_replay_present(c, s->textures[i], s->frames + 1);
     if (++s->frames == 1 || s->frames % 600 == 0)
-        hos_log("nvn: present #%llu (texture %d); no renderer yet, nothing is shown\n", (unsigned long long)s->frames, i);
+        hos_log("nvn: present #%llu (texture %d)\n", (unsigned long long)s->frames, i);
 }
 
 static void window_get_interval(Cpu *c) { c->x[0] = (uint64_t)window_of(c, c->x[0])->interval; }

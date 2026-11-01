@@ -17,7 +17,7 @@
     X(DestroyDevice) X(DeviceWaitIdle) X(GetDeviceQueue) X(CreateSwapchainKHR) X(DestroySwapchainKHR) \
     X(GetSwapchainImagesKHR) X(AcquireNextImageKHR) X(QueuePresentKHR) X(CreateCommandPool) \
     X(DestroyCommandPool) X(AllocateCommandBuffers) X(ResetCommandBuffer) X(BeginCommandBuffer) \
-    X(EndCommandBuffer) X(CmdPipelineBarrier) X(CmdClearColorImage) X(CmdCopyImageToBuffer) \
+    X(EndCommandBuffer) X(CmdPipelineBarrier) X(CmdClearColorImage) X(CmdClearDepthStencilImage) X(CmdCopyImageToBuffer) \
     X(QueueSubmit) X(CreateSemaphore) X(DestroySemaphore) X(CreateFence) X(DestroyFence) \
     X(WaitForFences) X(ResetFences) X(CreateBuffer) X(DestroyBuffer) X(GetBufferMemoryRequirements) \
     X(AllocateMemory) X(FreeMemory) X(BindBufferMemory) X(MapMemory) X(UnmapMemory) X(InvalidateMappedMemoryRanges) \
@@ -61,7 +61,7 @@ struct DkrGfx {
     VkCommandBuffer command;
     VkBuffer readback;
     VkDeviceMemory readback_memory;
-    int readback_coherent, depth_clip_control, batch_active;
+    int readback_coherent, depth_clip_control, vertex_attribute_robustness, batch_active;
     DkrVkResources *resources;
     PFN_vkGetInstanceProcAddr get_instance_proc;
 #define DECLARE_PROC(name) PFN_vk##name vk##name;

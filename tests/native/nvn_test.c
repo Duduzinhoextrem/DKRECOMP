@@ -3,6 +3,8 @@
 #include "../../runtime/src/hos.h"
 #include "../../runtime/gfx/nvn_commands.h"
 #include "../../runtime/gfx/nvn_shaders.h"
+#include "../../runtime/gfx/shader_cache.h"
+#include "../../runtime/gfx/shader_client.h"
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -157,8 +159,77 @@ static void test_shader_lifetime(void) {
     for (unsigned i = 0x30; i < sizeof program; i++) CHECK(program[i] == 0xa5);
 }
 
+static int cache_probe(const char *path) {
+    FILE *file = fopen(path, "rb");
+    if (!file) return 2;
+    fseek(file, 0, SEEK_END); long size = ftell(file); rewind(file);
+    if (size < 0 || size > 0x1002000) { fclose(file); return 2; }
+    void *data = malloc((size_t)size);
+    int ok = data && fread(data, 1, (size_t)size, file) == (size_t)size;
+    fclose(file);
+    DkrShaderCache cache = {0}; char error[256];
+    if (ok && !dkr_shader_cache_parse(data, (size_t)size, &cache, error)) {
+        printf("{\"stage\":%u,\"support\":%u,\"bindings\":%u,\"bytes\":%u,\"notes\":%u}\n",
+            cache.stage, cache.support_size, cache.binding_count, cache.spv_size, cache.notes);
+        dkr_shader_cache_free(&cache); free(data); return 0;
+    }
+    free(data); return 3;
+}
+
+static int compiler_probe(const char *path) {
+    if (_putenv_s("DKR_SHADER_CACHE", path)) return 2;
+    uint8_t control[0x840] = {0}, code[0x120] = {0};
+    uint64_t a = (uint64_t)(uintptr_t)control, b = (uint64_t)(uintptr_t)code;
+    st32(a, 0x98761234); st32(a + 0x20, 0x840);
+    Cpu c = {0}; NvnShaderInputs inputs = {0};
+    inputs.outputs[0] = 0x25; inputs.primitive = 5;
+    unsigned counts = 0;
+    for (unsigned stage = 0; stage < 3; stage++) {
+        unsigned size = stage == 2 ? 0x120 : 0x90;
+        memset(code, 0, sizeof code);
+        st32(a + 0x700, size); st32(a + 0x704, size);
+        if (stage == 2) {
+            st32(b, 0x12345679); st64(b + 0x108, 0xe30000000007000full);
+            st32(a + 0x748, 1); st32(a + 0x74c, 1); st32(a + 0x750, 1);
+        } else { st32(b, 0x12345678); st32(b + 0x30, (stage ? 5u : 1u) << 10); st64(b + 0x88, 0xe30000000007000full); }
+        NvnShader shader = {0}; nvn_shader_snapshot(&c, &shader, a, b);
+        for (unsigned repeat = 0; repeat < 2; repeat++) {
+            DkrShaderCache cache = {0};
+            nvn_shader_translate(&c, &shader, &inputs, &cache);
+            CHECK(cache.stage == (stage == 2 ? 5 : stage) && cache.support_size == 1408 && cache.binding_count == 1 && cache.notes == 0);
+            dkr_shader_cache_free(&cache); counts++;
+        }
+        nvn_shader_release(&shader);
+    }
+    printf("{\"translations\":%u,\"failures\":%d}\n", counts, failures);
+    return failures != 0;
+}
+
+static void test_shader_cache(void) {
+    uint8_t data[136] = {0};
+    uint64_t a = (uint64_t)(uintptr_t)data;
+    memcpy(data, "DKRSHD01", 8);
+    st32(a + 8, 1); st32(a + 12, 5); st32(a + 16, 1408); st32(a + 20, 1); st32(a + 24, 40);
+    for (unsigned i = 0; i < 32; i++) data[32 + i] = (uint8_t)i;
+    st32(a + 72, UINT32_MAX); st32(a + 88, 1); /* support binding: slot -1, count 1 */
+    const uint32_t words[] = {0x07230203, 0x10000, 0, 2, 0, 0x5000f, 5, 1, 0x6e69616d, 0};
+    memcpy(data + 96, words, sizeof words); /* structural fixture, not an executable shader */
+    DkrShaderCache cache = {0}; char error[256];
+    CHECK(!dkr_shader_cache_parse(data, sizeof data, &cache, error));
+    CHECK(cache.stage == 5 && cache.support_size == 1408 && cache.binding_count == 1 && cache.spv_size == 40);
+    CHECK(cache.bindings[0].kind == DKR_SHADER_SUPPORT && cache.bindings[0].slot == -1 && !memcmp(cache.spv, words, sizeof words));
+    for (unsigned i = 0; i < 32; i++) CHECK(cache.compiler[i] == i);
+    dkr_shader_cache_free(&cache);
+    for (unsigned n = 0; n < sizeof data; n++) CHECK(dkr_shader_cache_parse(data, n, &cache, error) == -1);
+    st32(a + 12, 1); CHECK(dkr_shader_cache_parse(data, sizeof data, &cache, error) == -1); /* model mismatch */
+    st32(a + 12, 5); st32(a + 116, 0); CHECK(dkr_shader_cache_parse(data, sizeof data, &cache, error) == -1);
+    st32(a + 116, 0x5000f); st32(a + 64, 1); CHECK(dkr_shader_cache_parse(data, sizeof data, &cache, error) == -1);
+}
+
 int main(int argc, char **argv) {
     dkr_nvn_register(NULL, 0);
+    if (argc == 3 && !strcmp(argv[1], "--cache-probe")) return cache_probe(argv[2]);
+    if (argc == 3 && !strcmp(argv[1], "--compiler-probe")) return compiler_probe(argv[2]);
     uint64_t defaults = dkr_nvn_proc_address("nvnDeviceBuilderSetDefaults");
     uint64_t flags = dkr_nvn_proc_address("nvnDeviceBuilderSetFlags");
     uint64_t lookup = dkr_nvn_proc_address("nvnDeviceGetProcAddress");
@@ -215,6 +286,7 @@ int main(int argc, char **argv) {
     CHECK(cpu.x[0] == 0);
     test_command_lifetime();
     test_shader_lifetime();
+    test_shader_cache();
     for (unsigned i = 0x100; i < sizeof pool; i++) CHECK(pool[i] == 0xa5);
     cpu.x[0] = (uint64_t)(uintptr_t)pool_builder;
     rt_call(&cpu, dkr_nvn_proc_address("nvnTextureBuilderGetZCullStorageSize"));

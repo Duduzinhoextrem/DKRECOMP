@@ -1,0 +1,23 @@
+--- a/src/Ryujinx.Graphics.Shader/Translation/Translator.cs
++++ b/src/Ryujinx.Graphics.Shader/Translation/Translator.cs
+@@ -216,11 +216,20 @@
+             // varying the FS divides by w); start every component of every written output there, as a linked pipeline would
+             // for the components the next stage reads. The host adds outputs the VS never writes (vk_pipeline.c).
+             if (!context.TranslatorContext.AttributeUsage.NextStageKnown)
+             {
++                // DKRecomp: Vulkan VUID-RuntimeSpirv-OpEntryPoint-08743 requires that every input Location consumed
++                // by the fragment shader must be declared as an output in the preceding vertex stage. When stages are
++                // translated independently without linking, synthesize dummy outputs for all standard user attributes
++                // (initialized to (0,0,0,1) per Maxwell hardware behavior), eliminating stage interface mismatches.
++                int maxAttr = stage == ShaderStage.Vertex ? Constants.MaxAttributes : 0;
++                for (int i = 0; i < maxAttr; i++)
++                {
++                    usedAttributes |= (UInt128)0xf << (i * 4);
++                }
+                 for (int mask = context.TranslatorContext.AttributeUsage.UsedOutputAttributes; mask != 0; mask &= mask - 1)
+                 {
+                     usedAttributes |= (UInt128)0xf << (int.TrailingZeroCount(mask) * 4);
+                 }
+             }
+ 
+             while (usedAttributes != UInt128.Zero)

@@ -93,7 +93,7 @@ void nvn_record_capture(Cpu *c, NvnRecord *r) {
             views[i] = (uint64_t)(uintptr_t)copy_data(c, r, views[i], 0x24, 0);
         arg(c, r, 5, 0x24, 0);
     } else if (strstr(name, "DebugGroup") || strstr(name, "DebugMarker")) {
-        unsigned index = IS("InsertDebugMarker") ? 1 : 2;
+        unsigned index = (IS("InsertDebugMarker") || IS("PushDebugGroup")) ? 1 : 2;
         if (strncmp(name, "Pop", 3) && r->x[index]) {
             size_t length = 0;
             const char *text = (const char *)(uintptr_t)r->x[index];

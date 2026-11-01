@@ -8,7 +8,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-static int pixels(const char *path, int flipped) {
+static int pixels(const char *path, int flipped, int swizzled) {
     FILE *file = fopen(path, "rb");
     if (!file) return -1;
     BITMAPFILEHEADER header;
@@ -24,6 +24,7 @@ static int pixels(const char *path, int flipped) {
             int red = (top && left) || (!top && !left);
             int green = !left;
             int blue = !top;
+            if (swizzled) { int swap = red; red = blue; blue = swap; }
             expected[0] = blue ? 255 : 0; expected[1] = green ? 64 : 0; expected[2] = red ? 128 : 0;
             if (x >= 100 && x < 220 && y >= 90 && y < 150) {
                 expected[1] = green ? 160 : 0; expected[2] = red ? 192 : 0;
@@ -38,7 +39,7 @@ static int pixels(const char *path, int flipped) {
         checked++;
     }
     fclose(file);
-    if (ok) printf("capture: %u pixels match draw/texture/uniform/blend/scissor, flipped=%d\n", checked, flipped);
+    if (ok) printf("capture: %u pixels match draw/texture/uniform/blend/scissor, flipped=%d swizzled=%d\n", checked, flipped, swizzled);
     return ok ? 0 : -1;
 }
 
@@ -57,7 +58,7 @@ int main(int argc, char **argv) {
     DkrGfx *gfx = NULL;
     DkrGfxConfig config = {320, 240, "DKRecomp synthetic GPU draw test", 0, validation};
     TRY(dkr_gfx_create(&gfx, &config));
-    DkrVkImage *targets[2] = {NULL}, *texture = NULL;
+    DkrVkImage *targets[2] = {NULL}, *texture = NULL, *copy = NULL, *depth = NULL;
     const VkFormat formats[] = {VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_R16G16B16A16_SFLOAT};
     for (unsigned i = 0; i < 2; i++) {
         DkrVkImageInfo info = {formats[i], 320, 240, 1, 1, VK_IMAGE_ASPECT_COLOR_BIT};
@@ -65,6 +66,14 @@ int main(int argc, char **argv) {
     }
     DkrVkImageInfo tex_info = {VK_FORMAT_R8G8B8A8_UNORM, 2, 2, 1, 1, VK_IMAGE_ASPECT_COLOR_BIT};
     TRY(dkr_vk_image_create(gfx, &tex_info, &texture));
+    TRY(dkr_vk_image_create(gfx, &tex_info, &copy));
+    DkrVkImageInfo depth_info = {VK_FORMAT_D32_SFLOAT_S8_UINT, 320, 240, 1, 1, VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT};
+    TRY(dkr_vk_image_create(gfx, &depth_info, &depth));
+    DkrVkViewInfo swapped = {.format = VK_FORMAT_R8G8B8A8_UNORM, .aspects = VK_IMAGE_ASPECT_COLOR_BIT,
+        .type = VK_IMAGE_VIEW_TYPE_2D, .levels = 1, .layers = 1,
+        .components = {VK_COMPONENT_SWIZZLE_B, VK_COMPONENT_SWIZZLE_G, VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_A}};
+    DkrVkView *swapped_view = NULL;
+    TRY(dkr_vk_image_view(gfx, copy, &swapped, &swapped_view));
     const uint8_t texels[] = {255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 255, 255};
     const float vertices[] = {99, 99, 99, 99, -1, -1, 0, 0, 1, -1, 1, 0, -1, 1, 0, 1, 1, 1, 1, 1};
     const uint16_t indices[] = {99, 99, 0, 1, 2, 2, 1, 3};
@@ -88,16 +97,28 @@ int main(int argc, char **argv) {
         unsigned kind = frame % 2;
         DkrVkBuffer *t = NULL, *c = NULL, *o = NULL;
         TRY(dkr_vk_batch_begin(gfx));
-        if (!frame) TRY(dkr_vk_image_upload(gfx, texture, 0, 0, texels, sizeof texels));
+        if (!frame) {
+            const uint8_t zero[16] = {0};
+            TRY(dkr_vk_image_upload(gfx, texture, 0, 0, zero, sizeof zero));
+            for (unsigned i = 0; i < 4; i++)
+                TRY(dkr_vk_image_upload_region(gfx, texture, 0, 0, i % 2, i / 2, 1, 1, texels + i*4, 4));
+            TRY(dkr_vk_image_copy(gfx, texture, 0, 0, 0, 0, copy, 0, 0, 0, 0, 2, 2));
+        }
         TRY(dkr_vk_image_clear(gfx, targets[kind], clear));
+        TRY(dkr_vk_image_clear_depth(gfx, depth, VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT, 1, 7));
         TRY(dkr_vk_buffer_temporary(gfx, transform, sizeof transform, &t));
         TRY(dkr_vk_buffer_temporary(gfx, color, sizeof color, &c));
         TRY(dkr_vk_buffer_temporary(gfx, overlay, sizeof overlay, &o));
         DkrVkDescriptor descriptors[] = {{.stage = 0, .binding = 1, .buffer = t, .size = sizeof transform},
             {.stage = 1, .binding = 1, .buffer = c, .size = sizeof color},
-            {.stage = 1, .binding = 2, .image = texture, .sampler = sampler}};
+            {.stage = 1, .binding = 2, .image = copy, .view = kind ? NULL : swapped_view, .sampler = sampler}};
         DkrVkDraw draw = {0};
         draw.program = program; draw.colors[0] = targets[kind];
+        draw.depth = depth; draw.pipeline.depth = VK_FORMAT_D32_SFLOAT_S8_UINT;
+        draw.pipeline.depth_test = VK_TRUE; draw.pipeline.depth_write = VK_TRUE; draw.pipeline.depth_compare = VK_COMPARE_OP_LESS;
+        draw.pipeline.stencil_test = VK_TRUE;
+        draw.pipeline.stencil_front = draw.pipeline.stencil_back = (VkStencilOpState){.compareOp = VK_COMPARE_OP_EQUAL,
+            .compareMask = 255, .writeMask = 255, .reference = 7};
         draw.pipeline.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP;
         draw.pipeline.attribute_count = 2; draw.pipeline.stream_count = 1; draw.pipeline.color_count = 1;
         draw.pipeline.attributes[0] = (VkVertexInputAttributeDescription){0, 0, VK_FORMAT_R32G32_SFLOAT, 0};
@@ -112,6 +133,7 @@ int main(int argc, char **argv) {
         draw.count = 4; draw.instances = 2; draw.first_instance = 7;
         TRY(dkr_vk_draw(gfx, &draw));
         draw.pipeline.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+        draw.pipeline.depth_compare = VK_COMPARE_OP_EQUAL;
         draw.pipeline.blend[0].blendEnable = VK_TRUE;
         draw.pipeline.blend[0].srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
         draw.pipeline.blend[0].dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
@@ -126,7 +148,7 @@ int main(int argc, char **argv) {
         TRY(dkr_vk_image_present(gfx, targets[kind], frame >= 6 ? paths[kind] : NULL));
         if (!dkr_gfx_poll(gfx)) { failed = 1; goto done; }
     }
-    if (dkr_gfx_frames(gfx) != 8 || pixels(paths[0], 0) || pixels(paths[1], 1)) failed = 1;
+    if (dkr_gfx_frames(gfx) != 8 || pixels(paths[0], 0, 1) || pixels(paths[1], 1, 0)) failed = 1;
 done:
     if (dkr_gfx_destroy(gfx)) failed = 1;
     printf("%s: GPU draw integration (8 frames, 2 captures, distinct VS/PS uniforms, texture, indexed/instanced, blend/scissor)\n", failed ? "FAIL" : "PASS");

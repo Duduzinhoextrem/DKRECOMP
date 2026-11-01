@@ -24,6 +24,7 @@ prod.keys
 /build/
 /generated/
 /reports/
+*.bmp
 
 # --- Upstream reference checkouts (read-only, recreated by tools/fetch_refs.ps1)
 /refs/

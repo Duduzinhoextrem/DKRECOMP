@@ -12,6 +12,14 @@ typedef struct DkrVkImage DkrVkImage;
 typedef struct DkrVkBuffer DkrVkBuffer;
 typedef struct DkrVkProgram DkrVkProgram;
 typedef struct DkrVkSampler DkrVkSampler;
+typedef struct DkrVkView DkrVkView;
+typedef struct DkrVkViewInfo {
+    VkFormat format;
+    VkImageAspectFlags aspects;
+    VkImageViewType type;
+    uint32_t base_level, levels, base_layer, layers;
+    VkComponentMapping components;
+} DkrVkViewInfo;
 
 typedef struct DkrVkImageInfo {
     VkFormat format;
@@ -51,6 +59,7 @@ typedef struct DkrVkDescriptor {
     DkrVkBuffer *buffer;
     uint64_t offset, size;
     DkrVkImage *image;
+    DkrVkView *view;
     DkrVkSampler *sampler;
 } DkrVkDescriptor;
 
@@ -58,6 +67,7 @@ typedef struct DkrVkDraw {
     DkrVkProgram *program;
     DkrVkPipelineInfo pipeline;
     DkrVkImage *colors[8], *depth;
+    DkrVkView *color_views[8], *depth_view;
     VkViewport viewport;
     VkRect2D scissor;
     float blend_constant[4], depth_bias_constant, depth_bias_slope, depth_bias_clamp;
@@ -74,6 +84,7 @@ typedef struct DkrVkDraw {
  * outside a batch; all batches currently wait for completion, including before transient storage is recycled.
  * A recording error requires context teardown; image layout tracking is not rolled back for a failed batch. */
 int dkr_vk_image_create(DkrGfx *gfx, const DkrVkImageInfo *info, DkrVkImage **out);
+int dkr_vk_image_view(DkrGfx *gfx, DkrVkImage *image, const DkrVkViewInfo *info, DkrVkView **out);
 void dkr_vk_image_destroy(DkrGfx *gfx, DkrVkImage *image);
 int dkr_vk_buffer_create(DkrGfx *gfx, const void *data, size_t size, DkrVkBuffer **out);
 int dkr_vk_buffer_temporary(DkrGfx *gfx, const void *data, size_t size, DkrVkBuffer **out);
@@ -84,7 +95,13 @@ int dkr_vk_program_create(DkrGfx *gfx, const DkrVkShaderInfo *shaders, unsigned 
 int dkr_vk_batch_begin(DkrGfx *gfx);
 int dkr_vk_batch_end(DkrGfx *gfx);
 int dkr_vk_image_upload(DkrGfx *gfx, DkrVkImage *image, unsigned level, unsigned layer, const void *data, size_t size);
+int dkr_vk_image_upload_region(DkrGfx *gfx, DkrVkImage *image, unsigned level, unsigned layer,
+                                unsigned x, unsigned y, unsigned width, unsigned height, const void *data, size_t size);
 int dkr_vk_image_clear(DkrGfx *gfx, DkrVkImage *image, const float color[4]);
+int dkr_vk_image_clear_depth(DkrGfx *gfx, DkrVkImage *image, VkImageAspectFlags aspects, float depth, uint32_t stencil);
+int dkr_vk_image_copy(DkrGfx *gfx, DkrVkImage *source, unsigned source_level, unsigned source_layer, unsigned sx, unsigned sy,
+                      DkrVkImage *destination, unsigned destination_level, unsigned destination_layer, unsigned dx, unsigned dy,
+                      unsigned width, unsigned height);
 int dkr_vk_draw(DkrGfx *gfx, const DkrVkDraw *draw);
 int dkr_vk_image_present(DkrGfx *gfx, DkrVkImage *image, const char *capture_bmp);
 
@@ -98,8 +115,10 @@ struct DkrVkImage {
     VkImageView view;
     VkImageView target_view;
     VkImageUsageFlags usage;
+    DkrVkView *views;
     int initialized;
 };
+struct DkrVkView { DkrVkView *next; DkrVkImage *image; DkrVkViewInfo info; VkImageView view; };
 struct DkrVkBuffer {
     DkrVkBuffer *next;
     DkrGfx *owner;

@@ -416,7 +416,7 @@ def write_ninja(out: str, modules: List[Dict], gfx: bool = False) -> None:
             objs.append(o)
             lines.append(f"build {o}: cc_runtime {esc(os.path.join(ROOT, 'runtime', 'src', src))}")
     if gfx:
-        for src in ("vk.c", "vk_draw.c", "nvn.c", "nvn_obj.c", "nvn_tex.c", "nvn_commands.c", "nvn_shaders.c"):
+        for src in ("vk.c", "vk_draw.c", "nvn.c", "nvn_obj.c", "nvn_tex.c", "nvn_commands.c", "nvn_shaders.c", "shader_cache.c", "shader_client.c", "astc.c", "nvn_replay.c"):
             o = f"obj/gfx/{src[:-2]}.o"
             objs.append(o)
             lines.append(f"build {o}: cc_gfx {esc(os.path.join(ROOT, 'runtime', 'gfx', src))}")
