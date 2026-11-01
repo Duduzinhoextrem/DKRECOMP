@@ -789,7 +789,7 @@ static void queue_present(Cpu *c) { /* void (NVNqueue *, NVNwindow *, int index)
     LONGLONG wait = s->deadline.QuadPart - now.QuadPart;
     if (wait > 0) Sleep((DWORD)(wait * 1000 / freq.QuadPart));
     dkr_nvn_replay_present(c, s->textures[i], s->frames + 1);
-    if (++s->frames == 1 || s->frames % 600 == 0)
+    if (++s->frames == 1 || s->frames % 60 == 0)
         hos_log("nvn: present #%llu (texture %d)\n", (unsigned long long)s->frames, i);
 }
 

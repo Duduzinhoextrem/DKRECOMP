@@ -2,22 +2,24 @@
 
 Somente o que foi executado e verificado. Cada linha aponta para o comando que a reproduz (`docs/TESTING.md`).
 
-## 2026-11-01 — Boot completo até o loop de jogo: SixAxis 4.x, polling de HID, shader interface fix e zero erros de validação Vulkan
+## 2026-11-01 — Boot de 60s atinge 8M+ SVCs: Geometry Shaders com topologia Points, zero erros de validação e 420+ frames apresentados
 
-O jogo avançou da tela de carregamento e eliminou todos os erros de validação Vulkan e roadblocks de inicialização de HID:
+O jogo avançou além da tela de carregamento e eliminou todos os erros de validação Vulkan e roadblocks de inicialização de HID e geometria:
 1. **Controles (SixAxis & Npad Firmware 4.x)**: Implementados os 6 LIFOs SixAxis por slot (`0x1758` a `0x4188`), gravador atômico com seqlock (`sixaxis_lifo_write`), gravador atômico Npad comum (`npad_lifo_write`) e fixação do estilo ativo em `FullKey` para evitar desvio para sensores Joy-Con duplos ausentes. Implementada thread em segundo plano com polling assíncrono de teclado (`user32`) e XInput a ~200 Hz.
 2. **Replay NVN**: Implementado `CopyTextureToTexture`, corrigido o índice de argumento em `PushDebugGroup` e mapeadas as 62 funções `nvnCommandBuffer` chamadas pelo jogo.
 3. **Validação Vulkan 100% limpa (0 erros)**:
    - Os 20 erros de interface de estágio (`VUID-RuntimeSpirv-OpEntryPoint-08743`) foram eliminados sintetizando saídas padrão de atributos de vértice (`0..15`, compatíveis com o comportamento Maxwell) no tradutor de shaders (`tools/shader_translator/patches/0002-synthesize-unlinked-vertex-outputs.patch`).
    - Os 10 erros de atributos de vértice não vinculados (`VUID-VkGraphicsPipelineCreateInfo-Input-07904`) foram eliminados habilitando a extensão e recurso `VK_EXT_vertex_attribute_robustness` no `runtime/gfx/vk.c`.
-4. **Boot de 30s**: Executou **4.430.000 SVCs** ao longo de 15 threads sem travamentos ou aborts (`exit=4` do watchdog), com renderização 1080p/720p pelo Vulkan e streaming contínuo de dados da RomFS (>200 blocos).
+   - O erro de topologia primitiva de entrada do Geometry Shader (`VUID-VkGraphicsPipelineCreateInfo-pStages-00738`) foi eliminado propagando `inputs->primitive` do NVN replay via `shader_client.c` para o `Program.cs`, traduzindo geometry shaders que expandem pontos com `InputTopology.Points`.
+4. **Boot de 60s**: Executou **8.188.064 SVCs** ao longo de 15 threads sem travamentos ou aborts (`exit=4` do watchdog), apresentando **420+ frames a 60 fps** via Vulkan, com streaming contínuo de dados da RomFS (>200 blocos).
 
 | Evidência | Resultado |
 |---|---|
 | `.venv/Scripts/ctest --test-dir build/zig --output-on-failure` | **14/14 CTest passam** (100%), incluindo `dkr_hid_test`, `vulkan_validation`, `vulkan_draw_validation` |
 | `.venv/Scripts/python -m pytest -q` | **69 passam, 1 pulado** em 29,55 s |
-| `tools/boot.sh 30 --gfx` com validação Vulkan ativa | **4.430.000 SVCs**, 15 threads ativas, **0 erros de validação Vulkan**, finalizado normalmente pelo vigia (`boot exit=4`) |
-| Captura `reports/frame_validated.bmp` (1280×720) | **100% dos pixels renderizados (921.600 pixels não-pretos)** via Vulkan com texturas e geometria |
+| `tools/boot.sh 60 --gfx` com validação Vulkan ativa | **8.188.064 SVCs**, 15 threads ativas, **0 erros de validação Vulkan**, finalizado normalmente pelo vigia (`boot exit=4`), **420+ frames** apresentados |
+| Captura `reports/frame_420.bmp` (1280×720) | **917.673 pixels renderizados (99,57%)** via Vulkan com elementos 3D da cena e UI |
+
 
 
 ## 2026-11-01 — Tela de carregamento real renderizada pelo replay Vulkan (trabalho sem commit)

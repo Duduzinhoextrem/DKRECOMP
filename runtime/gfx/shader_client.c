@@ -193,7 +193,7 @@ void nvn_shader_translate(Cpu *c, const NvnShader *shader, const NvnShaderInputs
     append(c, &request, "},\"fout\":{"); comma = 0;
     for (unsigned i = 0; i < 8; i++) if (inputs->outputs[i])
         append(c, &request, "%s\"%u\":\"%s\"", comma++ ? "," : "", i, kinds[integer_format(inputs->outputs[i])]);
-    append(c, &request, "}");
+    append(c, &request, "},\"primitive\":%u", inputs->primitive);
     if (shader->stage == 5) append(c, &request, ",\"local\":[%u,%u,%u],\"shared\":%u",
         ld32((uint64_t)(uintptr_t)shader->control + 0x748), ld32((uint64_t)(uintptr_t)shader->control + 0x74c),
         ld32((uint64_t)(uintptr_t)shader->control + 0x750), ld32((uint64_t)(uintptr_t)shader->control + 0x754));

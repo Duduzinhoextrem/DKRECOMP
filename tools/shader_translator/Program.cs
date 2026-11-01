@@ -95,7 +95,19 @@ static class DkrShaderTranslator
             // "early_fragment_tests": the fragment shader's NVN control byte +0x718 (the driver's early-Z-force, Ryujinx's
             // EarlyZForce); the SPIR-V then declares EarlyFragmentTests (MacNativeGames ae8f4f4).
             bool earlyZ = _job["early_fragment_tests"] is JsonValue ez && ez.TryGetValue<bool>(out bool eb) && eb;
-            return new GpuGraphicsState(earlyZ, InputTopology.Triangles, false, TessPatchType.Triangles, TessSpacing.EqualSpacing,
+            InputTopology topology = InputTopology.Triangles;
+            if (_job["primitive"] is JsonValue pv && pv.TryGetValue<int>(out int prim))
+            {
+                topology = prim switch
+                {
+                    0 => InputTopology.Points,
+                    1 or 2 or 3 => InputTopology.Lines,
+                    0xa or 0xb => InputTopology.LinesAdjacency,
+                    0xc or 0xd => InputTopology.TrianglesAdjacency,
+                    _ => InputTopology.Triangles,
+                };
+            }
+            return new GpuGraphicsState(earlyZ, topology, false, TessPatchType.Triangles, TessSpacing.EqualSpacing,
                 false, false, false, depthMinusW, false, 1f, AlphaTestOp.Always, 0f, attr, false, fout, false,
                 false /* no Y flip */, true /* origin upper-left */, false);
         }
