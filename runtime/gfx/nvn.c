@@ -258,7 +258,9 @@ void dkr_nvn_graphics_init(Cpu *c) {
     if (!c->x[0] || !c->x[1]) hos_stop(c, "nv::InitializeGraphics needs guest work memory");
     g_work_memory = c->x[0]; g_work_size = c->x[1];
     const char *hidden = getenv("DKR_GFX_HIDDEN");
-    DkrGfxConfig config = {1280, 720, "DKRecomp", !(hidden && *hidden && strcmp(hidden, "0")), -1};
+    const char *val_env = getenv("DKR_VK_VALIDATION");
+    int validation = (val_env && *val_env && strcmp(val_env, "0")) ? 1 : 0;
+    DkrGfxConfig config = {1280, 720, "DKRecomp", !(hidden && *hidden && strcmp(hidden, "0")), validation};
     if (dkr_gfx_create(&g_graphics, &config)) hos_stop(c, "Vulkan initialization failed: %s", dkr_gfx_error(g_graphics));
     hos_log("nvn: host Vulkan device ready, guest work memory %#llx +%#llx; no game frame submitted\n",
             (unsigned long long)g_work_memory, (unsigned long long)g_work_size);

@@ -12,6 +12,7 @@
     X(GetPhysicalDeviceFeatures2) X(GetPhysicalDeviceFormatProperties) \
     X(EnumerateDeviceExtensionProperties) X(GetPhysicalDeviceSurfaceSupportKHR) \
     X(GetPhysicalDeviceSurfaceCapabilitiesKHR) X(GetPhysicalDeviceSurfaceFormatsKHR) \
+    X(GetPhysicalDeviceSurfacePresentModesKHR) \
     X(CreateDevice) X(GetDeviceProcAddr) X(CreateWin32SurfaceKHR) X(DestroySurfaceKHR)
 #define DEVICE_PROCS(X) \
     X(DestroyDevice) X(DeviceWaitIdle) X(GetDeviceQueue) X(CreateSwapchainKHR) X(DestroySwapchainKHR) \

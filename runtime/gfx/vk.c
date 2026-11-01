@@ -320,10 +320,24 @@ static int create_swapchain(DkrGfx *g) {
         VK_TRY(g, g->vkDeviceWaitIdle(g->device));
         destroy_swapchain(g);
     }
+    uint32_t mode_count = 0;
+    VkPresentModeKHR present_mode = VK_PRESENT_MODE_FIFO_KHR;
+    if (g->vkGetPhysicalDeviceSurfacePresentModesKHR(g->physical, g->surface, &mode_count, NULL) == VK_SUCCESS && mode_count) {
+        VkPresentModeKHR *modes = calloc(mode_count, sizeof *modes);
+        if (modes && g->vkGetPhysicalDeviceSurfacePresentModesKHR(g->physical, g->surface, &mode_count, modes) == VK_SUCCESS) {
+            for (uint32_t i = 0; i < mode_count; i++) {
+                if (modes[i] == VK_PRESENT_MODE_MAILBOX_KHR) {
+                    present_mode = VK_PRESENT_MODE_MAILBOX_KHR;
+                    break;
+                }
+            }
+        }
+        free(modes);
+    }
     VkSwapchainCreateInfoKHR info = {.sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR, .surface = g->surface,
         .minImageCount = images, .imageFormat = chosen.format, .imageColorSpace = chosen.colorSpace,
         .imageExtent = extent, .imageArrayLayers = 1, .imageUsage = usage, .imageSharingMode = VK_SHARING_MODE_EXCLUSIVE,
-        .preTransform = caps.currentTransform, .compositeAlpha = alpha, .presentMode = VK_PRESENT_MODE_FIFO_KHR, .clipped = VK_TRUE};
+        .preTransform = caps.currentTransform, .compositeAlpha = alpha, .presentMode = present_mode, .clipped = VK_TRUE};
     VK_TRY(g, g->vkCreateSwapchainKHR(g->device, &info, NULL, &g->swapchain));
     g->format = chosen.format; g->extent = extent;
     VK_TRY(g, g->vkGetSwapchainImagesKHR(g->device, g->swapchain, &g->image_count, NULL));
@@ -337,7 +351,8 @@ static int create_swapchain(DkrGfx *g) {
         VK_TRY(g, g->vkCreateSemaphore(g->device, &semaphore, NULL, &g->present_semaphores[i]));
     if (create_readback(g)) return -1;
     g->dirty = 0;
-    fprintf(stderr, "vulkan: swapchain %ux%u, %u images, format %d\n", extent.width, extent.height, g->image_count, g->format);
+    fprintf(stderr, "vulkan: swapchain %ux%u, %u images, format %d, mode %s\n", extent.width, extent.height, g->image_count, g->format,
+            present_mode == VK_PRESENT_MODE_MAILBOX_KHR ? "mailbox" : "fifo");
     return 0;
 }
 

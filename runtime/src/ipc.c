@@ -310,8 +310,10 @@ uint32_t hos_send_sync_request(Cpu *c, uint32_t handle, uint8_t *msg, uint32_t c
         close_session(s);
         return HOS_OK;
     }
+    static int log_ipc = -1;
+    if (log_ipc < 0) log_ipc = getenv("DKR_LOG_IPC") != NULL;
     if (rq.type == 5 || rq.type == 7) { /* control */
-        hos_log("     control %u on %s\n", rq.cmd, s->root->name);
+        if (log_ipc) hos_log("     control %u on %s\n", rq.cmd, s->root->name);
         switch (rq.cmd) {
         case 0: /* ConvertCurrentObjectToDomain -> object id */
             if (!s->dom) {
@@ -355,7 +357,7 @@ uint32_t hos_send_sync_request(Cpu *c, uint32_t handle, uint8_t *msg, uint32_t c
             return HOS_OK;
         }
     }
-    hos_log("     -> %s cmd %u%s\n", target->name, rq.cmd, rq.domain ? " (domain)" : "");
+    if (log_ipc) hos_log("     -> %s cmd %u%s\n", target->name, rq.cmd, rq.domain ? " (domain)" : "");
     if (!target->handle) {
         hos_dump_request(&rq);
         hos_stop(c, "service \"%s\" is not implemented (first command %u)", target->name, rq.cmd);

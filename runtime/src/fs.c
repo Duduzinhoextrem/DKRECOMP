@@ -55,7 +55,9 @@ static void storage_handle(Cpu *c, Service *s, const IpcRequest *rq, IpcReply *r
             fread((void *)(uintptr_t)rq->b[0].addr, 1, (size_t)length, g_romfs) != (size_t)length)
             hos_stop(c, "RomFS: host read failed at %#llx, size %#llx", (unsigned long long)offset,
                      (unsigned long long)length);
-        hos_log("     RomFS read: offset %#llx, size %#llx\n", (unsigned long long)offset, (unsigned long long)length);
+        static int log_fs = -1;
+        if (log_fs < 0) log_fs = getenv("DKR_LOG_FS") != NULL;
+        if (log_fs) hos_log("     RomFS read: offset %#llx, size %#llx\n", (unsigned long long)offset, (unsigned long long)length);
         return;
     }
     case 2: return; /* Flush: immutable storage */

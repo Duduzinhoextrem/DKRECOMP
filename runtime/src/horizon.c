@@ -143,7 +143,6 @@ void hos_log(const char *fmt, ...) {
         va_start(ap, fmt);
         vfprintf(g_log, fmt, ap);
         va_end(ap);
-        fflush(g_log);
     }
 }
 
@@ -222,12 +221,14 @@ static uint64_t get_info(uint32_t id0, uint32_t handle, uint64_t id1, int *ok) {
     }
 }
 
-/* Synchronisation SVCs are frequent and not logged unless DKR_LOG_SYNC is set; everything else is. */
+/* Synchronisation and high-frequency SVCs are not logged unless DKR_LOG_SYNC is set; everything else is. */
 static int quiet_svc(uint32_t n) {
     static int verbose = -1;
     if (verbose < 0) verbose = getenv("DKR_LOG_SYNC") != NULL;
     if (verbose) return 0;
-    return n == 0x0B || n == 0x10 || n == 0x18 || n == 0x1A || n == 0x1B || n == 0x1C || n == 0x1D || n == 0x1E;
+    return n == 0x0B || n == 0x10 || n == 0x11 || n == 0x12 || n == 0x16 || n == 0x17 ||
+           n == 0x18 || n == 0x1A || n == 0x1B || n == 0x1C || n == 0x1D || n == 0x1E ||
+           n == 0x21 || n == 0x22 || n == 0x25 || n == 0x5F;
 }
 
 static void svc_dispatch(Cpu *c, uint32_t n, uint64_t pc) {
