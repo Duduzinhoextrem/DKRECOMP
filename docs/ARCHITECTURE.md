@@ -201,6 +201,16 @@ arquivos de Common. Não há dependência NuGet/NativeAOT. O protocolo JSON perm
 saídas são SPIR-V e reflexão de recursos. A identidade de build acompanha os caches. Três shaders sintéticos
 passaram no validador Khronos compilado localmente; o runtime do jogo ainda não está ligado ao serviço.
 
+`dkrecomp.shaderjobs` prepara bibliotecas offline dos programas SNVN em arquivos RFRM MTRL do motor Retro.
+Também encontra o material de inicialização LZSS8 dentro de `main`. Valida os comprimentos da forma, chunk,
+registro zlib, controles e áreas de código antes de exportar; não aceita conteúdo descompactado excedente.
+O tamanho do controle vem de +0x20 (**0x840 no alvo**). O hash SHA-256 inclui controle e código; c1 vem de +0x700
+até o fim da área declarada em +0x704. Graphics remove apenas o header NVN de 0x30 e preserva o SPH de 0x50;
+compute com magic próprio remove header/padding até +0x100, e headerless permanece intacto. A biblioteca
+preserva quais estágios pertencem ao mesmo programa. Os recursos ainda precisam dos metadados de bindings reais.
+`testing.shader_library` confere reflexão/estágio e executa o validador Khronos por shader. Bibliotecas e relatórios
+contêm dados derivados do jogo e permanecem ignorados pelo Git.
+
 ## Vários jogos
 
 Nada em `tools/dkrecomp/` ou `runtime/` depende de *Tropical Freeze*. O que for específico de um jogo fica em

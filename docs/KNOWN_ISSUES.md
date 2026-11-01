@@ -102,10 +102,14 @@
 ## Gráficos
 
 - **Nada é desenhado.** Os objetos NVN existem e os comandos são gravados e aceitos no submit, mas não há replay
-  Vulkan, tradutor de shaders nem upload de texturas. Toda submissão conta como concluída na hora (fences e
+  Vulkan nem upload de texturas. O tradutor offline já gerou SPIR-V válido para os 8 shaders de inicialização
+  e 3.460 únicos dos materiais; ainda falta a integração ao runtime e resolver tipos/variantes dos recursos.
+  Três shaders de materiais assumem textura 2D. Geometria/transform feedback e interfaces entre estágios não
+  foram validados por desenho. Toda submissão conta como concluída na hora (fences e
   syncs sinalizam imediatamente). O present só cadencia a 60 Hz/intervalo; a janela não mostra o jogo.
-- Os registros de comando guardam só os registradores de argumento. Ponteiros (arrays de viewports, estados,
-  dados de uniform) não têm o conteúdo capturado na gravação; o replay terá que fazer isso por comando.
+- Os registros preservam registradores e os dados transitórios do caminho observado (estados, arrays, views,
+  updates de uniform). O tempo de vida dos recursos GPU ainda precisa ser integrado ao back-end;
+  DrawTexture/CoverageModulationTable param explicitamente até medir seus layouts.
 - Memória de comando e de controle do jogo nunca é consumida: os getters relatam tudo livre e o callback de falta
   de memória nunca roda.
 - Pools físicos/virtuais (MapVirtual) param com relatório; `QueueGetError` não escreve o info (layout do 53.105

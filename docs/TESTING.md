@@ -1,6 +1,28 @@
 # Testes
 
-Nenhum teste precisa dos arquivos do jogo, exceto a identificação dos NSPs do usuário.
+A suíte padrão usa dados sintéticos. Os comandos opcionais de identificação/boot e de bibliotecas reais
+abaixo usam os arquivos locais do usuário e mantêm suas saídas fora do Git.
+
+## Biblioteca real de shaders (opcional, sem desenho)
+
+Depois de construir o tradutor e `spirv-val` conforme a seção de shaders sintéticos, na raiz do projeto:
+
+```bash
+PYTHONPATH=tools .venv/Scripts/python -m dkrecomp.shaderjobs --main user_files/exefs/main --out reports/shaders_startup
+build/shader_translator/bin/dkr_shader_translator.exe reports/shaders_startup/jobs.json reports/shaders_startup/spirv
+PYTHONPATH=tools .venv/Scripts/python -m dkrecomp.testing.shader_library reports/shaders_startup/jobs.json reports/shaders_startup/spirv
+
+PYTHONPATH=tools .venv/Scripts/python -m dkrecomp.shaderjobs --materials user_files/romfs/MaterialArchive.arc --out reports/shaders_materials
+build/shader_translator/bin/dkr_shader_translator.exe reports/shaders_materials/jobs.json reports/shaders_materials/spirv
+PYTHONPATH=tools .venv/Scripts/python -m dkrecomp.testing.shader_library reports/shaders_materials/jobs.json reports/shaders_materials/spirv
+```
+
+PowerShell: definir `$env:PYTHONPATH='tools'` antes dos comandos Python. Os jobs preservam o pareamento dos
+programas e os controles do SDK alvo; saídas `.control`, `.maxwell`, SPIR-V e reflexão são dados derivados do
+jogo e ficam ignoradas. Resultados 1.0.0: **8/8 startup e 3.460/3.460 materiais** traduzidos e válidos para
+Vulkan 1.3. Três shaders dos materiais ainda assumem textura 2D. `validation.json` detalha cada shader/nota;
+`inventory.json` detalha programas/estágios. Essas verificações não executam um draw nem confirmam a imagem.
+`tests/python/test_shaderjobs.py` testa o parser/normalizador com dados sintéticos, sem exigir o jogo.
 
 ## Preparar o ambiente (uma vez)
 

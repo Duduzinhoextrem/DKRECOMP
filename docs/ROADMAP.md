@@ -3,6 +3,11 @@
 Marcos com critérios de aceitação verificáveis. Um marco só é declarado concluído com a evidência listada.
 Estado atual de cada um: `docs/PROGRESS.md`.
 
+**Checkpoint 2026-11-01:** boot em 1.200 presents/30 s, saves persistentes e áudio CPU/manual processando
+quadros silenciosos. Comandos preservam dados transitórios. Os 8 shaders de inicialização e 3.460 únicos de
+materiais já traduzem e passam no validador Vulkan 1.3. O trabalho restante é integrar replay/recursos/shaders,
+mostrar o título real, publicar controles e validar uma fase. **MVP de gameplay continua pendente.**
+
 ## MVP 1 — Ferramentas
 
 **Critério**: o projeto compila e executa testes independentes do jogo, com um comando, nesta máquina.

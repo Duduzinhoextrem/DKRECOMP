@@ -2,6 +2,32 @@
 
 Somente o que foi executado e verificado. Cada linha aponta para o comando que a reproduz (`docs/TESTING.md`).
 
+## 2026-11-01 — Shaders reais da inicialização e dos materiais traduzidos e validados
+
+`dkrecomp.shaderjobs` lê os programas SNVN do RFRM MTRL e encontra o material de inicialização comprimido
+no NSO `main`, sem fixar o offset de outra versão. No alvo base 1.0.0 ele foi encontrado em **main+0x1574398**.
+O formato/LZSS8 foi adaptado do nxnative MIT com atribuição; são aceitos somente arquivos já extraídos.
+
+| Entrada real | Programas | Shaders únicos | Tradução | `spirv-val --target-env vulkan1.3` |
+|---|---:|---:|---:|---:|
+| Material de inicialização do `main` | 4 | 8: 4 VS + 4 PS | 8/8 | 8/8 |
+| `MaterialArchive.arc` | 1.374 | 3.460: 1.370 VS + 1.370 PS + 720 GS | 3.460/3.460 | 3.460/3.460 |
+
+Todos os controles medidos têm **0x840 bytes**, conforme o SDK 4.4. O hash inclui controle e código: constantes
+de compilação diferentes não compartilham identidade. A normalização preserva o SPH gráfico, o segmento c1,
+o flag early-fragment-tests e os tamanhos de trabalho/shared de compute. Compute com header exige padding
+até +0x100; VertexA sem combinação explícita é recusado. Não foi observado compute nessas duas entradas.
+
+Três shaders de materiais ainda têm a nota **tipo de textura ausente; assumindo 2D**. Os demais não emitiram
+notas. A validade do SPIR-V não confirma tipos de recursos, variantes de estado, interfaces entre estágios,
+transform feedback ou resultado visual. O runtime ainda não usa esses shaders; nenhum frame do jogo foi desenhado.
+Os jobs, controles, Maxwell, SPIR-V, reflexão e relatórios ficam somente em `reports/shaders_*`, fora do Git.
+
+Onze novos testes sintéticos passaram: limites de seções, zlib com excesso/stream adicional, LZSS truncado e
+backreferences sobrepostas, pareamento de programas, identidade, c1 e normalização de compute. Suíte completa
+registrada em `reports/pytest_real_shaders.txt`: **65 passam, 1 pulado**, 35,86 s. Nenhum fonte C foi alterado;
+o checkpoint CTest permanece 11/11.
+
 ## 2026-10-31 — Tradutor Maxwell → SPIR-V compilado e validado com shaders sintéticos
 
 `tools/build_shader_translator.py` compila um executável managed .NET 10 usando o código MIT do TotK/Ryujinx,

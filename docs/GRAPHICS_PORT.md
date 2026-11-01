@@ -1,8 +1,10 @@
 # Integração gráfica: avaliação inicial
 
-Estado em 2026-10-31 (atualizado): a **inicialização gráfica NVN do jogo completa** e o boot segue até o áudio
-(2876 SVCs). Nada é desenhado ainda: os comandos são gravados e aceitos, mas não há replay Vulkan nem tradutor
-de shaders. O modo legado continua parando em `nvdrv:Initialize`.
+Estado em 2026-11-01: boot chegou a **1.200 presents em 30 s**, com save e áudio CPU/manual do SDK, ainda
+sem imagem/entrada. Os dados transitórios dos comandos são preservados, mas falta executar o replay Vulkan.
+O tradutor managed já traduziu shaders reais: **8/8 da inicialização** e **3.460/3.460 dos materiais**, todos
+válidos para Vulkan 1.3, incluindo 720 de geometria. Três mantêm uma hipótese de textura 2D. O serviço ainda não
+está ligado aos programas do runtime. O modo legado continua parando em `nvdrv:Initialize`.
 
 ### Como o front-end NVN está montado
 
@@ -21,9 +23,8 @@ de shaders. O modo legado continua parando em `nvdrv:Initialize`.
 
 ### Próximos passos gráficos
 
-1. Replay Vulkan dos registros de comando, capturando no momento da gravação o conteúdo dos ponteiros que cada
-   comando usa (hoje só registradores são guardados).
-2. Tradutor de shaders Maxwell → SPIR-V (avaliar o do Ryujinx/TotK Recomp, MIT) e cache.
+1. Replay Vulkan dos registros já preservados; integrar recursos, clears, cópias e apresentação da textura real.
+2. Ligar programas NVN à biblioteca/tradutor Maxwell → SPIR-V já validado; resolver metadados e variantes por draw.
 3. Texturas: desentrelaçamento block-linear, formatos e upload; apresentação pelo `vk.c`.
 4. Conferir o tamanho automático de bloco do NVN 53.105 contra texturas empacotadas reais (os casos de teste vêm
    do NVN 55).
@@ -64,7 +65,8 @@ também atribui código a jhaizhou/d2r-mobile, via MacNativeGames, e a outros pr
    Verificar cada dependência efetivamente distribuída e registrá-la nos avisos locais.
 5. **Tradutor.** O `build_xlate.py` examinado exige .NET 10 e ferramentas MSVC para NativeAOT. Falta Windows SDK
    nesta máquina. Avaliar primeiro uma ferramenta managed/self-contained sem NativeAOT, ou uma distribuição
-   permissiva verificável, mantendo instalações dentro do workspace. Ainda não foi compilado nem testado aqui.
+   permissiva verificável, mantendo instalações dentro do workspace. **Resolvido:** build managed .NET 10 local,
+   sem NativeAOT/Windows SDK nem pacotes NuGet de Common, validado com shaders reais conforme o topo.
 
 Há `C:\Windows\System32\vulkan-1.dll`, versão de arquivo **1.4.357.0**. O teste próprio criou instância/device na
 RTX 5060 Ti e uma swapchain, apresentou 32 clears com resize/readback e terminou sem erros de validação de
@@ -89,5 +91,5 @@ exigiriam um interpretador/driver próprio. Esse desvio não é necessário para
 `refs/` permanece somente leitura. Além da lista pública NVN e do layout block-linear já registrados nos avisos,
 o adaptador do tradutor foi incorporado em `tools/shader_translator/`, com licenças MIT preservadas. O build
 managed .NET 10 dispensa Windows SDK/NativeAOT e os pacotes NuGet de Common. Nove patches são aplicados somente
-à cópia de Ryujinx em `toolchain/`. Shaders sintéticos VS/PS/CS passaram no `spirv-val` para Vulkan 1.3; ainda
-nenhum shader real do jogo foi traduzido nem integrado a desenho. Dependências/compilações permanecem locais.
+à cópia de Ryujinx em `toolchain/`. Shaders sintéticos VS/PS/CS e as bibliotecas reais de inicialização/materiais
+passaram no `spirv-val` para Vulkan 1.3; ainda não estão integrados a desenho. Dependências/compilações permanecem locais.
