@@ -94,6 +94,10 @@ comandos restantes, instruções ainda não suportadas se executadas e demais su
 
 ## MVP 6 — Gameplay
 
+**Estado (2026-11-01): primeira imagem real do jogo.** O replay Vulkan com shaders traduzidos renderiza a tela
+de carregamento correta (capturas locais em `reports/`). Para em `CopyTextureToTexture`; faltam controles e
+o caminho até o título.
+
 O servidor CPU/manual do SDK substitui a proposta inicial de simular áudio silencioso por IPC. Abertura e
 processamento de 200 quadros silenciosos medidos; não há áudio audível confirmado, controles publicados ou
 imagem do jogo. O critério da Etapa B foi atingido com 1.200 presents, sem renderização; Etapa C é a próxima.

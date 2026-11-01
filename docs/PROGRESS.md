@@ -2,6 +2,23 @@
 
 Somente o que foi executado e verificado. Cada linha aponta para o comando que a reproduz (`docs/TESTING.md`).
 
+## 2026-11-01 — Tela de carregamento real renderizada pelo replay Vulkan (trabalho sem commit)
+
+O replay (`nvn_replay.c`) passou a executar os registros NVN no back-end Vulkan próprio, com shaders reais
+traduzidos durante a execução pelo processo do tradutor (`shader_client.c`, cache em disco), texturas com
+deswizzle block-linear e ASTC decodificado na CPU (`astc.c`, LAS Recomp, MIT). Registro feito a partir do log e
+das capturas deixados pela execução de 2026-11-01 05:38, com a árvore de trabalho ainda sem commit; a suíte de
+testes não foi rodada depois das últimas edições.
+
+| Evidência | Resultado |
+|---|---|
+| Capturas `reports/nvn_real_frame_1.bmp`, `nvn_replay_frame_90.bmp`, `nvn_views_frame_180.bmp` (1280×720, fora do Git) | **Tela de carregamento do jogo correta**: logo do título, fundo de gelo, personagens e ícone de banana animado entre os quadros 90 e 180 |
+| `generated/dkctf_v0/boot_stderr.txt` | primeiro draw e primeiro present pelo Vulkan; **36 shaders** traduzidos, **95 imagens**; para após **2.050.023 SVCs** em `NVN replay: nvnCommandBufferCopyTextureToTexture is not implemented` |
+| Camada de validação | **20 erros** `VUID-RuntimeSpirv-OpEntryPoint-08743` (entradas do fragment shader sem saída correspondente no estágio anterior) |
+
+Ainda não há título jogável: falta a cópia entre texturas, os erros de interface entre estágios e a entrada de
+controles. Vídeos continuam não decodificados.
+
 ## 2026-11-01 — Draw Vulkan com buffers, texturas e pipelines passa no teste de pixels
 
 O back-end próprio agora tem `vk_draw.c`: imagens 2D/mips/layers, buffers de upload, samplers, módulos de
