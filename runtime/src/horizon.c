@@ -465,8 +465,10 @@ static LONG WINAPI crash_report(EXCEPTION_POINTERS *e) {
 }
 
 static DWORD WINAPI watchdog(void *p) {
-    Sleep((DWORD)(uintptr_t)p * 1000);
-    hos_log("\nboot: watchdog after %u s, %llu SVCs; threads:\n", (unsigned)(uintptr_t)p, (unsigned long long)g_svc_count);
+    DWORD sec = (DWORD)(uintptr_t)p;
+    if (!sec) return 0;
+    Sleep(sec * 1000);
+    hos_log("\nboot: watchdog after %u s, %llu SVCs; threads:\n", sec, (unsigned long long)g_svc_count);
     kern_report();
     if (g_log) fclose(g_log);
     ExitProcess(4);
@@ -516,11 +518,16 @@ int main(int argc, char **argv) {
     c->x[2] = rt_hostfn_register("rtld flag callback", cb_flag);
     c->x[3] = rt_hostfn_register("rtld module initializers", cb_module_inits);
     c->x[30] = rt_hostfn_register("return to host", cb_returned);
-    CreateThread(NULL, 0, watchdog, (void *)(uintptr_t)seconds, 0, NULL);
+    if (seconds > 0) CreateThread(NULL, 0, watchdog, (void *)(uintptr_t)seconds, 0, NULL);
     char a[96], b[96];
-    hos_log("boot: calling nn::init::Start at %s (nnMain at %s), main thread %#x, watchdog %u s\n",
-            rt_describe(dkr_sym_init_start, a, sizeof a), rt_describe(dkr_sym_nn_main, b, sizeof b), main_handle,
-            seconds);
+    if (seconds > 0) {
+        hos_log("boot: calling nn::init::Start at %s (nnMain at %s), main thread %#x, watchdog %u s\n",
+                rt_describe(dkr_sym_init_start, a, sizeof a), rt_describe(dkr_sym_nn_main, b, sizeof b), main_handle,
+                seconds);
+    } else {
+        hos_log("boot: calling nn::init::Start at %s (nnMain at %s), main thread %#x, watchdog disabled (running indefinitely)\n",
+                rt_describe(dkr_sym_init_start, a, sizeof a), rt_describe(dkr_sym_nn_main, b, sizeof b), main_handle);
+    }
     rt_call(c, dkr_sym_init_start);
     hos_stop(c, "nn::init::Start returned");
     return 0;
