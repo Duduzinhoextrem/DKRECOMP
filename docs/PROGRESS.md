@@ -2,6 +2,32 @@
 
 Somente o que foi executado e verificado. Cada linha aponta para o comando que a reproduz (`docs/TESTING.md`).
 
+## 2026-11-01 — Draw Vulkan com buffers, texturas e pipelines passa no teste de pixels
+
+O back-end próprio agora tem `vk_draw.c`: imagens 2D/mips/layers, buffers de upload, samplers, módulos de
+shader, layouts de descritores por estágio, cache de pipelines/render passes e batches com conclusão GPU
+real antes de reciclar recursos temporários. O present pode blitar uma imagem renderizada para a swapchain.
+O device pede Vulkan **1.3** e habilita os recursos disponíveis, incluindo `VK_EXT_depth_clip_control` quando
+suportado. SPIR-V recebe um descriptor set por estágio NVN, evitando colisão entre VS/PS no mesmo binding.
+
+`vulkan_draw` e `vulkan_draw_validation` passaram. Cada execução fez **8 frames** e conferiu **153.600 pixels**
+em duas capturas reais da GPU (320×240): render target RGBA8 e RGBA16F, textura 2×2, dois atributos de vértice,
+uniformes diferentes no binding 1 de VS e PS, DrawArrays instanciado, DrawIndexed com offsets/firstIndex,
+transparência, scissor e viewport negativo. Fixtures são assembly SPIR-V próprio, montado e validado com as
+ferramentas Khronos locais. Nenhum dado do jogo é usado. **Zero erros da validação**, incluindo sincronização e teardown.
+
+**13/13 CTest passam**, incluindo os dois testes novos; **67 pytest passam/1 pulado**, 30,62 s.
+Executável do jogo recompilado: **1.200 presents/30 s**, sem STOP/exceção, vigia/exit 4 após **2.282.721 SVCs**.
+O runtime NVN ainda não chama o novo draw: **nenhuma imagem do jogo** foi produzida. Próximo: converter os
+registros/objetos NVN em recursos/estados/bindings desse back-end e carregar os shaders reais.
+
+Limites atuais do draw: single sample, sem tesselação/compute ou arrays de descritores, views de attachment
+no mip/layer base e sem feedback de render target. Upload recebe dados lineares; deswizzle/ASTC do jogo ainda
+precisam de integração. Geometria pode ter módulo/pipeline, mas não foi validada por desenho nesse teste.
+Ao inventariar os 100 shaders do boot, todos declaram **binding 0** não listado nos arrays do `.res.json`:
+o support buffer do Ryujinx também deve entrar no cache/bindings, conforme o fonte com patches do tradutor.
+O próprio C e a vida dos recursos Vulkan foram implementados aqui, sem incorporar o back-end da referência.
+
 ## 2026-11-01 — Programas NVN preservados e shaders observados no boot validados
 
 `ProgramSetShaders` agora copia controles, código e constantes para armazenamento próprio. Atualizar ou

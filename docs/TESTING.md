@@ -3,6 +3,26 @@
 A suíte padrão usa dados sintéticos. Os comandos opcionais de identificação/boot e de bibliotecas reais
 abaixo usam os arquivos locais do usuário e mantêm suas saídas fora do Git.
 
+## Draw Vulkan com dados próprios
+
+```powershell
+.venv/Scripts/python tools/build_spirv_tools.py
+.venv/Scripts/cmake -S . -B build/zig -DDKR_BUILD_GFX=ON
+.venv/Scripts/cmake --build build/zig
+.venv/Scripts/ctest --test-dir build/zig -R vulkan_draw --output-on-failure
+```
+
+O primeiro comando constrói `spirv-val` e `spirv-as` locais. Se essas ferramentas e o Python da `.venv`
+existirem, CMake monta os dois shaders próprios de `tests/native/shaders/`, valida-os e gera um header em
+`build/zig/draw-fixtures/`. Os testes `vulkan_draw` e `vulkan_draw_validation` não usam arquivos do jogo.
+Cada execução faz 8 frames e confere 153.600 pixels em `gfx-draw[-validation]-unorm.bmp`/`-float.bmp`:
+textura 2×2, uniformes VS/PS diferentes no mesmo número de binding, atributos/buffers, índices/firstIndex,
+instâncias, blend/scissor, RGBA8/16F e viewport negativo. A segunda execução requer a camada local e ativa
+validação de sincronização; ambas conferem erros também após o teardown.
+
+Resultado registrado: **13/13 CTest passam**, **67 pytest passam/1 pulado**. Esses draws testam a API do
+back-end, que requer Vulkan 1.3; não comprovam replay NVN ou imagem do jogo. A integração ao runtime é a próxima etapa.
+
 ## Biblioteca real de shaders (opcional, sem desenho)
 
 Depois de construir o tradutor e `spirv-val` conforme a seção de shaders sintéticos, na raiz do projeto:

@@ -156,6 +156,14 @@ main/sdk NSO ──► decoder ARM64 ──► lifter ──► C gerado ──�
 
 ## Organização do repositório
 
+O back-end Vulkan é separado da ABI guest. `vk_internal.h` compartilha contexto/funções carregadas;
+`vk.c` cuida de janela, device/swapchain, present e captura. `vk_draw.h/.c` expõe recursos e batches para um
+consumidor futuro dos comandos NVN. Cada shader usa o descriptor set de seu estágio, com remapeamento das
+decorações SPIR-V; bindings com o mesmo número em VS/PS continuam independentes. Layouts e pipelines são
+cacheados por programa/estado. Imagens usam layout GENERAL com barreiras explícitas; uploads são lineares.
+Batches esperam fences reais e só reciclam buffers/framebuffers/descritores após conclusão. A apresentação
+da imagem renderizada também usa a fila/fences do contexto. Ainda não há adaptação dos comandos NVN a essa API.
+
 O serviço `audren:u` começa em `runtime/src/audio.c`, com dimensionamento do work buffer REV1–4 sobre o
 parâmetro interno de 0x34 bytes. A fórmula DSP é adaptada do nxnative MIT (origem/licença nos avisos de terceiros).
 No modo `--gfx`, `audio_sdk.c` converte o parâmetro público para CPU/manual e delega ao servidor/processador
@@ -180,7 +188,7 @@ O boot comprovou abertura e processamento de quadros silenciosos; ainda não com
 | `runtime/include/dkr/` | `cpu.h` (estado e auxiliares para o código gerado), `rt.h` (API do host) | Pronto |
 | `runtime/src/core.c` | Despacho, CAS, barreiras, mapeamento fixo, contador de sistema, tratadores de trap | Pronto |
 | `runtime/src/horizon.c`, `kernel.c`, `ipc.c`, `services.c`, `fs.c`, `save.c`, `shared.c`, `hid.c`, `vi.c` | Boot, SVCs, threads, sincronização, IPC, serviços, RomFS, save, shared memory/HID e display/VI | Parcial, guiado pelo boot |
-| `runtime/gfx/` | Janela/apresentação Vulkan próprias verificadas; adaptação NVN pendente | Parcial, independente do jogo |
+| `runtime/gfx/` | Janela/apresentação e draws Vulkan verificados; front-end NVN grava objetos/comandos | Falta integrar o replay aos draws |
 | `runtime/src/audio*.c` | Dimensionamento IPC, servidor CPU do SDK e saída WinMM | Quadros silenciosos medidos no boot |
 | `runtime/input/`, `runtime/config/` | Entrada do host, configuração | *(planejado)* |
 | `tests/python/` | Testes unitários (formatos, decodificador × Capstone) | Pronto |

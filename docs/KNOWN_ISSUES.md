@@ -101,8 +101,10 @@
 
 ## Gráficos
 
-- **Nada é desenhado.** Os objetos NVN existem e os comandos são gravados e aceitos no submit, mas não há replay
-  Vulkan nem upload de texturas. O tradutor offline já gerou SPIR-V válido para os 8 shaders de inicialização
+- **Nenhum frame do jogo é desenhado.** Os objetos NVN e registros ainda não são consumidos pelo back-end.
+  O draw independente `vk_draw.c` passou em testes de pixels, com buffers, texturas lineares, shaders,
+  bindings por estágio e present da imagem; falta a integração NVN, deswizzle/ASTC e demais estados/variantes.
+  O tradutor offline já gerou SPIR-V válido para os 8 shaders de inicialização
   e 3.460 únicos dos materiais; ainda falta a integração ao runtime e resolver tipos/variantes dos recursos.
   Três shaders de materiais assumem textura 2D. Geometria/transform feedback e interfaces entre estágios não
   foram validados por desenho. Toda submissão conta como concluída na hora (fences e
@@ -110,7 +112,7 @@
 - A captura de 50 programas do boot forneceu 100 shaders únicos, todos válidos no validador. Dois PS ainda
   assumem tipo 2D para a textura no slot zero. Os jobs já usam c[2]+0x20 do SDK 4.4; o default moderno 0x168
   não serve para mapear esse slot. Programas preservam código/controle, mas cache de variantes de recursos,
-  módulos/pipelines Vulkan e lifetime de submissões não estão implementados. Os fundos iniciais usam draws;
+  ligação dos módulos/pipelines e lifetime de submissões NVN ainda não estão implementados. Os fundos iniciais usam draws;
   somente clears/cópias não bastam para mostrar o título.
 - Os registros preservam registradores e os dados transitórios do caminho observado (estados, arrays, views,
   updates de uniform). O tempo de vida dos recursos GPU ainda precisa ser integrado ao back-end;
@@ -118,15 +120,19 @@
 - Memória de comando e de controle do jogo nunca é consumida: os getters relatam tudo livre e o callback de falta
   de memória nunca roda.
 - Pools físicos/virtuais (MapVirtual) param com relatório; `QueueGetError` não escreve o info (layout do 53.105
-  desconhecido). `nvnTextureBuilderGetZCullStorageSize`, `GetSparseTileLayout` e `TextureViewCompare` ainda param.
+  desconhecido). ZCull externo tem tamanho zero; `GetSparseTileLayout` e `TextureViewCompare` ainda param.
 - O tamanho automático de bloco das texturas segue a regra medida no NVN 55; os 40 casos de teste também vêm do
   NVN 55. Conferir contra texturas empacotadas reais do jogo.
 - A análise de pureza é conservativa e depende de offsets do `sdk` 1.0.0 (`nvnmap.py`); outra versão do SDK
   falha na verificação de ordenação dos nomes.
 - A lista MIT de nomes NVN não representa cobertura de implementação: procs sem implementação encerram a
   execução quando chamados; nomes desconhecidos devolvem NULL.
-- A janela atual é Win32 e usa uma fila com graphics+present, Vulkan 1.1 e swapchain RGBA/BGRA UNORM com suporte
-  a transferência/readback. Outros formatos e plataformas ainda não foram implementados.
+- A janela atual é Win32 e usa uma fila com graphics+present, Vulkan 1.3 e swapchain RGBA/BGRA UNORM com suporte
+  a transferência/readback. O draw genérico é single sample e não implementa tesselação/compute, arrays de
+  descritores, views arbitrárias de attachments ou feedback de render target. Uploads têm formatos selecionados,
+  não incluem deswizzle/ASTC. Geometria/depth/stencil ainda precisam de pixel checks específicos e integração.
+- Todos os 100 shaders capturados declaram binding 0, o support buffer do tradutor, fora das listas de
+  recursos da reflexão JSON atual. O carregador de cache precisa incluí-lo; não basta iterar cbufs/textures.
 - A camada de validação é opcional no build, mas foi usada localmente com sincronização ativa. A ferramenta
   nightly é identificada pelo commit/digest em `toolchain/vulkan-validation/source.txt` e não é distribuída.
 - O loader local registra um manifesto antigo ausente do overlay Epic e avisos de nomes Galaxy. Nenhuma

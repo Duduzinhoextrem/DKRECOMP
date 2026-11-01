@@ -1,5 +1,12 @@
 # Integração gráfica: avaliação inicial
 
+**Checkpoint mais recente:** o back-end próprio `vk_draw.c` já desenha com buffers, texturas/samplers,
+shaders e bindings separados por estágio, cache de pipelines, índices/instâncias, blend/depth/stencil e
+present da imagem. Testes de pixels RGBA8/RGBA16F passaram, inclusive com viewport negativo e validação de
+sincronização, mas só blend/scissor e os recursos listados em PROGRESS foram exercitados por desenho.
+O device agora pede Vulkan 1.3. O replay NVN ainda precisa usar essa API; **nenhuma imagem do jogo**.
+As submissões do novo back-end esperam GPU de verdade; os syncs NVN continuam com o modelo antigo até a integração.
+
 Estado em 2026-11-01: boot chegou a **1.200 presents em 30 s**, com save e áudio CPU/manual do SDK, ainda
 sem imagem/entrada. Os dados transitórios dos comandos são preservados, mas falta executar o replay Vulkan.
 O tradutor managed já traduziu shaders reais: **8/8 da inicialização** e **3.460/3.460 dos materiais**, todos

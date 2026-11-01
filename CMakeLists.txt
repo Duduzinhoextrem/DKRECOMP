@@ -67,11 +67,28 @@ if(DKR_BUILD_GFX)
   if(NOT EXISTS "${DKR_VULKAN_HEADERS}/vulkan/vulkan.h")
     message(FATAL_ERROR "Run .venv/Scripts/python tools/fetch_gfx_deps.py first")
   endif()
-  add_library(dkr_gfx STATIC runtime/gfx/vk.c)
+  add_library(dkr_gfx STATIC runtime/gfx/vk.c runtime/gfx/vk_draw.c)
   target_include_directories(dkr_gfx PUBLIC runtime/include PRIVATE "${DKR_VULKAN_HEADERS}")
   target_link_libraries(dkr_gfx PUBLIC user32 gdi32)
   add_executable(dkr_gfx_smoke tests/native/gfx_smoke.c)
   target_link_libraries(dkr_gfx_smoke PRIVATE dkr_gfx)
+  set(DKR_SPIRV_AS "${CMAKE_SOURCE_DIR}/build/spirv-tools/tools/spirv-as.exe" CACHE FILEPATH "Local SPIR-V assembler")
+  set(DKR_SPIRV_VAL "${CMAKE_SOURCE_DIR}/build/spirv-tools/tools/spirv-val.exe" CACHE FILEPATH "Local SPIR-V validator")
+  set(DKR_GFX_TEST_PYTHON "${CMAKE_SOURCE_DIR}/.venv/Scripts/python.exe" CACHE FILEPATH "Python for synthetic GPU test shaders")
+  if(EXISTS "${DKR_SPIRV_AS}" AND EXISTS "${DKR_SPIRV_VAL}" AND EXISTS "${DKR_GFX_TEST_PYTHON}")
+    set(DKR_DRAW_FIXTURE "${CMAKE_BINARY_DIR}/draw-fixtures/draw_shaders.h")
+    add_custom_command(OUTPUT "${DKR_DRAW_FIXTURE}"
+      COMMAND "${DKR_GFX_TEST_PYTHON}" "${CMAKE_SOURCE_DIR}/tools/dkrecomp/testing/build_draw_fixture.py"
+        --assembler "${DKR_SPIRV_AS}" --validator "${DKR_SPIRV_VAL}"
+        --source "${CMAKE_SOURCE_DIR}/tests/native/shaders" --out "${DKR_DRAW_FIXTURE}"
+      DEPENDS tools/dkrecomp/testing/build_draw_fixture.py tests/native/shaders/draw.vert.spvasm
+        tests/native/shaders/draw.frag.spvasm "${DKR_SPIRV_AS}" "${DKR_SPIRV_VAL}" VERBATIM)
+    add_executable(dkr_gfx_draw_test tests/native/gfx_draw_test.c "${DKR_DRAW_FIXTURE}")
+    target_include_directories(dkr_gfx_draw_test PRIVATE "${DKR_VULKAN_HEADERS}" "${CMAKE_BINARY_DIR}/draw-fixtures")
+    target_link_libraries(dkr_gfx_draw_test PRIVATE dkr_gfx)
+    add_test(NAME vulkan_draw COMMAND dkr_gfx_draw_test --capture "${CMAKE_BINARY_DIR}/gfx-draw")
+    set_tests_properties(vulkan_draw PROPERTIES TIMEOUT 30)
+  endif()
   add_executable(dkr_nvn_test tests/native/nvn_test.c runtime/gfx/nvn.c runtime/gfx/nvn_obj.c runtime/gfx/nvn_tex.c runtime/gfx/nvn_commands.c runtime/gfx/nvn_shaders.c)
   target_link_libraries(dkr_nvn_test PRIVATE dkr_runtime dkr_gfx bcrypt)
   add_test(NAME nvn_entry_abi COMMAND dkr_nvn_test)
@@ -83,6 +100,11 @@ if(DKR_BUILD_GFX)
       --capture "${CMAKE_BINARY_DIR}/gfx-smoke-validation.bmp")
     set_tests_properties(vulkan_validation PROPERTIES TIMEOUT 30 ENVIRONMENT
       "VK_LAYER_PATH=${DKR_VK_VALIDATION_DIR};VK_LOADER_LAYERS_DISABLE=~implicit~;VK_VALIDATION_VALIDATE_SYNC=1")
+    if(TARGET dkr_gfx_draw_test)
+      add_test(NAME vulkan_draw_validation COMMAND dkr_gfx_draw_test --validation --capture "${CMAKE_BINARY_DIR}/gfx-draw-validation")
+      set_tests_properties(vulkan_draw_validation PROPERTIES TIMEOUT 30 ENVIRONMENT
+        "VK_LAYER_PATH=${DKR_VK_VALIDATION_DIR};VK_LOADER_LAYERS_DISABLE=~implicit~;VK_VALIDATION_VALIDATE_SYNC=1")
+    endif()
   endif()
 endif()
 

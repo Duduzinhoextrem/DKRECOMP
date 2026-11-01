@@ -12,6 +12,10 @@ Captura do boot também validou 100 shaders únicos de 50 programas, com dados p
 Como os primeiros 6.000 comandos submetidos incluem 252 draws e nenhum ClearColor, a primeira imagem real
 requer desde já o caminho de desenhos com shaders, estados, buffers e texturas.
 
+O draw Vulkan independente passou em 8 frames e duas capturas/pixel checks por execução, inclusive com
+validação de sincronização. Integração NVN/shaders do jogo, upload/deswizzle/ASTC, entrada e gameplay continuam
+abertos. Suítes atuais: 13/13 CTest e 67 pytest passam/1 pulado; detalhes medidos em PROGRESS.
+
 ## MVP 1 — Ferramentas
 
 **Critério**: o projeto compila e executa testes independentes do jogo, com um comando, nesta máquina.

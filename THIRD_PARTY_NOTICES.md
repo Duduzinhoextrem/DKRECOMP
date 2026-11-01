@@ -41,7 +41,7 @@ identifica o que foi realmente testado. Os headers têm versão/digest fixos no 
 | CMake, Ninja (pacotes do PyPI) | 4.4.4, 1.13.2 | BSD-3-Clause, Apache-2.0 | Build |
 | lz4 (pacote `lz4`) | 4.4.5 | BSD-3-Clause | Descompressão rápida de NSO (opcional; há implementação própria em Python) |
 | pytest | 9.2.0 | MIT | Testes |
-| SPIRV-Tools, spirv-val | [KhronosGroup/SPIRV-Tools v2026.4](https://github.com/KhronosGroup/SPIRV-Tools/tree/ef96ed763b43b59b33b31b362f09a02b729fa1c9), `ef96ed763b43b59b33b31b362f09a02b729fa1c9` | Apache-2.0; LICENSE junto ao fonte em `toolchain/` | Validação dos shaders sintéticos para Vulkan 1.3; build local com Zig C++, sem ligação ao executável do jogo |
+| SPIRV-Tools, spirv-val e spirv-as | [KhronosGroup/SPIRV-Tools v2026.4](https://github.com/KhronosGroup/SPIRV-Tools/tree/ef96ed763b43b59b33b31b362f09a02b729fa1c9), `ef96ed763b43b59b33b31b362f09a02b729fa1c9` | Apache-2.0; LICENSE junto ao fonte em `toolchain/` | Validação de shaders sintéticos/reais para Vulkan 1.3 e montagem do assembly próprio dos testes de desenho; build local com Zig C++, sem ligação ao executável do jogo |
 | SPIRV-Headers | [KhronosGroup/SPIRV-Headers](https://github.com/KhronosGroup/SPIRV-Headers/tree/496543121ce6419f23d6fa5d7194ba66c36212d2), revisão exigida pelo DEPS do SPIRV-Tools acima | MIT e avisos por arquivo; LICENSE completo preservado no checkout | Headers/gramáticas para compilar spirv-val. Testes e dependências extras do SPIRV-Tools não são compilados |
 
 ## Referências de documentação

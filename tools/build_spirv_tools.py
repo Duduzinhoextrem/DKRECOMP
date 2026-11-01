@@ -1,4 +1,4 @@
-"""Build the Apache-2.0 Khronos spirv-val validator locally, using pinned sources and Zig C++.
+"""Build the Apache-2.0 Khronos spirv-val/spirv-as tools locally, using pinned sources and Zig C++.
 
 No installer or global dependency is used. Source, licenses, generated headers and output stay in the workspace.
 Only SPIRV-Headers is needed; tests, optimizer executables and unrelated test dependencies are not built.
@@ -45,9 +45,10 @@ def main():
          f'-DPython3_EXECUTABLE={Path(sys.executable).as_posix()}', f'-DSPIRV-Headers_SOURCE_DIR={headers.as_posix()}',
          '-DCMAKE_BUILD_TYPE=Release', '-DSPIRV_SKIP_TESTS=ON', '-DSPIRV_WERROR=OFF',
          '-DSPIRV_TOOLS_BUILD_STATIC=ON'], env=env)
-    run([cmake, '--build', output, '--target', 'spirv-val', '-j', '8'], env=env)
+    run([cmake, '--build', output, '--target', 'spirv-val', 'spirv-as', '-j', '8'], env=env)
     (output / 'source.json').write_text(json.dumps({'SPIRV-Tools': TOOLS, 'SPIRV-Headers': HEADERS}, indent=2) + '\n')
     print(f'Validator built: {output / "tools/spirv-val.exe"}')
+    print(f'Assembler built: {output / "tools/spirv-as.exe"}')
 
 
 if __name__ == '__main__':

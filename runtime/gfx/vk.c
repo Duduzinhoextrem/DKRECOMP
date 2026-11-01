@@ -1,71 +1,14 @@
 /* Windows Vulkan presentation backend. No game data, guest CPU state or system SDK installation is required.
  * Vulkan declarations come from the pinned Khronos headers (tools/fetch_gfx_deps.py); entry points are loaded
  * from the system loader and the selected device. This is the base for the NVN host front end. */
-#include "dkr/gfx.h"
-
-#define WIN32_LEAN_AND_MEAN
-#include <windows.h>
-#define VK_USE_PLATFORM_WIN32_KHR
-#define VK_NO_PROTOTYPES
-#include <vulkan/vulkan.h>
+#include "vk_internal.h"
 
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-#define INSTANCE_PROCS(X) \
-    X(DestroyInstance) X(EnumeratePhysicalDevices) X(GetPhysicalDeviceProperties) \
-    X(GetPhysicalDeviceMemoryProperties) X(GetPhysicalDeviceQueueFamilyProperties) \
-    X(EnumerateDeviceExtensionProperties) X(GetPhysicalDeviceSurfaceSupportKHR) \
-    X(GetPhysicalDeviceSurfaceCapabilitiesKHR) X(GetPhysicalDeviceSurfaceFormatsKHR) \
-    X(CreateDevice) X(GetDeviceProcAddr) X(CreateWin32SurfaceKHR) X(DestroySurfaceKHR)
-#define DEVICE_PROCS(X) \
-    X(DestroyDevice) X(DeviceWaitIdle) X(GetDeviceQueue) X(CreateSwapchainKHR) X(DestroySwapchainKHR) \
-    X(GetSwapchainImagesKHR) X(AcquireNextImageKHR) X(QueuePresentKHR) X(CreateCommandPool) \
-    X(DestroyCommandPool) X(AllocateCommandBuffers) X(ResetCommandBuffer) X(BeginCommandBuffer) \
-    X(EndCommandBuffer) X(CmdPipelineBarrier) X(CmdClearColorImage) X(CmdCopyImageToBuffer) \
-    X(QueueSubmit) X(CreateSemaphore) X(DestroySemaphore) X(CreateFence) X(DestroyFence) \
-    X(WaitForFences) X(ResetFences) X(CreateBuffer) X(DestroyBuffer) X(GetBufferMemoryRequirements) \
-    X(AllocateMemory) X(FreeMemory) X(BindBufferMemory) X(MapMemory) X(UnmapMemory) X(InvalidateMappedMemoryRanges)
-
-struct DkrGfx {
-    HMODULE loader;
-    HWND window;
-    int closed, dirty, validation;
-    volatile LONG validation_errors;
-    char error[512];
-    uint64_t frames;
-    VkInstance instance;
-    VkDebugUtilsMessengerEXT debug;
-    PFN_vkDestroyDebugUtilsMessengerEXT destroy_debug;
-    VkPhysicalDevice physical;
-    VkDevice device;
-    VkQueue queue;
-    uint32_t family;
-    VkSurfaceKHR surface;
-    VkSwapchainKHR swapchain;
-    VkFormat format;
-    VkExtent2D extent;
-    uint32_t image_count;
-    VkImage *images;
-    uint8_t *initialized;
-    VkSemaphore *present_semaphores;
-    VkSemaphore acquired;
-    VkFence submitted;
-    VkCommandPool command_pool;
-    VkCommandBuffer command;
-    VkBuffer readback;
-    VkDeviceMemory readback_memory;
-    int readback_coherent;
-    PFN_vkGetInstanceProcAddr get_instance_proc;
-#define DECLARE_PROC(name) PFN_vk##name vk##name;
-    INSTANCE_PROCS(DECLARE_PROC)
-    DEVICE_PROCS(DECLARE_PROC)
-#undef DECLARE_PROC
-};
-
-static int fail(DkrGfx *g, const char *fmt, ...) {
+int dkr_vk_fail(DkrGfx *g, const char *fmt, ...) {
     va_list args;
     va_start(args, fmt);
     vsnprintf(g->error, sizeof g->error, fmt, args);
@@ -73,8 +16,7 @@ static int fail(DkrGfx *g, const char *fmt, ...) {
     return -1;
 }
 
-#define VK_TRY(g, call) do { VkResult result_ = (call); \
-    if (result_ != VK_SUCCESS) return fail(g, "%s returned VkResult %d", #call, (int)result_); } while (0)
+#define fail dkr_vk_fail
 
 static LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wp, LPARAM lp) {
     DkrGfx *g = (DkrGfx *)GetWindowLongPtrW(window, GWLP_USERDATA);
@@ -138,7 +80,7 @@ static int create_instance(DkrGfx *g, int validation) {
                                 VK_EXT_DEBUG_UTILS_EXTENSION_NAME};
     const char *layer = "VK_LAYER_KHRONOS_validation";
     VkApplicationInfo app = {.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO, .pApplicationName = "DKRecomp",
-        .applicationVersion = 1, .pEngineName = "DKRecomp host", .engineVersion = 1, .apiVersion = VK_API_VERSION_1_1};
+        .applicationVersion = 1, .pEngineName = "DKRecomp host", .engineVersion = 1, .apiVersion = VK_API_VERSION_1_3};
     VkDebugUtilsMessengerCreateInfoEXT debug = {.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT,
         .messageSeverity = VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT,
         .messageType = VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT |
@@ -214,6 +156,7 @@ static int create_device(DkrGfx *g) {
             if (er != VK_SUCCESS || !present || !families[k].queueCount || !(families[k].queueFlags & VK_QUEUE_GRAPHICS_BIT)) continue;
             VkPhysicalDeviceProperties properties;
             g->vkGetPhysicalDeviceProperties(devices[i], &properties);
+            if (properties.apiVersion < VK_API_VERSION_1_3) continue;
             int score = properties.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU ? 2 : 1;
             if (score > best) { best = score; g->physical = devices[i]; g->family = k; }
         }
@@ -229,9 +172,24 @@ static int create_device(DkrGfx *g) {
     float priority = 1.0f;
     VkDeviceQueueCreateInfo queue = {.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
         .queueFamilyIndex = g->family, .queueCount = 1, .pQueuePriorities = &priority};
-    const char *extension = VK_KHR_SWAPCHAIN_EXTENSION_NAME;
+    const char *extensions[2] = {VK_KHR_SWAPCHAIN_EXTENSION_NAME, VK_EXT_DEPTH_CLIP_CONTROL_EXTENSION_NAME};
+    uint32_t extension_count = 1, available_count = 0;
+    VK_TRY(g, g->vkEnumerateDeviceExtensionProperties(g->physical, NULL, &available_count, NULL));
+    VkExtensionProperties *available = calloc(available_count ? available_count : 1, sizeof *available);
+    if (!available) return fail(g, "out of memory reading draw capabilities");
+    result = g->vkEnumerateDeviceExtensionProperties(g->physical, NULL, &available_count, available);
+    for (unsigned i = 0; result == VK_SUCCESS && i < available_count; i++)
+        if (!strcmp(available[i].extensionName, VK_EXT_DEPTH_CLIP_CONTROL_EXTENSION_NAME)) extension_count = 2;
+    free(available);
+    if (result != VK_SUCCESS) return fail(g, "cannot read draw capabilities: %d", result);
+    VkPhysicalDeviceDepthClipControlFeaturesEXT clip = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DEPTH_CLIP_CONTROL_FEATURES_EXT};
+    VkPhysicalDeviceFeatures2 features = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2,
+        .pNext = extension_count == 2 ? &clip : NULL};
+    g->vkGetPhysicalDeviceFeatures2(g->physical, &features);
+    g->depth_clip_control = extension_count == 2 && clip.depthClipControl;
     VkDeviceCreateInfo device = {.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO, .queueCreateInfoCount = 1,
-        .pQueueCreateInfos = &queue, .enabledExtensionCount = 1, .ppEnabledExtensionNames = &extension};
+        .pQueueCreateInfos = &queue, .enabledExtensionCount = extension_count, .ppEnabledExtensionNames = extensions,
+        .pEnabledFeatures = &features.features, .pNext = extension_count == 2 ? &clip : NULL};
     VK_TRY(g, g->vkCreateDevice(g->physical, &device, NULL, &g->device));
 #define LOAD_DEVICE(name) do { \
     g->vk##name = (PFN_vk##name)g->vkGetDeviceProcAddr(g->device, "vk" #name); \
@@ -435,8 +393,11 @@ static int write_capture(DkrGfx *g, const char *path) {
     return ok ? 0 : fail(g, "cannot write Vulkan capture '%s'", path);
 }
 
-int dkr_gfx_clear_present(DkrGfx *g, const float color[4], const char *capture_bmp) {
-    if (!g || !color || !g->device || g->closed) return -1;
+static int present_image(DkrGfx *g, const float color[4], DkrVkImage *source, const char *capture_bmp) {
+    if (!g || (!color && !source) || !g->device || g->closed) return -1;
+    if (g->batch_active) return fail(g, "presentation during an unfinished draw batch");
+    if (source && (source->owner != g || source->info.aspect != VK_IMAGE_ASPECT_COLOR_BIT))
+        return fail(g, "presentation requires a color image from this context");
     if (g->dirty) {
         int created = create_swapchain(g);
         if (created < 0) return -1;
@@ -460,10 +421,20 @@ int dkr_gfx_clear_present(DkrGfx *g, const float color[4], const char *capture_b
     image_barrier(g, image, g->initialized[index] ? VK_IMAGE_LAYOUT_PRESENT_SRC_KHR : VK_IMAGE_LAYOUT_UNDEFINED,
         VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 0, VK_ACCESS_TRANSFER_WRITE_BIT,
         VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
-    VkClearColorValue clear;
-    memcpy(clear.float32, color, sizeof clear.float32);
-    VkImageSubresourceRange range = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-    g->vkCmdClearColorImage(g->command, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &clear, 1, &range);
+    if (source) {
+        if (dkr_vk_image_ready(g, source)) return -1;
+        VkImageBlit blit = {.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+            .srcOffsets = {{0, 0, 0}, {(int32_t)source->info.width, (int32_t)source->info.height, 1}},
+            .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+            .dstOffsets = {{0, 0, 0}, {(int32_t)g->extent.width, (int32_t)g->extent.height, 1}}};
+        g->vkCmdBlitImage(g->command, source->image, VK_IMAGE_LAYOUT_GENERAL, image,
+            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit, VK_FILTER_NEAREST);
+    } else {
+        VkClearColorValue clear;
+        memcpy(clear.float32, color, sizeof clear.float32);
+        VkImageSubresourceRange range = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+        g->vkCmdClearColorImage(g->command, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &clear, 1, &range);
+    }
     if (capture_bmp) {
         image_barrier(g, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
             VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
@@ -505,6 +476,14 @@ int dkr_gfx_clear_present(DkrGfx *g, const float color[4], const char *capture_b
     return 0;
 }
 
+int dkr_gfx_clear_present(DkrGfx *g, const float color[4], const char *capture_bmp) {
+    return present_image(g, color, NULL, capture_bmp);
+}
+
+int dkr_vk_image_present(DkrGfx *g, DkrVkImage *source, const char *capture_bmp) {
+    return present_image(g, NULL, source, capture_bmp);
+}
+
 const char *dkr_gfx_error(const DkrGfx *g) { return g ? g->error : "out of host memory"; }
 uint64_t dkr_gfx_frames(const DkrGfx *g) { return g ? g->frames : 0; }
 uint32_t dkr_gfx_validation_errors(const DkrGfx *g) { return g ? (uint32_t)g->validation_errors : 0; }
@@ -513,6 +492,7 @@ uint32_t dkr_gfx_destroy(DkrGfx *g) {
     if (!g) return 0;
     if (g->device) {
         if (g->vkDeviceWaitIdle) g->vkDeviceWaitIdle(g->device);
+        dkr_vk_resources_destroy(g);
         destroy_swapchain(g);
         if (g->command_pool) g->vkDestroyCommandPool(g->device, g->command_pool, NULL);
         if (g->acquired) g->vkDestroySemaphore(g->device, g->acquired, NULL);

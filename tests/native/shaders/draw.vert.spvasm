@@ -1,0 +1,49 @@
+; Original synthetic shader: independent uniform binding 1 transforms vertex positions.
+OpCapability Shader
+OpMemoryModel Logical GLSL450
+OpEntryPoint Vertex %main "main" %position %uv %out_position %out_uv
+OpDecorate %position Location 0
+OpDecorate %uv Location 1
+OpDecorate %out_position BuiltIn Position
+OpDecorate %out_uv Location 0
+OpDecorate %Transform Block
+OpMemberDecorate %Transform 0 Offset 0
+OpDecorate %transform DescriptorSet 0
+OpDecorate %transform Binding 1
+%void = OpTypeVoid
+%fn = OpTypeFunction %void
+%float = OpTypeFloat 32
+%v2 = OpTypeVector %float 2
+%v4 = OpTypeVector %float 4
+%int = OpTypeInt 32 1
+%zero = OpConstant %int 0
+%f0 = OpConstant %float 0
+%f1 = OpConstant %float 1
+%Transform = OpTypeStruct %v4
+%p_transform = OpTypePointer Uniform %Transform
+%p_uniform_v4 = OpTypePointer Uniform %v4
+%p_in_v2 = OpTypePointer Input %v2
+%p_out_v4 = OpTypePointer Output %v4
+%p_out_v2 = OpTypePointer Output %v2
+%transform = OpVariable %p_transform Uniform
+%position = OpVariable %p_in_v2 Input
+%uv = OpVariable %p_in_v2 Input
+%out_position = OpVariable %p_out_v4 Output
+%out_uv = OpVariable %p_out_v2 Output
+%main = OpFunction %void None %fn
+%entry = OpLabel
+%xy = OpLoad %v2 %position
+%tp = OpAccessChain %p_uniform_v4 %transform %zero
+%t = OpLoad %v4 %tp
+%scale = OpVectorShuffle %v2 %t %t 0 1
+%offset = OpVectorShuffle %v2 %t %t 2 3
+%scaled = OpFMul %v2 %xy %scale
+%translated = OpFAdd %v2 %scaled %offset
+%x = OpCompositeExtract %float %translated 0
+%y = OpCompositeExtract %float %translated 1
+%p = OpCompositeConstruct %v4 %x %y %f0 %f1
+OpStore %out_position %p
+%uv_value = OpLoad %v2 %uv
+OpStore %out_uv %uv_value
+OpReturn
+OpFunctionEnd
