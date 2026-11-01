@@ -10,6 +10,7 @@
 #include "nvn_internal.h"
 #include "nvn_tex.h"
 #include "nvn_commands.h"
+#include "nvn_shaders.h"
 #include "../src/hos.h"
 
 #define WIN32_LEAN_AND_MEAN
@@ -398,12 +399,12 @@ static void sampler_pool_register_builder(Cpu *c) { /* RegisterSamplerBuilder (p
 static void desc_pool_finalize(Cpu *c) { (void)c; } /* the table is replaced when its memory is initialized again */
 
 /* ---- programs ------------------------------------------------------------------------------------------------- */
-/* Shaders are kept as the game hands them (NVNshaderData: GPU address of the code, control section pointer) for the
- * translator. Out of line: only {magic, host pointer} are stored in the NVNprogram (at least 0x30 bytes, from the
- * original getters). */
+/* NVNshaderData is {GPU code address, control pointer}. ProgramSetShaders owns immutable copies, including
+ * compiler constants; applications may release/reuse their inputs afterward. Only {magic, host pointer} is
+ * stored in the NVNprogram (at least 0x30 bytes, from the original getters). */
 #define PROG_MAGIC MAGIC('P', 'R', 'O', 'G')
 typedef struct { uint64_t data, control; } ShaderData;
-typedef struct { int count; ShaderData stages[6]; } ProgramState;
+typedef NvnProgramSnapshot ProgramState;
 typedef struct { uint32_t magic, pad; ProgramState *state; } Program;
 FITS(Program, 0x30);
 
@@ -422,6 +423,7 @@ static void program_initialize(Cpu *c) { /* NVNboolean (NVNprogram *, NVNdevice 
 
 static void program_finalize(Cpu *c) {
     Program *p = program_of(c, c->x[0]);
+    for (unsigned i = 0; i < p->state->count; i++) nvn_shader_release(&p->state->shaders[i]);
     free(p->state);
     p->magic = 0;
 }
@@ -429,11 +431,24 @@ static void program_finalize(Cpu *c) {
 static void program_set_shaders(Cpu *c) { /* NVNboolean (NVNprogram *, int n, const NVNshaderData *) */
     Program *p = program_of(c, c->x[0]);
     int n = (int)c->x[1];
-    if (n < 0 || n > 6) hos_stop(c, "nvn: ProgramSetShaders with %d stages", n);
-    p->state->count = n;
-    memcpy(p->state->stages, PTR(c->x[2]), sizeof(ShaderData) * (size_t)n);
+    if (n < 0 || n > 6 || (n && !c->x[2])) hos_stop(c, "nvn: ProgramSetShaders with %d stages", n);
+    ProgramState next = {.count = (unsigned)n};
+    unsigned mask = 0;
+    for (int i = 0; i < n; i++) {
+        ShaderData input;
+        memcpy(&input, PTR(c->x[2] + sizeof input * (unsigned)i), sizeof input);
+        nvn_shader_snapshot(c, &next.shaders[i], input.control, input.data);
+        unsigned bit = 1u << next.shaders[i].stage;
+        if (mask & bit) hos_stop(c, "nvn: duplicate stage in ProgramSetShaders");
+        mask |= bit;
+    }
+    for (unsigned i = 0; i < p->state->count; i++) nvn_shader_release(&p->state->shaders[i]);
+    *p->state = next;
+    nvn_program_capture(c, p->state);
     c->x[0] = 1;
 }
+
+const NvnProgramSnapshot *dkr_nvn_program_snapshot(Cpu *c, uint64_t program) { return program_of(c, program)->state; }
 
 /* ---- command buffers ------------------------------------------------------------------------------------------ */
 /* Recording goes to a host buffer, never into the game's Maxwell command memory. Transient pointer arguments
@@ -592,6 +607,17 @@ void dkr_nvn_visit_commands(Cpu *c, const uint64_t *handles, int n, NvnRecordVis
     }
 }
 
+static void trace_command(const NvnRecord *r, void *user) {
+    unsigned *remaining = user;
+    if (!*remaining) return;
+    --*remaining;
+    hos_log("nvn trace: %s x=%llx,%llx,%llx,%llx,%llx,%llx,%llx v=%llx,%llx,%llx,%llx\n", r->name,
+        (unsigned long long)r->x[1], (unsigned long long)r->x[2], (unsigned long long)r->x[3],
+        (unsigned long long)r->x[4], (unsigned long long)r->x[5], (unsigned long long)r->x[6],
+        (unsigned long long)r->x[7], (unsigned long long)r->v[0], (unsigned long long)r->v[1],
+        (unsigned long long)r->v[2], (unsigned long long)r->v[3]);
+}
+
 static void queue_submit(Cpu *c) { /* void (NVNqueue *, int n, const NVNcommandHandle *) */
     queue_of(c, c->x[0]);
     int n = (int)c->x[1];
@@ -600,6 +626,20 @@ static void queue_submit(Cpu *c) { /* void (NVNqueue *, int n, const NVNcommandH
         Handle *h = PTR(rd64(c->x[2] + 8u * (unsigned)i));
         if (!h || h->magic != HANDLE_MAGIC) hos_stop(c, "nvn: submitted command handle %d is not live", i);
     }
+    /* Bounded, opt-in trace of commands actually submitted, after Call/CopyCommands expansion. */
+    static SRWLOCK trace_lock = SRWLOCK_INIT;
+    static int trace_initialized;
+    static unsigned trace_remaining;
+    AcquireSRWLockExclusive(&trace_lock);
+    if (!trace_initialized) {
+        const char *value = getenv("DKR_TRACE_COMMANDS");
+        trace_remaining = value ? (unsigned)strtoul(value, NULL, 10) : 0;
+        if (trace_remaining > 100000) trace_remaining = 100000;
+        trace_initialized = 1;
+    }
+    if (trace_remaining)
+        dkr_nvn_visit_commands(c, PTR(c->x[2]), n, trace_command, &trace_remaining);
+    ReleaseSRWLockExclusive(&trace_lock);
     InterlockedIncrement64(&g_submits); /* no back end yet: the recording is accepted, not replayed */
 }
 

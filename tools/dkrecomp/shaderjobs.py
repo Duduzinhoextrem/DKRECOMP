@@ -82,7 +82,10 @@ class Shader:
         code = raw[start:]
         if len(code) % 8 or len(code) < (16 if stage == 'cs' else 0x60):
             raise ShaderError('Truncated or unaligned Maxwell code')
-        job = {'key': self.key, 'stage': stage, 'c1': raw[c1_offset:].hex(), 'debug': False}
+        # SDK 4.4 BindTexture writes c[2] at 0x20 + slot*8 (sdk+0x2f2f94..0x2f2fa4).
+        # The newer translator reference defaults to 0x168, which misidentifies the target's slot zero.
+        job = {'key': self.key, 'stage': stage, 'c1': raw[c1_offset:].hex(), 'debug': False,
+               'tex_base': 0x20, 'tex_limit': 0x120}
         if stage == 'cs':
             job.update(local=list(local), shared=u32(ctl, 0x754))
         elif stage == 'ps':
@@ -209,6 +212,27 @@ def startup_shaders(image, label):
     return shaders
 
 
+def captured_program(data, label):
+    if len(data) < 16 or data[:8] != b'DKRNVNP1' or u32(data, 12):
+        raise ShaderError(f'{label}: invalid runtime program capture header')
+    count, pos, shaders = u32(data, 8), 16, []
+    if not 1 <= count <= 6:
+        raise ShaderError(f'{label}: invalid program stage count')
+    for _ in range(count):
+        control_size, code_size = u32(data, pos), u32(data, pos + 4)
+        pos += 8
+        if not (0x760 <= control_size <= MAX_CONTROL and 16 <= code_size <= MAX_CODE
+                and control_size + code_size <= len(data) - pos):
+            raise ShaderError(f'{label}: shader capture sections exceed the file')
+        shader = Shader(data[pos:pos + control_size], data[pos + control_size:pos + control_size + code_size], label, label)
+        shader.normalize()
+        shaders.append(shader)
+        pos += control_size + code_size
+    if pos != len(data):
+        raise ShaderError(f'{label}: unexpected trailing program data')
+    return shaders
+
+
 def export(shaders, out):
     out = out.resolve()
     out.mkdir(parents=True, exist_ok=True)
@@ -237,10 +261,11 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument('--main', type=Path, help='Extracted main NSO, for the compressed startup material')
     parser.add_argument('--materials', type=Path, help='MaterialArchive.arc from the extracted RomFS')
+    parser.add_argument('--capture', type=Path, help='Directory of .nvnprog captures written by the runtime')
     parser.add_argument('--out', type=Path, default=Path('reports/shader_jobs'), help='Ignored local output directory')
     args = parser.parse_args()
-    if not (args.main or args.materials):
-        parser.error('Provide --main and/or --materials')
+    if not (args.main or args.materials or args.capture):
+        parser.error('Provide --main, --materials and/or --capture')
     shaders = []
     if args.main:
         from .formats.nso import parse
@@ -248,6 +273,14 @@ def main():
         shaders += startup_shaders(image, str(args.main))
     if args.materials:
         shaders += material_shaders(args.materials.read_bytes(), str(args.materials))
+    if args.capture:
+        files = sorted(args.capture.glob('*.nvnprog'))
+        if not files:
+            parser.error('No .nvnprog captures found')
+        for path in files:
+            if path.stat().st_size > 16 + 6 * (8 + MAX_CODE + MAX_CONTROL):
+                raise ShaderError(f'{path}: program capture exceeds the file limit')
+            shaders += captured_program(path.read_bytes(), str(path))
     print(json.dumps(export(shaders, args.out), indent=2))
 
 

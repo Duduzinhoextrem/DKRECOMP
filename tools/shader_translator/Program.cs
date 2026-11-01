@@ -26,7 +26,8 @@ using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
 static class DkrShaderTranslator
 {
-    const int TexBase = 0x168, SampBase = 0x568;   // byte base of NVN separate texture / sampler handles in c[2] (8 bytes per slot; full measurement in dm/gfx/tools/maxwell_refs.py)
+    // NVN 55 defaults. Jobs for the measured SDK 4.4 pass tex_base=0x20, tex_limit=0x120.
+    const int DefaultTexBase = 0x168, DefaultTexLimit = 0x568;
     sealed class Accessor : IGpuAccessor
     {
         readonly byte[] _code; readonly JsonObject _job; int _binding = 1; public readonly List<string> Notes = new(); public readonly SortedSet<int> TexQueried = new(), ImgQueried = new();
@@ -49,7 +50,9 @@ static class DkrShaderTranslator
         {
             (int off0, _, _) = TextureHandle.UnpackOffsets(handle);
             int bytes = off0 * 4;
-            return (cbufSlot < 0 || (cbufSlot & 0xffff) == 2) && bytes >= TexBase && bytes < SampBase && (bytes - TexBase) % 8 == 0 ? (bytes - TexBase) / 8 : -1;
+            int begin = _job["tex_base"] is JsonNode b ? (int)b : DefaultTexBase;
+            int end = _job["tex_limit"] is JsonNode e ? (int)e : DefaultTexLimit;
+            return (cbufSlot < 0 || (cbufSlot & 0xffff) == 2) && bytes >= begin && bytes < end && (bytes - begin) % 8 == 0 ? (bytes - begin) / 8 : -1;
         }
         public SamplerType QuerySamplerType(int handle, int cbufSlot = -1)
         {
@@ -123,6 +126,10 @@ static class DkrShaderTranslator
                 string stage = (string)job["stage"];
                 if (stage != "vs" && stage != "ps" && stage != "gs" && stage != "tcs" && stage != "tes" && stage != "cs")
                     throw new ArgumentException("Unknown shader stage");
+                int texBase = job["tex_base"] is JsonNode tb ? (int)tb : DefaultTexBase;
+                int texLimit = job["tex_limit"] is JsonNode tl ? (int)tl : DefaultTexLimit;
+                if (texBase < 0 || texBase % 8 != 0 || texLimit <= texBase || texLimit > 0x10000 || texLimit % 8 != 0)
+                    throw new ArgumentException("Invalid NVN texture binding range");
                 byte[] code = File.ReadAllBytes((string)job["code"]);
                 if (code.Length % 8 != 0 || code.Length < (stage == "cs" ? 16 : 0x60))
                     throw new ArgumentException("Truncated or unaligned Maxwell code");

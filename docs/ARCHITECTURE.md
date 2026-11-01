@@ -211,6 +211,17 @@ preserva quais estágios pertencem ao mesmo programa. Os recursos ainda precisam
 `testing.shader_library` confere reflexão/estágio e executa o validador Khronos por shader. Bibliotecas e relatórios
 contêm dados derivados do jogo e permanecem ignorados pelo Git.
 
+No runtime, `NvnProgramSnapshot` armazena os estágios por cópias de código/controle (`nvn_shaders.c`), incluindo
+c1 e dados extras do compilador. O tamanho não é fixado em 0x880. Cada shader recebe a mesma identidade
+SHA-256 do preparador Python, via CNG do Windows. Capturas opcionais `.nvnprog` preservam o pareamento do
+programa em um formato próprio validado por `shaderjobs --capture`. São publicadas completas por rename;
+o caminho precisa ser absoluto e os arquivos nunca são habilitados por padrão. A vida dos recursos Vulkan
+e dos programas já referenciados por submissões ainda precisa de integração ao replay.
+
+Os jobs SDK 4.4 usam a faixa de bindings de textura `c[2]+0x20..0x120`, medida no driver original. O serviço
+managed continua com seu default NVN 55 para clientes sem os campos `tex_base`/`tex_limit`. Metadados dos
+recursos e variantes por draw devem integrar a identidade de cache da tradução, além da identidade do programa.
+
 ## Vários jogos
 
 Nada em `tools/dkrecomp/` ou `runtime/` depende de *Tropical Freeze*. O que for específico de um jogo fica em

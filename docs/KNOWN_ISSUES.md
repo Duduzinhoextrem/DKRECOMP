@@ -107,6 +107,11 @@
   Três shaders de materiais assumem textura 2D. Geometria/transform feedback e interfaces entre estágios não
   foram validados por desenho. Toda submissão conta como concluída na hora (fences e
   syncs sinalizam imediatamente). O present só cadencia a 60 Hz/intervalo; a janela não mostra o jogo.
+- A captura de 50 programas do boot forneceu 100 shaders únicos, todos válidos no validador. Dois PS ainda
+  assumem tipo 2D para a textura no slot zero. Os jobs já usam c[2]+0x20 do SDK 4.4; o default moderno 0x168
+  não serve para mapear esse slot. Programas preservam código/controle, mas cache de variantes de recursos,
+  módulos/pipelines Vulkan e lifetime de submissões não estão implementados. Os fundos iniciais usam draws;
+  somente clears/cópias não bastam para mostrar o título.
 - Os registros preservam registradores e os dados transitórios do caminho observado (estados, arrays, views,
   updates de uniform). O tempo de vida dos recursos GPU ainda precisa ser integrado ao back-end;
   DrawTexture/CoverageModulationTable param explicitamente até medir seus layouts.

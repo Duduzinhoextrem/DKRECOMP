@@ -57,13 +57,16 @@ def run(executable, out, validator=None):
     # An invalid key cannot escape the output directory, and the service must accept a later valid job.
     requests.insert(1, json.dumps({'job': {'key': '../escape', 'stage': 'cs', 'code': str(out / 'cs.maxwell')}, 'out': str(out)}))
     requests.insert(2, json.dumps({'job': {'key': 'bad\nline', 'stage': 'cs', 'code': str(out / 'cs.maxwell')}, 'out': str(out)}))
+    requests.insert(3, json.dumps({'job': {'key': 'bad_range', 'stage': 'cs', 'code': str(out / 'cs.maxwell'),
+                                         'tex_base': -8}, 'out': str(out)}))
     result = subprocess.run([str(executable), '--serve'], input='\n'.join(requests) + '\n',
                             capture_output=True, text=True, timeout=30)
     replies = result.stdout.splitlines()
     assert result.returncode == 0, result.stderr
-    assert len(replies) == 6 and replies[0].startswith('fail ? ') and replies[1].startswith('fail ../escape '), replies
+    assert len(replies) == 7 and replies[0].startswith('fail ? ') and replies[1].startswith('fail ../escape '), replies
     assert replies[2].startswith('fail ? '), replies
-    assert replies[3:] == ['ok vs', 'ok ps', 'ok cs'], (replies, result.stderr)
+    assert replies[3].startswith('fail bad_range '), replies
+    assert replies[4:] == ['ok vs', 'ok ps', 'ok cs'], (replies, result.stderr)
     sizes = {}
     for stage, model in stages:
         sizes[stage] = spirv(out / f'{stage}.spv', model)

@@ -2,6 +2,7 @@
 #include "dkr/nvn.h"
 #include "../../runtime/src/hos.h"
 #include "../../runtime/gfx/nvn_commands.h"
+#include "../../runtime/gfx/nvn_shaders.h"
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -123,12 +124,51 @@ static void test_command_lifetime(void) {
     c.x[0] = b; invoke(&c, "nvnCommandBufferFinalize");
 }
 
+static void test_shader_lifetime(void) {
+    uint8_t program[0x40], control[2][0x840] = {{0}}, code[2][0x90] = {{0}};
+    struct { uint64_t data, control; } inputs[2];
+    memset(program, 0xa5, sizeof program);
+    for (unsigned i = 0; i < 2; i++) {
+        uint64_t a = (uint64_t)(uintptr_t)control[i], b = (uint64_t)(uintptr_t)code[i];
+        st32(a, 0x98761234); st32(a + 0x20, 0x840); st32(a + 0x700, 0x90); st32(a + 0x704, 0x90);
+        st32(b, 0x12345678); st32(b + 0x30, (i ? 5u : 1u) << 10); st64(b + 0x88, 0xe30000000007000full);
+        inputs[i].data = b; inputs[i].control = a;
+    }
+    Cpu c = {0};
+    uint64_t object = (uint64_t)(uintptr_t)program;
+    c.x[0] = object; invoke(&c, "nvnProgramInitialize"); CHECK(c.x[0] == 1);
+    c.x[0] = object; c.x[1] = 2; c.x[2] = (uint64_t)(uintptr_t)inputs; invoke(&c, "nvnProgramSetShaders");
+    CHECK(c.x[0] == 1);
+    const NvnProgramSnapshot *snapshot = dkr_nvn_program_snapshot(&c, object);
+    CHECK(snapshot->count == 2 && snapshot->shaders[0].stage == 0 && snapshot->shaders[1].stage == 1);
+    CHECK(!strcmp(snapshot->shaders[0].key, "3f0dcb53189c7667a3262974e2c38c0f")); /* Python hashlib oracle */
+    CHECK(snapshot->shaders[0].control != control[0] && snapshot->shaders[0].code != code[0]);
+    control[0][0x7d0] = 0x42;
+    CHECK(snapshot->shaders[0].control[0x7d0] == 0);
+    c.x[0] = object; c.x[1] = 2; c.x[2] = (uint64_t)(uintptr_t)inputs; invoke(&c, "nvnProgramSetShaders");
+    snapshot = dkr_nvn_program_snapshot(&c, object);
+    CHECK(strcmp(snapshot->shaders[0].key, "3f0dcb53189c7667a3262974e2c38c0f") && snapshot->shaders[0].control[0x7d0] == 0x42);
+    memset(control, 0xcc, sizeof control); memset(code, 0xdd, sizeof code); memset(inputs, 0, sizeof inputs);
+    CHECK(ld32((uint64_t)(uintptr_t)snapshot->shaders[0].code) == 0x12345678);
+    CHECK(snapshot->shaders[0].control_size == 0x840 && snapshot->shaders[0].code_size == 0x90);
+    c.x[0] = object; c.x[1] = 0; c.x[2] = 0; invoke(&c, "nvnProgramSetShaders");
+    CHECK(dkr_nvn_program_snapshot(&c, object)->count == 0);
+    c.x[0] = object; invoke(&c, "nvnProgramFinalize");
+    for (unsigned i = 0x30; i < sizeof program; i++) CHECK(program[i] == 0xa5);
+}
+
 int main(int argc, char **argv) {
     dkr_nvn_register(NULL, 0);
     uint64_t defaults = dkr_nvn_proc_address("nvnDeviceBuilderSetDefaults");
     uint64_t flags = dkr_nvn_proc_address("nvnDeviceBuilderSetFlags");
     uint64_t lookup = dkr_nvn_proc_address("nvnDeviceGetProcAddress");
     if (argc == 2 && !strcmp(argv[1], "--builder-probe")) return builder_probe(defaults, flags);
+    if (argc == 3 && !strcmp(argv[1], "--shader-capture")) {
+        if (_putenv_s("DKR_SHADER_CAPTURE", argv[2])) return 2;
+        test_shader_lifetime();
+        return failures != 0;
+    }
+    _putenv_s("DKR_SHADER_CAPTURE", "");
     CHECK(defaults && flags && lookup);
     CHECK(dkr_nvn_proc_address("nvnDeviceApplyDeferredFinalizes"));
     CHECK(dkr_nvn_proc_address("nvnQueueAcquireTexture"));
@@ -174,6 +214,7 @@ int main(int argc, char **argv) {
     rt_call(&cpu, dkr_nvn_proc_address("nvnMemoryPoolGetSize"));
     CHECK(cpu.x[0] == 0);
     test_command_lifetime();
+    test_shader_lifetime();
     for (unsigned i = 0x100; i < sizeof pool; i++) CHECK(pool[i] == 0xa5);
     cpu.x[0] = (uint64_t)(uintptr_t)pool_builder;
     rt_call(&cpu, dkr_nvn_proc_address("nvnTextureBuilderGetZCullStorageSize"));

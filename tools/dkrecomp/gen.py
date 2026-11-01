@@ -378,7 +378,7 @@ def write_ninja(out: str, modules: List[Dict], gfx: bool = False) -> None:
         f"inc = -I{inc}",
         f"runtime_flags = {'-DDKR_ENABLE_GFX' if gfx else ''}",
         f"gfx_inc = -I{os.path.join(ROOT, 'toolchain', 'vulkan-headers', 'include').replace(chr(92), '/')}",
-        f"libs = {'-luser32 -lgdi32 -lwinmm' if gfx else ''}",
+        f"libs = {'-luser32 -lgdi32 -lwinmm -lbcrypt' if gfx else ''}",
         "rule cc",
         "  command = $cc $cflags $inc -MMD -MF $out.d -c $in -o $out",
         "  depfile = $out.d",
@@ -416,7 +416,7 @@ def write_ninja(out: str, modules: List[Dict], gfx: bool = False) -> None:
             objs.append(o)
             lines.append(f"build {o}: cc_runtime {esc(os.path.join(ROOT, 'runtime', 'src', src))}")
     if gfx:
-        for src in ("vk.c", "nvn.c", "nvn_obj.c", "nvn_tex.c", "nvn_commands.c"):
+        for src in ("vk.c", "nvn.c", "nvn_obj.c", "nvn_tex.c", "nvn_commands.c", "nvn_shaders.c"):
             o = f"obj/gfx/{src[:-2]}.o"
             objs.append(o)
             lines.append(f"build {o}: cc_gfx {esc(os.path.join(ROOT, 'runtime', 'gfx', src))}")

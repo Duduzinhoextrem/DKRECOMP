@@ -6,6 +6,13 @@ O tradutor managed já traduziu shaders reais: **8/8 da inicialização** e **3.
 válidos para Vulkan 1.3, incluindo 720 de geometria. Três mantêm uma hipótese de textura 2D. O serviço ainda não
 está ligado aos programas do runtime. O modo legado continua parando em `nvdrv:Initialize`.
 
+Checkpoint posterior: os programas agora possuem cópias próprias e captura opcional (`nvn_shaders.c`).
+**100/100 shaders de 50 programas observados no boot** também traduziram e passaram no validador; 41 identidades
+não estavam nas duas bibliotecas offline. O job usa a faixa SDK 4.4 **c[2]+0x20..0x120**, medida em BindTexture,
+para identificar corretamente o slot zero. Dois shaders ainda precisam do tipo de textura nesse slot.
+Trace de 6.000 comandos mostrou **252 DrawArrays e nenhum ClearColor**: o primeiro resultado visual do jogo
+exige o caminho de draws/texturas/shaders, além de apresentação/cópias. Cópias por si só não produzirão o título.
+
 ### Como o front-end NVN está montado
 
 - **Driver original como fonte da verdade.** O NVN do alvo está ligado no `sdk`. `python -m dkrecomp.nvnmap

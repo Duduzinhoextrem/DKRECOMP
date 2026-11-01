@@ -5,13 +5,14 @@ Fixtures use our own tiny Maxwell shaders; no game files are needed.
 import json
 from pathlib import Path
 import struct
+import subprocess
 import sys
 import zlib
 
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'tools'))
-from dkrecomp.shaderjobs import (Shader, ShaderError, decode_record, export, lzss8,
+from dkrecomp.shaderjobs import (Shader, ShaderError, captured_program, decode_record, export, lzss8,
                                  material_shaders, startup_shaders)
 from dkrecomp.testing.shader_probe import maxwell
 
@@ -52,6 +53,7 @@ def test_material_program_pairing_constants_and_export(tmp_path):
     assert len(shaders) == 2 and shaders[0].program == shaders[1].program
     vertex, code = shaders[0].normalize()
     assert vertex['stage'] == 'vs' and vertex['c1'] == bytes(range(16)).hex()
+    assert vertex['tex_base'] == 0x20 and vertex['tex_limit'] == 0x120
     assert code[:len(maxwell('vs'))] == maxwell('vs')
     assert shaders[1].normalize()[0]['early_fragment_tests'] is True
     report = export(shaders + shaders[:1], tmp_path)
@@ -129,3 +131,25 @@ def test_reject_vertex_a_without_pairing():
     struct.pack_into('<I', changed, 0x30, 1)
     with pytest.raises(ShaderError, match='VertexA'):
         Shader(ctl, bytes(changed), '', '').normalize()
+
+
+def test_runtime_capture_lengths_and_trailing_bytes():
+    ctl, raw = package('vs')
+    data = b'DKRNVNP1' + struct.pack('<4I', 1, 0, len(ctl), len(raw)) + ctl + raw
+    assert captured_program(data, 'synthetic')[0].normalize()[0]['stage'] == 'vs'
+    for bad in [data[:-1], data + b'excess', bytes(16), data[:8] + struct.pack('<II', 7, 0)]:
+        with pytest.raises(ShaderError):
+            captured_program(bad, 'bad')
+
+
+def test_native_capture_and_python_identity_agree(tmp_path):
+    binary = Path(__file__).resolve().parents[2] / 'build/zig/dkr_nvn_test.exe'
+    if not binary.exists():
+        pytest.skip('Build the native NVN test first')
+    subprocess.run([str(binary), '--shader-capture', str(tmp_path)], check=True, capture_output=True, timeout=15)
+    files = sorted(tmp_path.glob('*.nvnprog'))
+    assert len(files) == 2
+    shaders = [s for f in files for s in captured_program(f.read_bytes(), str(f))]
+    assert len(shaders) == 4 and len({s.key for s in shaders}) == 3
+    assert '3f0dcb53189c7667a3262974e2c38c0f' in {s.key for s in shaders}
+    assert not list(tmp_path.glob('*.tmp'))

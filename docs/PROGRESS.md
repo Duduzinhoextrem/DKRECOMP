@@ -2,6 +2,35 @@
 
 Somente o que foi executado e verificado. Cada linha aponta para o comando que a reproduz (`docs/TESTING.md`).
 
+## 2026-11-01 — Programas NVN preservados e shaders observados no boot validados
+
+`ProgramSetShaders` agora copia controles, código e constantes para armazenamento próprio. Atualizar ou
+finalizar um programa libera as cópias anteriores. `nvn_shaders.c` valida comprimentos/estágios e calcula
+SHA-256 pelo Windows CNG; a identidade coincide com `shaderjobs`. Não preserva ponteiros transitórios.
+`DKR_SHADER_CAPTURE` publica arquivos imutáveis de programas por rename de um temporário próprio; fica
+desativado por padrão. O reader Python valida contagem, seções, truncamento e bytes finais.
+
+Boot gráfico recompilado com captura: **1.200 presents em 30 s**, sem STOP/exceção, vigia/exit 4 após
+**2.296.667 SVCs**. Foram capturados **50 programas**, **100 shaders únicos: 50 VS + 49 PS + 1 GS**.
+Os **100 traduziram e passaram no `spirv-val` Vulkan 1.3**. A identidade dos 50 arquivos também conferiu entre
+C e Python. Das 100 identidades, 55 estão nos materiais, 4 na biblioteca startup e 41 em nenhuma das duas;
+isso não significa 41 códigos SASS diferentes, pois o controle participa do hash.
+
+O original `nvnCommandBufferBindTexture` do alvo escreve `c[2]` em **0x20 + slot × 8**
+(`sdk+0x2f2f94..0x2f2fa4`). O tradutor passou a aceitar uma faixa por job; os jobs SDK 4.4 informam
+**0x20..0x120**, preservando o default da referência para outros clientes. Isso corrige a identificação do
+slot zero, antes interpretado como -1 pelo default 0x168. Dois PS capturados ainda precisam do tipo real
+da textura no slot 0; a tradução atual registra a hipótese 2D. Não há draw executado no Vulkan.
+
+Uma captura separada e limitada a **6.000 comandos submetidos** encontrou 29 nomes de API, **252 DrawArrays**
+e **zero ClearColor**. Os primeiros draws são quads TRIANGLE_STRIP; o replay inicial precisa de shaders,
+buffers/estados/texturas desde o começo. Esse recorte não é um inventário completo da fase.
+
+`nvn_entry_abi` confere cópias após sobrescrever as entradas, troca/limpeza/finalização do programa, guardas
+do objeto e hash contra `hashlib`. A integração sintética C → arquivo → parser Python também passou, sem
+temporários restantes. **11/11 CTest passam**; **67 pytest passam, 1 pulado**, 31,27 s, incluindo rejeição de
+faixa de bindings inválida no protocolo managed. Relatório em `reports/pytest_runtime_shaders.txt`.
+
 ## 2026-11-01 — Shaders reais da inicialização e dos materiais traduzidos e validados
 
 `dkrecomp.shaderjobs` lê os programas SNVN do RFRM MTRL e encontra o material de inicialização comprimido

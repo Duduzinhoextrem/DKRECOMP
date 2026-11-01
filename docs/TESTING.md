@@ -24,6 +24,33 @@ Vulkan 1.3. Três shaders dos materiais ainda assumem textura 2D. `validation.js
 `inventory.json` detalha programas/estágios. Essas verificações não executam um draw nem confirmam a imagem.
 `tests/python/test_shaderjobs.py` testa o parser/normalizador com dados sintéticos, sem exigir o jogo.
 
+### Shaders criados pelo runtime e comandos submetidos
+
+Com o executável gráfico já recompilado, em PowerShell na raiz do projeto:
+
+```powershell
+$env:DKR_GFX_HIDDEN='1'
+$env:DKR_SHADER_CAPTURE=Join-Path (Get-Location).Path 'reports/shader_capture'
+Push-Location generated/dkctf_v0
+try { & .\dkctf.exe . 30 1>boot_stdout.txt 2>boot_stderr.txt }
+finally { Pop-Location; Remove-Item Env:DKR_SHADER_CAPTURE }
+$env:PYTHONPATH='tools'
+.venv/Scripts/python -m dkrecomp.shaderjobs --capture reports/shader_capture --out reports/shaders_runtime
+build/shader_translator/bin/dkr_shader_translator.exe reports/shaders_runtime/jobs.json reports/shaders_runtime/spirv
+.venv/Scripts/python -m dkrecomp.testing.shader_library reports/shaders_runtime/jobs.json reports/shaders_runtime/spirv
+```
+
+Resultado registrado: **50 programas, 100 shaders únicos, 100/100 traduzidos e válidos**; dois PS ainda assumem
+textura 2D no slot 0. Boot chegou a 1.200 presents/30 s, vigia esperado com exit 4, sem imagem. O diretório de
+captura exige caminho absoluto local e o pai deve existir; capturas são opcionais, sem conteúdo versionado.
+O teste sintético `dkr_nvn_test --shader-capture DIRETORIO_ABSOLUTO` gera dois programas próprios, usado pelo pytest
+para conferir identidade C/Python e ausência de arquivos temporários. Não usa arquivos do jogo.
+
+Para uma execução separada com trace, definir `$env:DKR_TRACE_COMMANDS='6000'` antes do boot e remover a variável
+depois. O limite máximo é 100.000 registros, visitados na submissão após expandir Call/CopyCommands. Esse modo
+registra argumentos, incluindo endereços locais, e o log deve permanecer ignorado. No recorte medido de 6.000
+comandos: 29 nomes de API, 252 DrawArrays e zero ClearColor. Não é um inventário de toda a fase.
+
 ## Preparar o ambiente (uma vez)
 
 ```bash
