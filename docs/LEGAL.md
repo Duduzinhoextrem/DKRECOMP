@@ -15,11 +15,15 @@ com licença compatível, listado em `THIRD_PARTY_NOTICES.md`).
    derivada deles (C gerado, executáveis gerados, relatórios com conteúdo extraído) ficam fora do controle de versão.
    O `.gitignore` bloqueia as extensões e as pastas `game original meu/`, `user_files/`, `build/`, `generated/`,
    `reports/`.
-2. **Sem chaves.** O DKRecomp não lê, não pede, não guarda e não imprime chaves de console ou de título. O leitor de
+2. **Sem chaves.** O DKRecomp não lê, não guarda e não imprime chaves de console ou de título. O leitor de
    tickets (`tools/dkrecomp/formats/ticket.py`) devolve só identificadores e nunca acessa o bloco da chave de título.
+   Desde 2026-11-03, a pedido do mantenedor, o launcher pergunta **onde** estão o `nstool` e o `prod.keys` do próprio
+   usuário e passa esse caminho ao `nstool` dele; o DKRecomp não abre o arquivo de chaves nem embute ferramentas ou
+   chaves (`docs/LAUNCHER_E_CONFIGURACOES.md`).
 3. **Sem decriptação nem contorno de DRM.** O DKRecomp lê apenas o que já está em texto claro (cabeçalho PFS0,
    campos públicos do ticket, `.cnmt.xml`) e arquivos que o usuário já extraiu por conta própria. Ele não implementa
-   decriptação de NCA nem contorno de proteção técnica.
+   decriptação de NCA nem contorno de proteção técnica; quando o launcher prepara o jogo, a decriptação é feita pela
+   ferramenta do próprio usuário (`nstool`), na máquina dele.
 4. **Sem downloads de conteúdo proprietário.** Nenhuma ferramenta baixa jogos, atualizações, chaves ou firmware.
 5. **Nada é distribuído a partir do jogo.** Código C gerado e executáveis gerados contêm o jogo traduzido; são para
    uso pessoal do usuário e não devem ser compartilhados. O C gerado começa com o aviso

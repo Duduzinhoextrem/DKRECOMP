@@ -2,8 +2,10 @@
  * Adapted from nxnative dm/host/hle_audren.c @ 5474c6f34789a41770868564fbf4e9e32fc57584,
  * Copyright (c) 2026 seedds, MIT. See ../third_party/LICENSE-nxnative.txt and THIRD_PARTY_NOTICES.md.
  * SDK routines are recompiled locally; none of their code or data is distributed in this source. */
+#define COBJMACROS
 #include "hos.h"
 #include "dkr/audio_sdk.h"
+#include "dkr/settings.h"
 #include <stdatomic.h>
 #include <stdio.h>
 #include <string.h>
@@ -11,6 +13,9 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <mmsystem.h>
+#include <objbase.h>
+#include <mmdeviceapi.h>
+#include <audioclient.h>
 
 /* WinMM completes buffers on the audio engine's ~10 ms period, so 5 ms buffers (one SDK frame each) were
  * consumed at ~116/s instead of 200/s: constant underruns and an audio clock running at ~58% speed. Each WinMM
@@ -19,6 +24,7 @@ enum { PARAM_SIZE = 0x38, FRAME_MAX = 1024, FRAMES_PER_BUFFER = 4, OUTPUT_BUFFER
 static _Thread_local int t_in_open;
 static _Atomic int g_open;
 static uint64_t g_handle[2], g_owned_work, g_thread_memory, g_worker_entry;
+static uint32_t g_audio_event;
 static unsigned g_samples;
 static SRWLOCK g_render_lock = SRWLOCK_INIT;
 static int16_t g_frame[FRAME_MAX * 2];
@@ -104,6 +110,11 @@ void dkr_audio_execute(Cpu *c) {
     }
     call(c, dkr_audio_sdk.unlock, 1, args);
     ReleaseSRWLockExclusive(&g_render_lock);
+    if (!result && g_audio_event) {
+        kern_lock();
+        hos_event_set(g_audio_event, 1);
+        kern_unlock();
+    }
     c->x[0] = result;
 }
 
@@ -117,11 +128,100 @@ static void render_frame(Cpu *c, int16_t *out) {
     ReleaseSRWLockExclusive(&g_render_lock);
 }
 
+/* Device-paced shared-mode output. Keep at most 15 ms in the endpoint, rather than the WinMM
+ * queue's 80-120 ms. Windows converts our fixed 48 kHz stereo PCM format to the endpoint mix format.
+ * All COM interfaces are created, used and released on this rendering thread. */
+static int render_wasapi(Cpu *c) {
+    static const GUID clsid = {0xbcde0395,0xe52f,0x467c,{0x8e,0x3d,0xc4,0x57,0x92,0x91,0x69,0x2e}};
+    static const GUID iid_enum = {0xa95664d2,0x9614,0x4f35,{0xa7,0x46,0xde,0x8d,0xb6,0x36,0x17,0xe6}};
+    static const GUID iid_client = {0x1cb9ad4c,0xdbfa,0x4c32,{0xb1,0x78,0xc2,0xf5,0x68,0xa7,0x03,0xb2}};
+    static const GUID iid_render = {0xf294acfc,0x3146,0x4483,{0xa7,0xbf,0xad,0xdc,0xa7,0xc2,0x60,0xe2}};
+    IMMDeviceEnumerator *enumerator = NULL;
+    IMMDevice *device = NULL;
+    IAudioClient *client = NULL;
+    IAudioRenderClient *render = NULL;
+    HANDLE event = NULL;
+    int started = 0;
+    HRESULT com = CoInitializeEx(NULL, COINIT_MULTITHREADED), hr = com;
+    if (FAILED(com) && com != RPC_E_CHANGED_MODE) return 0;
+    WAVEFORMATEX format = {WAVE_FORMAT_PCM, 2, 48000, 48000 * 4, 4, 16, 0};
+    UINT32 capacity = 0;
+    AudioStats stats = {0};
+    stats.on = dkr_settings()->show_stats;
+    QueryPerformanceFrequency(&stats.freq); QueryPerformanceCounter(&stats.start);
+    hr = CoCreateInstance(&clsid, NULL, CLSCTX_INPROC_SERVER, &iid_enum, (void **)&enumerator);
+    if (FAILED(hr)) goto done;
+    hr = IMMDeviceEnumerator_GetDefaultAudioEndpoint(enumerator, eRender, eConsole, &device);
+    if (FAILED(hr)) goto done;
+    hr = IMMDevice_Activate(device, &iid_client, CLSCTX_INPROC_SERVER, NULL, (void **)&client);
+    if (FAILED(hr)) goto done;
+    hr = IAudioClient_Initialize(client, AUDCLNT_SHAREMODE_SHARED,
+        AUDCLNT_STREAMFLAGS_EVENTCALLBACK | AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM |
+        AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY, 250000 /* endpoint capacity, 25 ms */, 0, &format, NULL);
+    if (FAILED(hr)) goto done;
+    hr = IAudioClient_GetBufferSize(client, &capacity);
+    if (FAILED(hr)) goto done;
+    event = CreateEventW(NULL, FALSE, FALSE, NULL);
+    if (!event) { hr = E_OUTOFMEMORY; goto done; }
+    hr = IAudioClient_SetEventHandle(client, event);
+    if (FAILED(hr)) goto done;
+    hr = IAudioClient_GetService(client, &iid_render, (void **)&render);
+    if (FAILED(hr)) goto done;
+    hos_log("audio: WASAPI shared output, 48 kHz stereo, endpoint %u samples (%.1f ms), queue capped at 15 ms\n",
+            capacity, capacity * 1000.0 / 48000);
+    int16_t frame[FRAME_MAX * 2];
+    unsigned offset = g_samples; /* preserve partial SDK frames if the endpoint period is not a multiple */
+    while (atomic_load(&g_open)) {
+        UINT32 pending = 0;
+        hr = IAudioClient_GetCurrentPadding(client, &pending);
+        if (FAILED(hr)) break;
+        UINT32 target = capacity < 720 ? capacity : 720;
+        if (pending >= target) { WaitForSingleObject(event, 5); continue; }
+        UINT32 count = target - pending;
+        if (count > g_samples) count = g_samples;
+        if (!count) { WaitForSingleObject(event, 5); continue; }
+        BYTE *output = NULL;
+        hr = IAudioRenderClient_GetBuffer(render, count, &output);
+        if (FAILED(hr)) break;
+        for (UINT32 written = 0; written < count;) {
+            if (offset == g_samples) {
+                LARGE_INTEGER t0, t1; QueryPerformanceCounter(&t0);
+                render_frame(c, frame);
+                QueryPerformanceCounter(&t1);
+                stats_frame(&stats, t1.QuadPart - t0.QuadPart, started && !pending && !written);
+                offset = 0;
+            }
+            unsigned n = g_samples - offset;
+            if (n > count - written) n = count - written;
+            memcpy(output + written * 4, frame + offset * 2, n * 4);
+            offset += n; written += n;
+        }
+        hr = IAudioRenderClient_ReleaseBuffer(render, count, 0);
+        if (FAILED(hr)) break;
+        if (!started && (pending + count >= g_samples * 2 || pending + count >= target)) {
+            hr = IAudioClient_Start(client);
+            if (FAILED(hr)) break;
+            started = 1;
+        }
+    }
+done:
+    if (started) IAudioClient_Stop(client);
+    if (render) IAudioRenderClient_Release(render);
+    if (client) IAudioClient_Release(client);
+    if (device) IMMDevice_Release(device);
+    if (enumerator) IMMDeviceEnumerator_Release(enumerator);
+    if (event) CloseHandle(event);
+    if (SUCCEEDED(com)) CoUninitialize();
+    if (FAILED(hr)) hos_log("audio: WASAPI unavailable/interrupted (%#lx); falling back to WinMM\n", (unsigned long)hr);
+    return !atomic_load(&g_open);
+}
+
 static void render_main(Cpu *c) {
+    if (!dkr_settings()->mute && render_wasapi(c)) return;
     HANDLE event = CreateEventW(NULL, TRUE, FALSE, NULL);
     HWAVEOUT device = NULL;
     WAVEFORMATEX format = {WAVE_FORMAT_PCM, 2, 48000, 48000 * 4, 4, 16, 0};
-    int null_output = getenv("DKR_AUDIO_NULL") != NULL;
+    int null_output = dkr_settings()->mute;
     MMRESULT error = null_output ? MMSYSERR_NODRIVER : waveOutOpen(&device, WAVE_MAPPER, &format,
                                          (DWORD_PTR)event, 0, CALLBACK_EVENT);
     static int16_t pcm[OUTPUT_BUFFERS][FRAME_MAX * 2 * FRAMES_PER_BUFFER]; /* one renderer at a time (g_open) */
@@ -231,6 +331,7 @@ static void open_renderer(Cpu *c, int with_event) {
         hos_log("audio: SDK CPU/manual OpenAudioRenderer failed %#x\n", result);
         return;
     }
+    g_audio_event = 0;
     if (event && dsp) {
         uint64_t destroy[] = {event};
         call(c, dkr_audio_sdk.destroy_event, 1, destroy);
@@ -238,6 +339,7 @@ static void open_renderer(Cpu *c, int with_event) {
         uint32_t writable = hos_new_event(0), readable = hos_copy_event_handle(writable);
         kern_unlock();
         if (!writable || !readable) hos_stop(c, "cannot allocate the audio renderer kernel event");
+        g_audio_event = writable;
         uint64_t attach[] = {event, writable, 1, readable, 1, 1};
         call(c, dkr_audio_sdk.attach_event, 6, attach);
     }
@@ -269,6 +371,7 @@ void dkr_audio_close(Cpu *c) {
         call(c, dkr_audio_sdk.destroy_thread, 1, args);
         hos_backend_free(g_thread_memory); g_thread_memory = 0;
     }
+    g_audio_event = 0;
     rt_call_original(c, "dkr_audio_close");
     hos_backend_free(g_owned_work); g_owned_work = 0;
     memset(g_handle, 0, sizeof g_handle);

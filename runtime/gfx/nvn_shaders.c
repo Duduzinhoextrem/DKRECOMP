@@ -10,6 +10,32 @@
 #include <wchar.h>
 
 static uint32_t word(const uint8_t *p, unsigned offset) { uint32_t v; memcpy(&v, p + offset, 4); return v; }
+int nvn_shader_xfb_layout(const NvnShader *shader, NvnXfbLayout *out) {
+    memset(out, 0, sizeof *out);
+    /* Compiler 13 (SDK 4.4): four 128-entry tables of semantic, first component and component count;
+     * per-buffer u16 stride at 0x6dc, stream at 0x6e4 and entry count at 0x6e8. Measured against the
+     * original SDK's control parser getters and its program-table builder (see docs/GRAPHICS_PORT.md). */
+    if (!shader || shader->control_size < 0x840 || word(shader->control, 8) != 13) return -1;
+    const uint8_t *c = shader->control;
+    unsigned total = 0;
+    for (unsigned b = 0; b < 4; b++) {
+        uint16_t stride; memcpy(&stride, c + 0x6dc + 2*b, 2); out->strides[b] = stride;
+        unsigned entries = c[0x6e8 + b];
+        if (entries > 128 || (entries && (!stride || stride % 4 || c[0x6e4 + b]))) return -1;
+        for (unsigned i = 0; i < entries; i++) {
+            unsigned semantic = c[0xdc + b*128 + i], first = c[0x2dc + b*128 + i], n = c[0x4dc + b*128 + i];
+            if (first > 3 || n > 4-first || !n) return -1;
+            /* Maxwell's generic output semantics start at 0x20; Ryujinx uses scalar attribute byte offset / 4. */
+            unsigned word_offset = semantic >= 0x20 && semantic < 0x40 ? 0x20 + 4*(semantic-0x20) : semantic == 0x1c ? 0x1c : 192;
+            if (word_offset + first + n > 192 || out->counts[b] + n > 192) return -1;
+            for (unsigned component = first; component < first+n; component++)
+                out->locations[b][out->counts[b]++] = (uint8_t)(word_offset + component);
+        }
+        if (out->counts[b] * 4 > stride) return -1;
+        total += out->counts[b];
+    }
+    return total ? 0 : -1;
+}
 static void read_guest(Cpu *c, void *out, uint64_t address, size_t bytes) {
     SIZE_T read = 0;
     if (!address || !ReadProcessMemory(GetCurrentProcess(), (void *)(uintptr_t)address, out, bytes, &read) || read != bytes)

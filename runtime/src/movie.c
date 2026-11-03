@@ -20,6 +20,8 @@
 #define COBJMACROS
 #include "hos.h"
 #include "dkr/movie_sdk.h"
+#include "dkr/settings.h"
+#include "dkr/movie_interp.h"
 #include <stdlib.h>
 #include <string.h>
 #define WIN32_LEAN_AND_MEAN
@@ -34,18 +36,19 @@ static const GUID kClsidH264Decoder = {0x62CE7E72, 0x4C71, 0x4d20, {0xB1, 0x5D, 
 static const GUID kClsidAacDecoder = {0x32d186a7, 0x218f, 0x4c75, {0x88, 0x76, 0xdd, 0x77, 0x27, 0x3a, 0x89, 0x99}};
 static const IID kIidTransform = {0xbf94c121, 0x5b05, 0x4e6f, {0x80, 0x00, 0xba, 0x59, 0x89, 0x61, 0x41, 0x4d}};
 static const IID kIid2DBuffer = {0x7dc9d5f9, 0x9ed9, 0x44ec, {0x9b, 0xbf, 0x06, 0x00, 0xbb, 0x58, 0x9f, 0xbb}};
+static const GUID kCodecApiLowLatency = {0x9c27891a, 0xed7a, 0x40e1, {0x88, 0xe8, 0xb2, 0x27, 0x27, 0xa0, 0x24, 0xee}};
 
 enum {
     NIN = 4, INCAP = 4 << 20,              /* input buffers: 4 x 4 MiB, as nxnative */
     NOUT_VIDEO = 16, NOUT_AAC = 32, NOUT_MAX = 32,
     ERR_NO_IMPL = 0x1000, ERR_ARG = 0x100b, ERR_NO_OUTPUT = 0x100e, ERR_NO_INPUT = 0x1011,
     TYPE_AVC = 1, TYPE_AAC = 4, FMT_PCM16 = 1, FMT_NV12 = 4, MODE_CPU = 1, FLAG_EOS = 4,
-    EV_INPUT = 1, EV_OUTPUT = 2, EV_FORMAT = 4, FIFO = 64, BACKLOG = 2,
+    EV_INPUT = 1, EV_OUTPUT = 2, EV_FORMAT = 4, FIFO = 64, BACKLOG = 4, POOL_MAX = 96,
 };
 
 typedef struct Frame { uint8_t *data; size_t bytes; int64_t pts; uint32_t flags; int pic; } Frame;
 typedef struct Decoder {
-    SRWLOCK mu;                 /* queues and slots */
+    SRWLOCK mu;                 /* queues, slots and frame buffer pool */
     SRWLOCK dmu;                /* one packet through Media Foundation at a time, in arrival order */
     int type, fmt, mode, nout;
     uint64_t events;            /* the client's DecoderEvents (4 EventType pointers), read when signalled */
@@ -55,15 +58,52 @@ typedef struct Decoder {
     Frame fifo[FIFO]; int nfifo;                              /* decoded, waiting for a free output slot */
     struct { int used, cli; Frame f; } out[NOUT_MAX];
     int outq[NOUT_MAX], noutq;
+    uint8_t *pool[POOL_MAX]; size_t pool_cap[POOL_MAX]; int npool;
     /* Media Foundation; touched only under dmu */
     IMFTransform *mft; int out_w, out_h, out_stride, out_plane_h;
     uint8_t *hdr; size_t nhdr; int nal_len, need_hdr;          /* H.264 SPS/PPS as Annex B, prepended after a (re)start */
     uint8_t asc[64]; int nasc, ch, rate;                       /* AAC AudioSpecificConfig, channels, rate */
     uint8_t *annexb; size_t annexb_cap;
     uint64_t packets, frames; unsigned errors;
+    Frame previous; /* private copy for optional midframes, protected by dmu */
     /* DKR_PERF=1: per second, outputs the client took, decode time, and whether audio carried sound */
     LARGE_INTEGER stat_start; int64_t decode_ticks, decode_worst; unsigned stat_packets, stat_taken, stat_loud;
 } Decoder;
+
+static uint8_t *alloc_frame_buf(Decoder *d, size_t bytes) {
+    if (!bytes) return NULL;
+    AcquireSRWLockExclusive(&d->mu);
+    for (int i = d->npool - 1; i >= 0; i--) {
+        if (d->pool_cap[i] == bytes) {
+            uint8_t *p = d->pool[i];
+            d->npool--;
+            d->pool[i] = d->pool[d->npool];
+            d->pool_cap[i] = d->pool_cap[d->npool];
+            ReleaseSRWLockExclusive(&d->mu);
+            return p;
+        }
+    }
+    ReleaseSRWLockExclusive(&d->mu);
+    return malloc(bytes);
+}
+
+static void free_frame_buf_locked(Decoder *d, uint8_t *p, size_t bytes) {
+    if (!p) return;
+    if (bytes && d->npool < POOL_MAX) {
+        d->pool[d->npool] = p;
+        d->pool_cap[d->npool] = bytes;
+        d->npool++;
+    } else {
+        free(p);
+    }
+}
+
+static void free_frame_buf(Decoder *d, uint8_t *p, size_t bytes) {
+    if (!p) return;
+    AcquireSRWLockExclusive(&d->mu);
+    free_frame_buf_locked(d, p, bytes);
+    ReleaseSRWLockExclusive(&d->mu);
+}
 
 static int perf_on(void) {
     static int on = -1;
@@ -228,6 +268,13 @@ static int mf_open(Decoder *d) {
     HRESULT hr = CoCreateInstance(d->type == TYPE_AVC ? &kClsidH264Decoder : &kClsidAacDecoder, NULL, CLSCTX_INPROC_SERVER,
                                   &kIidTransform, (void **)&d->mft);
     if (FAILED(hr)) { if (!d->errors++) hos_log("movie: cannot create the %s decoder (%#lx)\n", name, hr); d->mft = NULL; return 0; }
+    if (d->type == TYPE_AVC) {
+        IMFAttributes *attr = NULL;
+        if (SUCCEEDED(IMFTransform_GetAttributes(d->mft, &attr)) && attr) {
+            IMFAttributes_SetUINT32(attr, &kCodecApiLowLatency, 1);
+            IMFAttributes_Release(attr);
+        }
+    }
     IMFMediaType *in = NULL;
     if (FAILED(MFCreateMediaType(&in))) { mf_release(d); return 0; }
     if (d->type == TYPE_AVC) {
@@ -275,19 +322,21 @@ static int mf_open(Decoder *d) {
 static void push_frame(Decoder *d, Frame f) {
     AcquireSRWLockExclusive(&d->mu);
     if (d->nfifo < FIFO) d->fifo[d->nfifo++] = f;
-    else free(f.data);
+    else free_frame_buf_locked(d, f.data, f.bytes);
     ReleaseSRWLockExclusive(&d->mu);
 }
 
 /* A decoded Media Foundation sample → a Frame in the FIFO (the caller holds dmu). */
-static void take_sample(Decoder *d, IMFSample *sample) {
+static void take_sample(Decoder *d, IMFSample *sample, int64_t pkt_pts) {
     LONGLONG time = 0;
-    IMFSample_GetSampleTime(sample, &time);
-    Frame f = {.pts = time / 10, .pic = 1};
+    HRESULT hr_time = IMFSample_GetSampleTime(sample, &time);
+    int64_t pts = SUCCEEDED(hr_time) ? time / 10 : (pkt_pts >= 0 ? pkt_pts : 0);
+    if (d->type == TYPE_AAC && pkt_pts >= 0) pts = pkt_pts;
+    Frame f = {.pts = pts, .pic = 1};
     if (d->type == TYPE_AVC) {
         int w = d->w > 0 ? d->w : d->out_w, h = d->h > 0 ? d->h : d->out_h;
         f.bytes = (size_t)w * h * 3 / 2;
-        if (!(f.data = malloc(f.bytes))) return;
+        if (!(f.data = alloc_frame_buf(d, f.bytes))) return;
         IMFMediaBuffer *buffer = NULL; IMF2DBuffer *two = NULL;
         BYTE *scan0 = NULL; LONG pitch = 0; int locked2d = 0, locked = 0;
         if (SUCCEEDED(IMFSample_GetBufferByIndex(sample, 0, &buffer))) {
@@ -298,9 +347,18 @@ static void take_sample(Decoder *d, IMFSample *sample) {
         int cw = w < d->out_w ? w : d->out_w, chh = h < d->out_h ? h : d->out_h;
         if (!scan0 || pitch <= 0 || cw < w || chh < h) { memset(f.data, 16, (size_t)w * h); memset(f.data + (size_t)w * h, 128, (size_t)w * h / 2); }
         if (scan0 && pitch > 0) {
-            for (int y = 0; y < chh; y++) memcpy(f.data + (size_t)y * w, scan0 + (size_t)y * pitch, (size_t)cw);
+            if (pitch == w && cw == w) {
+                memcpy(f.data, scan0, (size_t)w * chh);
+            } else {
+                for (int y = 0; y < chh; y++) memcpy(f.data + (size_t)y * w, scan0 + (size_t)y * pitch, (size_t)cw);
+            }
             const BYTE *uv = scan0 + (size_t)pitch * d->out_plane_h;
-            for (int y = 0; y < (chh + 1) / 2 && y < h / 2; y++) memcpy(f.data + (size_t)w * h + (size_t)y * w, uv + (size_t)y * pitch, (size_t)(cw & ~1));
+            int uvh = (chh + 1) / 2 < h / 2 ? (chh + 1) / 2 : h / 2;
+            if (pitch == w && (cw & ~1) == w) {
+                memcpy(f.data + (size_t)w * h, uv, (size_t)w * uvh);
+            } else {
+                for (int y = 0; y < uvh; y++) memcpy(f.data + (size_t)w * h + (size_t)y * w, uv + (size_t)y * pitch, (size_t)(cw & ~1));
+            }
         }
         if (locked2d) IMF2DBuffer_Unlock2D(two);
         if (locked) IMFMediaBuffer_Unlock(buffer);
@@ -310,18 +368,35 @@ static void take_sample(Decoder *d, IMFSample *sample) {
         IMFMediaBuffer *buffer = NULL; BYTE *p = NULL; DWORD n = 0;
         if (FAILED(IMFSample_ConvertToContiguousBuffer(sample, &buffer))) return;
         if (SUCCEEDED(IMFMediaBuffer_Lock(buffer, &p, NULL, &n))) {
-            if (n && (f.data = malloc(n))) { memcpy(f.data, p, n); f.bytes = n; }
+            if (n && (f.data = alloc_frame_buf(d, n))) { memcpy(f.data, p, n); f.bytes = n; }
             IMFMediaBuffer_Unlock(buffer);
         }
         IMFMediaBuffer_Release(buffer);
         if (!f.data) return;
+    }
+    if (d->type == TYPE_AVC && dkr_settings()->movie_smoothing) {
+        int64_t midpoint = dkr_movie_midpoint(d->previous.pts, f.pts);
+        if (d->previous.data && d->previous.bytes == f.bytes && midpoint >= 0) {
+            Frame middle = {.bytes = f.bytes, .pts = midpoint, .pic = 1};
+            middle.data = alloc_frame_buf(d, middle.bytes);
+            if (middle.data) {
+                dkr_movie_midframe(middle.data, d->previous.data, f.data, f.bytes, f.bytes * 2 / 3);
+                push_frame(d, middle);
+            }
+        }
+        if (!d->previous.data || d->previous.bytes != f.bytes) {
+            free_frame_buf(d, d->previous.data, d->previous.bytes);
+            d->previous.data = alloc_frame_buf(d, f.bytes);
+        }
+        d->previous.bytes = f.bytes; d->previous.pts = f.pts;
+        if (d->previous.data) memcpy(d->previous.data, f.data, f.bytes);
     }
     d->frames++;
     push_frame(d, f);
 }
 
 /* Collect every output Media Foundation has ready (the caller holds dmu). */
-static void drain_outputs(Decoder *d) {
+static void drain_outputs(Decoder *d, int64_t pkt_pts) {
     for (int guard = 0; guard < 64; guard++) {
         MFT_OUTPUT_STREAM_INFO info = {0};
         if (FAILED(IMFTransform_GetOutputStreamInfo(d->mft, 0, &info))) return;
@@ -345,7 +420,10 @@ static void drain_outputs(Decoder *d) {
             if (!select_output(d)) { if (!d->errors++) hos_log("movie: no NV12/PCM16 output after a format change\n"); return; }
             continue;
         }
-        if (SUCCEEDED(hr) && out.pSample) take_sample(d, out.pSample);
+        if (SUCCEEDED(hr) && out.pSample) {
+            take_sample(d, out.pSample, pkt_pts);
+            pkt_pts = -1;
+        }
         if (out.pSample && out.pSample != own) IMFSample_Release(out.pSample);
         if (own) IMFSample_Release(own);
         if (FAILED(hr)) {
@@ -369,8 +447,12 @@ static void decode_packet(Decoder *d, const uint8_t *p, size_t n, int64_t pts, i
             if (SUCCEEDED(MFCreateSample(&sample))) {
                 IMFSample_AddBuffer(sample, buffer);
                 IMFSample_SetSampleTime(sample, pts * 10);
+                if (d->type == TYPE_AAC) {
+                    LONGLONG dur = d->rate > 0 ? (LONGLONG)1024 * 10000000 / d->rate : 213333;
+                    IMFSample_SetSampleDuration(sample, dur);
+                }
                 HRESULT hr = IMFTransform_ProcessInput(d->mft, 0, sample, 0);
-                if (hr == MF_E_NOTACCEPTING) { drain_outputs(d); hr = IMFTransform_ProcessInput(d->mft, 0, sample, 0); }
+                if (hr == MF_E_NOTACCEPTING) { drain_outputs(d, -1); hr = IMFTransform_ProcessInput(d->mft, 0, sample, 0); }
                 if (FAILED(hr) && !d->errors++) hos_log("movie: ProcessInput failed (%#lx)\n", hr);
                 IMFSample_Release(sample);
             }
@@ -378,10 +460,10 @@ static void decode_packet(Decoder *d, const uint8_t *p, size_t n, int64_t pts, i
         if (buffer) IMFMediaBuffer_Release(buffer);
         d->packets++;
     }
-    drain_outputs(d);
+    drain_outputs(d, pts);
     if (eos) {
         IMFTransform_ProcessMessage(d->mft, MFT_MESSAGE_COMMAND_DRAIN, 0);
-        drain_outputs(d);
+        drain_outputs(d, -1);
         IMFTransform_ProcessMessage(d->mft, MFT_MESSAGE_NOTIFY_END_OF_STREAM, 0);
     }
 }
@@ -391,13 +473,18 @@ static void reset_queues(Decoder *d) {
     AcquireSRWLockExclusive(&d->mu);
     for (int i = 0; i < NIN; i++) d->infree[i] = i;
     d->ninfree = NIN; d->npend = 0; d->in_eos = 0; d->noutq = 0;
-    for (int i = 0; i < d->nfifo; i++) free(d->fifo[i].data);
+    for (int i = 0; i < d->nfifo; i++) free_frame_buf_locked(d, d->fifo[i].data, d->fifo[i].bytes);
     d->nfifo = 0;
-    for (int i = 0; i < NOUT_MAX; i++) { free(d->out[i].f.data); memset(&d->out[i], 0, sizeof d->out[i]); }
+    for (int i = 0; i < NOUT_MAX; i++) {
+        free_frame_buf_locked(d, d->out[i].f.data, d->out[i].f.bytes);
+        memset(&d->out[i], 0, sizeof d->out[i]);
+    }
     ReleaseSRWLockExclusive(&d->mu);
 }
 static void flush_decoder(Decoder *d) {
     AcquireSRWLockExclusive(&d->dmu);
+    free_frame_buf(d, d->previous.data, d->previous.bytes);
+    memset(&d->previous, 0, sizeof d->previous);
     if (d->mft) IMFTransform_ProcessMessage(d->mft, MFT_MESSAGE_COMMAND_FLUSH, 0);
     d->need_hdr = 1;
     ReleaseSRWLockExclusive(&d->dmu);
@@ -416,6 +503,7 @@ static void pump(Cpu *c, Decoder *d) {
             d->outq[d->noutq++] = s;
             signals |= EV_OUTPUT;
         }
+        if (d->noutq > 0 && d->started) signals |= EV_OUTPUT;
         if (!d->npend || d->nfifo >= BACKLOG) { ReleaseSRWLockExclusive(&d->mu); break; }
         __typeof__(d->pend[0]) pk = d->pend[0];
         memmove(d->pend, d->pend + 1, (size_t)--d->npend * sizeof *d->pend);
@@ -476,8 +564,9 @@ static void destroy(Cpu *c) {
     st64(c->x[0] + 8, 0);
     hos_log("movie: decoder %#llx destroyed: %llu packets, %llu frames decoded, %u errors\n", (unsigned long long)c->x[0],
             (unsigned long long)d->packets, (unsigned long long)d->frames, d->errors);
-    AcquireSRWLockExclusive(&d->dmu); mf_release(d); ReleaseSRWLockExclusive(&d->dmu);
+    AcquireSRWLockExclusive(&d->dmu); mf_release(d); free(d->previous.data); d->previous.data = NULL; ReleaseSRWLockExclusive(&d->dmu);
     reset_queues(d);
+    for (int i = 0; i < d->npool; i++) free(d->pool[i]);
     for (int i = 0; i < NIN; i++) free(d->in[i]);
     free(d->hdr); free(d->annexb); free(d);
 }
@@ -545,7 +634,9 @@ void dkr_movie_acquire_input(Cpu *c) { /* AcquireInputBufferIndex(int *index, in
     int result = ERR_NO_INPUT, i = -1;
     if (d->started && !d->in_eos && d->ninfree) { i = d->infree[--d->ninfree]; result = 0; }
     st32(index, (uint32_t)i); st32(left, (uint32_t)d->ninfree);
+    int more_in = d->started && !d->in_eos && d->ninfree > 0;
     ReleaseSRWLockExclusive(&d->mu);
+    if (result == 0 && more_in) signal_events(c, d, EV_INPUT);
     c->x[0] = (uint64_t)result;
 }
 void dkr_movie_get_input(Cpu *c) { /* GetInputBuffer(int index, Buffer *) */
@@ -596,7 +687,9 @@ void dkr_movie_acquire_output(Cpu *c) { /* AcquireOutputBufferIndex(int *index, 
             for (size_t k = 0; k + 1 < d->out[s].f.bytes && !d->stat_loud; k += 2) d->stat_loud = d->out[s].f.data[k] || d->out[s].f.data[k + 1];
     }
     st32(index, (uint32_t)s); st32(left, (uint32_t)d->noutq);
+    int more_out = d->noutq > 0 && d->started;
     ReleaseSRWLockExclusive(&d->mu);
+    if (result == 0 && more_out) signal_events(c, d, EV_OUTPUT);
     stats(d);
     c->x[0] = (uint64_t)result;
 }
@@ -672,9 +765,14 @@ void dkr_movie_release_output(Cpu *c) { /* ReleaseOutputBufferIndex(int index) *
     if (i < 0 || i >= d->nout) { c->x[0] = ERR_ARG; return; }
     AcquireSRWLockExclusive(&d->mu);
     int held = d->out[i].used && d->out[i].cli, queued = d->npend || d->nfifo;
-    if (held) { free(d->out[i].f.data); memset(&d->out[i], 0, sizeof d->out[i]); }
+    if (held) {
+        free_frame_buf_locked(d, d->out[i].f.data, d->out[i].f.bytes);
+        memset(&d->out[i], 0, sizeof d->out[i]);
+    }
+    int more_out = d->noutq > 0 && d->started;
     ReleaseSRWLockExclusive(&d->mu);
     if (held && queued) pump(c, d);
+    else if (held && more_out) signal_events(c, d, EV_OUTPUT);
     c->x[0] = 0;
 }
 /* The constructor overload with a thread priority (unused by the host decoder) */

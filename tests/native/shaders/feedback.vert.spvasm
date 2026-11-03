@@ -1,0 +1,36 @@
+; Own transform-feedback fixture: capture (input.x, input.y, 2, 3) for each point.
+OpCapability Shader
+OpCapability TransformFeedback
+OpMemoryModel Logical GLSL450
+OpEntryPoint Vertex %main "main" %input %output %point
+OpExecutionMode %main Xfb
+OpDecorate %input Location 0
+OpDecorate %output Location 0
+OpDecorate %output XfbBuffer 0
+OpDecorate %output XfbStride 16
+OpDecorate %output Offset 0
+OpDecorate %point BuiltIn PointSize
+%void = OpTypeVoid
+%function = OpTypeFunction %void
+%float = OpTypeFloat 32
+%vec2 = OpTypeVector %float 2
+%vec4 = OpTypeVector %float 4
+%invec2 = OpTypePointer Input %vec2
+%outvec4 = OpTypePointer Output %vec4
+%outfloat = OpTypePointer Output %float
+%one = OpConstant %float 1
+%two = OpConstant %float 2
+%three = OpConstant %float 3
+%input = OpVariable %invec2 Input
+%output = OpVariable %outvec4 Output
+%point = OpVariable %outfloat Output
+%main = OpFunction %void None %function
+%label = OpLabel
+%xy = OpLoad %vec2 %input
+%x = OpCompositeExtract %float %xy 0
+%y = OpCompositeExtract %float %xy 1
+%value = OpCompositeConstruct %vec4 %x %y %two %three
+OpStore %output %value
+OpStore %point %one
+OpReturn
+OpFunctionEnd

@@ -19,6 +19,7 @@ extern int dkr_perf_on;           /* set once by dkr_perf_init */
 void dkr_perf_init(void);
 int64_t dkr_perf_now(void);       /* QueryPerformanceCounter ticks */
 void dkr_perf_frame(void);        /* once per present; prints one line per second */
+extern double dkr_perf_last_fps;  /* frames per second over the last full second (stats only) */
 
 #define DKR_PERF_ADD(field, value) do { if (dkr_perf_on) dkr_perf.field += (value); } while (0)
 #endif

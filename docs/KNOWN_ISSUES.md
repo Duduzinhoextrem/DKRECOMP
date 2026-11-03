@@ -3,13 +3,17 @@
 ## Prioridades medidas em 2026-11-03
 
 - **Vídeos:** tocam pelo Media Foundation (`runtime/src/movie.c`), só no modo CPU com saída NV12 e áudio AAC. O modo de textura NVN (mode 2) e outros codecs são recusados com log. Ainda não testados: `outro.mp4`, `dkBand.mp4` e os `Demo1–4` da tela de título.
-- **Transform feedback não é emulado.** Draws com captura ativa são pulados (o modelo 3D do controle no Controller
-  Select fica preto). Exige layouts XFB no tradutor de shaders e `VK_EXT_transform_feedback`.
+- **Launcher/configurações:** a escala de resolução foi verificada só nos menus; texturas que o jogo lê com
+  `texelFetch` sem passar pelo tradutor (bindless, arrays) não são escaladas, e um draw que mistura alvos de escalas
+  diferentes é registrado no log. FPS acima de 60 só foi medido nos menus. A preparação completa a partir do NSP
+  (RomFS + compilação) ainda não foi executada de ponta a ponta pelo launcher.
+- **FPS dos vídeos:** os MP4 são 29,97 fps; interpolação temporal em tempo real para 60 fps (`movie_smoothing = true` por padrão, SWAR 64 bits com detecção de corte de cena em `runtime/include/dkr/movie_interp.h`) está ativa.
+- **Transform feedback:** implementado via `VK_EXT_transform_feedback` (`runtime/gfx/vk_draw.c` e `runtime/gfx/nvn_replay.c`).
 - **Cópias de vértices:** ~20 MB/frame ainda são copiados da memória do guest a cada batch. Mapear os memory pools com
   `VK_EXT_external_memory_host` eliminaria a cópia.
 - **CPU:** C gerado em `-O1`; `rt_dispatch` faz busca binária a cada chamada indireta. Hoje não limita os menus (a thread
   do jogo fica ociosa), mas deve pesar na gameplay.
-- **Áudio:** WinMM exige ≥ ~25–50 ms na fila; WASAPI em modo evento reduziria a latência atual (~60–80 ms).
+- **Áudio:** saída principal em WASAPI shared event-driven (`runtime/src/audio_sdk.c`) com fila alvo de 15 ms (720 amostras), cadência de 5 ms (240 amostras) e sinalização do evento de kernel `g_audio_event` a cada quadro; fallback em WinMM quando WASAPI não estiver disponível.
 
 ## Bloqueios
 
@@ -32,7 +36,7 @@
   fundida exata. É o mesmo requisito do TotK Recomp e do LAS Recomp.
 - Não suportados também: `DC ZVA` (o `DCZID_EL0` informa proibido), CRC32, LSE (ARMv8.1, não esperado no Switch),
   pares exclusivos (`LDXP/STXP`), `CAS`, instruções de sistema além de NZCV/TPIDR/TPIDRRO/FPCR/FPSR/CNTVCT/CNTFRQ.
-- Sobreposições de registradores CONSTRAINED UNPREDICTABLE em loads/stores (ex.: `ldp x0, x0`) são rejeitadas de
+- Sobreposições de registradores CONSTRAINED UNPREDICTABLE em loads/stores (ex.: `ldp x0, x0`) são rejeijadas de
   propósito.
 - `RET` é tratado como retorno da função C, e `BL` assume que o chamado retorna ao LR. Código que manipula o LR para
   retornar a outro lugar (raro, ex.: `longjmp`) não é suportado ainda.
@@ -70,18 +74,9 @@
 
 ## Serviços (runtime/src/services.c)
 
-- No modo gráfico, o áudio usa o servidor CPU/manual recompilado do SDK 4.4. O boot abriu renderer e saída WinMM,
-  capturou 200 quadros silenciosos e passou do antigo bloqueio. Ainda faltam validar som não silencioso,
-  Close/reabertura e uso prolongado. Outros SDKs/layouts e 32 kHz não são suportados nesse caminho.
+- No modo gráfico, o áudio usa o servidor CPU/manual recompilado do SDK 4.4. O boot abriu renderer e saída WASAPI/WinMM,
+  com sinalização do evento de kernel por quadro de 5 ms. Outros SDKs/layouts e 32 kHz não são suportados nesse caminho.
   O modo IPC legado continua implementando apenas GetWorkBufferSize REV1–4.
-
-- O boot gráfico chegou a **1.200 chamadas present em 30 s**, sem STOP/exceção; o vigia encerrou o diagnóstico.
-  Nada é desenhado: dados transitórios do caminho observado são capturados, mas replay Vulkan/shaders e lifetime
-  dos recursos no back-end continuam pendentes. DrawTexture/CoverageModulationTable exigem medição antes da captura.
-  O decoder de filmes é indisponível: NvMMLiteOpenBlock retorna falha antes do cleanup defeituoso do SDK base.
-  Não há vídeo substituto; o jogo segue pelo caminho de erro. Reprodução dos filmes precisa de um back-end próprio.
-  Os rings HID ainda não publicam entrada; controles ficam desconectados.
-  A lista de vibração registra os dispositivos ativados, mas rumble do host e envio de valores ainda faltam.
 - VI expõe somente Default 1280×720. Há limite de 64 layers; as identidades gerenciadas ainda duram até o fim
   do processo. Abertura/fechamento, parcel, refcounts e evento de disponibilidade não implementam compositor,
   transações de buffers, VSync ou o comportamento completo de Binder. Connect/Disconnect aceitam somente listener
@@ -94,7 +89,7 @@
 - Os ids de comando vêm do switchbrew para o firmware 4.x; um id errado aparece no log como comando inesperado.
 - `QueryPointerBufferSize` responde 0x8000 para todo serviço; respostas por buffer de ponteiro (C) ainda não são
   escritas pelo IPC, só pelos serviços que as usam diretamente.
-- O filesystem implementa a RomFS somente leitura e operações básicas de arquivos do save de conta. Enumeração
+- O filesystem implementa a RomFS somente leitura (mapeada em memória via `MapViewOfFile`) e operações básicas de arquivos do save de conta. Enumeração
   de diretórios, renomeação, remoção recursiva, SD card e outros tipos ainda faltam. Commit faz flush, sem journal
   transacional; sem quota própria de save e com regras de nomes/case do Windows. A raiz suporta caminhos locais de drive;
   UNC e reparse points são recusados. A imagem tem que ser regenerada se os arquivos extraídos mudarem; ela não é o NCA original nem contém
@@ -107,47 +102,6 @@
 - 5.725 funções usam o despacho local por `switch` em `BR` (tabelas de salto não resolvidas estaticamente) e
   37.249 chamadas passam por `rt_dispatch`: correto, mas pesa no tamanho e no desempenho.
 - As 830 funções descobertas por alvo de `BL` vão até o próximo início conhecido; uma delas pode ter fim impreciso.
-- O boot executa código gerado dos três módulos e inicia uma segunda thread. Isso e os testes diferenciais não
-  comprovam todo o comportamento do jogo; gráficos, áudio e gameplay continuam pendentes.
-
-## Gráficos
-
-- **Nenhum frame do jogo é desenhado.** Os objetos NVN e registros ainda não são consumidos pelo back-end.
-  O draw independente `vk_draw.c` passou em testes de pixels, com buffers, texturas lineares, shaders,
-  bindings por estágio e present da imagem; falta a integração NVN, deswizzle/ASTC e demais estados/variantes.
-  O tradutor offline já gerou SPIR-V válido para os 8 shaders de inicialização
-  e 3.460 únicos dos materiais; ainda falta a integração ao runtime e resolver tipos/variantes dos recursos.
-  Três shaders de materiais assumem textura 2D. Geometria/transform feedback e interfaces entre estágios não
-  foram validados por desenho. Toda submissão conta como concluída na hora (fences e
-  syncs sinalizam imediatamente). O present só cadencia a 60 Hz/intervalo; a janela não mostra o jogo.
-- A captura de 50 programas do boot forneceu 100 shaders únicos, todos válidos no validador. Dois PS ainda
-  assumem tipo 2D para a textura no slot zero. Os jobs já usam c[2]+0x20 do SDK 4.4; o default moderno 0x168
-  não serve para mapear esse slot. Programas preservam código/controle, mas cache de variantes de recursos,
-  ligação dos módulos/pipelines e lifetime de submissões NVN ainda não estão implementados. Os fundos iniciais usam draws;
-  somente clears/cópias não bastam para mostrar o título.
-- Os registros preservam registradores e os dados transitórios do caminho observado (estados, arrays, views,
-  updates de uniform). O tempo de vida dos recursos GPU ainda precisa ser integrado ao back-end;
-  DrawTexture/CoverageModulationTable param explicitamente até medir seus layouts.
-- Memória de comando e de controle do jogo nunca é consumida: os getters relatam tudo livre e o callback de falta
-  de memória nunca roda.
-- Pools físicos/virtuais (MapVirtual) param com relatório; `QueueGetError` não escreve o info (layout do 53.105
-  desconhecido). ZCull externo tem tamanho zero; `GetSparseTileLayout` e `TextureViewCompare` ainda param.
-- O tamanho automático de bloco das texturas segue a regra medida no NVN 55; os 40 casos de teste também vêm do
-  NVN 55. Conferir contra texturas empacotadas reais do jogo.
-- A análise de pureza é conservativa e depende de offsets do `sdk` 1.0.0 (`nvnmap.py`); outra versão do SDK
-  falha na verificação de ordenação dos nomes.
-- A lista MIT de nomes NVN não representa cobertura de implementação: procs sem implementação encerram a
-  execução quando chamados; nomes desconhecidos devolvem NULL.
-- A janela atual é Win32 e usa uma fila com graphics+present, Vulkan 1.3 e swapchain RGBA/BGRA UNORM com suporte
-  a transferência/readback. O draw genérico é single sample e não implementa tesselação/compute, arrays de
-  descritores, views arbitrárias de attachments ou feedback de render target. Uploads têm formatos selecionados,
-  não incluem deswizzle/ASTC. Geometria/depth/stencil ainda precisam de pixel checks específicos e integração.
-- Todos os 100 shaders capturados declaram binding 0, o support buffer do tradutor, fora das listas de
-  recursos da reflexão JSON atual. O carregador de cache precisa incluí-lo; não basta iterar cbufs/textures.
-- A camada de validação é opcional no build, mas foi usada localmente com sincronização ativa. A ferramenta
-  nightly é identificada pelo commit/digest em `toolchain/vulkan-validation/source.txt` e não é distribuída.
-- O loader local registra um manifesto antigo ausente do overlay Epic e avisos de nomes Galaxy. Nenhuma
-  configuração do sistema foi alterada; esses diagnósticos gerais ficam no log e não contam como erros VUID.
 
 ## Testes
 

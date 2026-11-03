@@ -31,7 +31,7 @@
     X(CmdBindPipeline) X(CmdBindDescriptorSets) X(CmdBindVertexBuffers) X(CmdBindIndexBuffer) \
     X(CmdDraw) X(CmdDrawIndexed) X(CmdSetViewport) X(CmdSetScissor) X(CmdSetBlendConstants) \
     X(CmdSetStencilReference) X(CmdSetStencilCompareMask) X(CmdSetStencilWriteMask) X(CmdSetDepthBias) \
-    X(CmdCopyBufferToImage) X(CmdCopyImage) X(CmdBlitImage)
+    X(CmdCopyBufferToImage) X(CmdCopyImage) X(CmdBlitImage) X(CmdClearAttachments)
 
 typedef struct DkrVkResources DkrVkResources;
 struct DkrGfx {
@@ -40,6 +40,8 @@ struct DkrGfx {
     HANDLE window_thread;          /* owns the window and pumps its messages (see create_window) */
     volatile LONG closed, dirty;   /* written by the window thread, read by the presenting thread */
     int validation, present_flip;
+    int borderless, vsync, linear, keep_aspect;  /* from DkrGfxConfig */
+    RECT windowed;                               /* window rectangle to restore when leaving borderless */
     volatile LONG validation_errors;
     char error[512];
     uint64_t frames;
@@ -65,6 +67,10 @@ struct DkrGfx {
     VkBuffer readback;
     VkDeviceMemory readback_memory;
     int readback_coherent, depth_clip_control, vertex_attribute_robustness, batch_active;
+    int transform_feedback;
+    PFN_vkCmdBindTransformFeedbackBuffersEXT vkCmdBindTransformFeedbackBuffersEXT;
+    PFN_vkCmdBeginTransformFeedbackEXT vkCmdBeginTransformFeedbackEXT;
+    PFN_vkCmdEndTransformFeedbackEXT vkCmdEndTransformFeedbackEXT;
     DkrVkResources *resources;
     PFN_vkGetInstanceProcAddr get_instance_proc;
 #define DECLARE_PROC(name) PFN_vk##name vk##name;

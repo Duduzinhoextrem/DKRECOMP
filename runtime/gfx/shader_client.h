@@ -7,6 +7,7 @@ typedef struct NvnShaderInputs {
     uint32_t texture_mask, texture_targets[32], texture_formats[32];
     uint32_t attributes[16], outputs[8]; /* NVNformat, 0 for absent */
     uint32_t primitive;
+    uint32_t transform_feedback;
 } NvnShaderInputs;
 
 void nvn_shader_variant_key(Cpu *c, const NvnShader *shader, const NvnShaderInputs *inputs, char key[66]);

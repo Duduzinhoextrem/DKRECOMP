@@ -19,7 +19,8 @@ static int pixels(const char *path, int flipped, int swizzled) {
     unsigned checked = 0;
     for (unsigned y = 0; ok && y < 240; y++) for (unsigned x = 0; ok && x < 320; x++) {
         int expected[4] = {191, 128, 64, 255}; /* BGRA clear */
-        if (x >= 40 && x < 280 && y >= 60 && y < 180) {
+        if (x >= 8 && x < 28 && y >= 10 && y < 26) { expected[0] = 255; expected[1] = 0; expected[2] = 255; }
+        if (x >= 40 && x < 280 && y >= 60 && y < 180 && !(x >= 60 && x < 70 && y >= 70 && y < 80)) {
             int left = x < 160, top = flipped ? y >= 120 : y < 120;
             int red = (top && left) || (!top && !left);
             int green = !left;
@@ -58,17 +59,27 @@ int main(int argc, char **argv) {
     DkrGfx *gfx = NULL;
     DkrGfxConfig config = {320, 240, "DKRecomp synthetic GPU draw test", 0, validation};
     TRY(dkr_gfx_create(&gfx, &config));
-    DkrVkImage *targets[2] = {NULL}, *texture = NULL, *copy = NULL, *depth = NULL;
+    DkrVkImage *targets[2] = {NULL}, *mipped[2] = {NULL}, *texture = NULL, *copy = NULL, *depth = NULL;
+    DkrVkView *mip_views[2] = {NULL};
     const VkFormat formats[] = {VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_R16G16B16A16_SFLOAT};
     for (unsigned i = 0; i < 2; i++) {
         DkrVkImageInfo info = {formats[i], 320, 240, 1, 1, VK_IMAGE_ASPECT_COLOR_BIT};
         TRY(dkr_vk_image_create(gfx, &info, &targets[i]));
+        info.width = 640; info.height = 480; info.levels = 2; info.layers = 2;
+        TRY(dkr_vk_image_create(gfx, &info, &mipped[i]));
+        DkrVkViewInfo view = {.format = formats[i], .aspects = VK_IMAGE_ASPECT_COLOR_BIT, .type = VK_IMAGE_VIEW_TYPE_2D,
+            .base_level = 1, .levels = 1, .base_layer = 1, .layers = 1};
+        TRY(dkr_vk_image_view(gfx, mipped[i], &view, &mip_views[i]));
     }
     DkrVkImageInfo tex_info = {VK_FORMAT_R8G8B8A8_UNORM, 2, 2, 1, 1, VK_IMAGE_ASPECT_COLOR_BIT};
     TRY(dkr_vk_image_create(gfx, &tex_info, &texture));
     TRY(dkr_vk_image_create(gfx, &tex_info, &copy));
     DkrVkImageInfo depth_info = {VK_FORMAT_D32_SFLOAT_S8_UINT, 320, 240, 1, 1, VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT};
     TRY(dkr_vk_image_create(gfx, &depth_info, &depth));
+    DkrVkView *depth_view = NULL;
+    DkrVkViewInfo depth_view_info = {.format = depth_info.format, .aspects = depth_info.aspect,
+        .type = VK_IMAGE_VIEW_TYPE_2D, .levels = 1, .layers = 1};
+    TRY(dkr_vk_image_view(gfx, depth, &depth_view_info, &depth_view));
     DkrVkViewInfo swapped = {.format = VK_FORMAT_R8G8B8A8_UNORM, .aspects = VK_IMAGE_ASPECT_COLOR_BIT,
         .type = VK_IMAGE_VIEW_TYPE_2D, .levels = 1, .layers = 1,
         .components = {VK_COMPONENT_SWIZZLE_B, VK_COMPONENT_SWIZZLE_G, VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_A}};
@@ -104,8 +115,17 @@ int main(int argc, char **argv) {
                 TRY(dkr_vk_image_upload_region(gfx, texture, 0, 0, i % 2, i / 2, 1, 1, texels + i*4, 4));
             TRY(dkr_vk_image_copy(gfx, texture, 0, 0, 0, 0, copy, 0, 0, 0, 0, 2, 2));
         }
-        TRY(dkr_vk_image_clear(gfx, targets[kind], clear));
+        TRY(dkr_vk_image_clear(gfx, mipped[kind], clear));
+        VkClearValue partial = {.color = {{1, 0, 1, 1}}};
+        TRY(dkr_vk_attachment_clear(gfx, mipped[kind], mip_views[kind], (VkRect2D){{8, 10}, {20, 16}}, VK_IMAGE_ASPECT_COLOR_BIT, &partial));
+        TRY(dkr_vk_image_copy(gfx, mipped[kind], 1, 1, 0, 0, targets[kind], 0, 0, 0, 0, 320, 240));
+        /* Unselected mip/layer texels must remain unchanged by the attachment clear. */
+        TRY(dkr_vk_image_copy(gfx, mipped[kind], 1, 0, 8, 10, targets[kind], 0, 0, 10, 195, 5, 5));
+        TRY(dkr_vk_image_copy(gfx, mipped[kind], 0, 1, 8, 10, targets[kind], 0, 0, 30, 195, 5, 5));
         TRY(dkr_vk_image_clear_depth(gfx, depth, VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT, 1, 7));
+        VkClearValue partial_depth = {.depthStencil = {0, 0}};
+        TRY(dkr_vk_attachment_clear(gfx, depth, depth_view, (VkRect2D){{60, 70}, {10, 10}},
+              VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT, &partial_depth));
         TRY(dkr_vk_buffer_temporary(gfx, transform, sizeof transform, &t));
         TRY(dkr_vk_buffer_temporary(gfx, color, sizeof color, &c));
         TRY(dkr_vk_buffer_temporary(gfx, overlay, sizeof overlay, &o));

@@ -386,3 +386,16 @@ Ver `docs/PROGRESS.md`. Regra: resultado só entra na documentação se foi prod
 
 Use `DKR_SAVE_ROOT` com uma pasta temporária em execuções automáticas para não alterar o save real. O teclado só é
 lido com a janela do jogo em foco.
+
+## Configurações do jogo e launcher (2026-11-03)
+
+Todas as chaves de `config.local.toml` (`docs/LAUNCHER_E_CONFIGURACOES.md`) aceitam também `DKR_<CHAVE>`:
+`DKR_RENDER_SCALE=2`, `DKR_FPS_LIMIT=0`, `DKR_VSYNC=off`, `DKR_DISPLAY_MODE=borderless`, `DKR_WINDOW_WIDTH=1920`,
+`DKR_WINDOW_HEIGHT=1080`, `DKR_SHOW_STATS=true`, `DKR_MUTE=true`. `DKR_CONFIG` escolhe outro arquivo.
+Com `DKR_GFX_CAPTURE_EVERY`, cada captura se chama `<caminho>.<quadro>.<ms desde o primeiro quadro>.bmp`.
+
+```bash
+.venv/Scripts/python -m pytest -q tests/python/test_launcher.py
+```
+
+O teste de janela abre o launcher com `DKR_LAUNCHER_SMOKE=1`, que passa por todas as abas e fecha sozinho.

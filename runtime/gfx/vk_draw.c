@@ -25,7 +25,20 @@ struct DkrVkProgram {
     DkrVkBinding bindings[DKR_VK_BINDINGS];
     Pipeline *pipelines;
 };
-typedef struct Framebuffer { struct Framebuffer *next; VkFramebuffer framebuffer; } Framebuffer;
+typedef struct Framebuffer {
+    struct Framebuffer *next;
+    VkRenderPass pass;
+    uint32_t view_count, width, height;
+    VkImageView views[9];
+    VkFramebuffer framebuffer;
+} Framebuffer;
+typedef struct RenderPass {
+    struct RenderPass *next;
+    uint32_t color_count;
+    VkFormat colors[8], depth;
+    VkRenderPass pass;
+} RenderPass;
+static int render_pass(DkrGfx *g, const DkrVkPipelineInfo *info, VkRenderPass *out);
 /* Transient uploads (vertex/index/uniform data, texture staging) are carved out of large persistently mapped
  * chunks instead of one VkBuffer + vkAllocateMemory each. Batches wait for the GPU before the next one begins,
  * so every chunk is rewound in recycle(). Chunks are kept for reuse; a larger upload gets its own chunk. */
@@ -40,10 +53,14 @@ typedef struct Chunk {
 #define ARENA_CHUNK (64ull << 20)
 struct DkrVkResources {
     DkrVkBuffer *buffers;
+    DkrVkBuffer *free_temp_buffers;
     DkrVkImage *images;
     DkrVkSampler *samplers;
     DkrVkProgram *programs;
     Framebuffer *framebuffers;
+    RenderPass *render_passes;
+    VkRenderPass active_pass;
+    VkFramebuffer active_framebuffer;
     VkDescriptorPool descriptors;
     VkPhysicalDeviceProperties properties;
     DkrVkImage *snapshot;
@@ -168,6 +185,7 @@ int dkr_vk_buffer_create(DkrGfx *g, const void *data, size_t size, DkrVkBuffer *
         .usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT |
                  VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
         .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
+    if (g->transform_feedback) create.usage |= VK_BUFFER_USAGE_TRANSFORM_FEEDBACK_BUFFER_BIT_EXT;
     VK_TRY(g, g->vkCreateBuffer(g->device, &create, NULL, &b->buffer));
     VkMemoryRequirements required;
     g->vkGetBufferMemoryRequirements(g->device, b->buffer, &required);
@@ -179,15 +197,28 @@ int dkr_vk_buffer_create(DkrGfx *g, const void *data, size_t size, DkrVkBuffer *
         .allocationSize = required.size, .memoryTypeIndex = index};
     VK_TRY(g, g->vkAllocateMemory(g->device, &allocate, NULL, &b->memory));
     VK_TRY(g, g->vkBindBufferMemory(g->device, b->buffer, b->memory, 0));
-    void *mapped;
-    VK_TRY(g, g->vkMapMemory(g->device, b->memory, 0, VK_WHOLE_SIZE, 0, &mapped));
-    if (data) memcpy(mapped, data, size); else memset(mapped, 0, size);
-    if (!(flags & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) {
+    VK_TRY(g, g->vkMapMemory(g->device, b->memory, 0, VK_WHOLE_SIZE, 0, &b->mapped));
+    b->coherent = (flags & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) != 0;
+    if (data) memcpy(b->mapped, data, size); else memset(b->mapped, 0, size);
+    if (!b->coherent) {
         VkMappedMemoryRange range = {.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE, .memory = b->memory, .size = VK_WHOLE_SIZE};
         VkResult result = g->vkFlushMappedMemoryRanges(g->device, 1, &range);
-        if (result != VK_SUCCESS) { g->vkUnmapMemory(g->device, b->memory); return dkr_vk_fail(g, "buffer flush failed: %d", result); }
+        if (result != VK_SUCCESS) return dkr_vk_fail(g, "buffer flush failed: %d", result);
     }
-    g->vkUnmapMemory(g->device, b->memory);
+    return 0;
+}
+
+int dkr_vk_feedback_supported(DkrGfx *g) { return g && g->transform_feedback; }
+
+int dkr_vk_buffer_read(DkrGfx *g, DkrVkBuffer *buffer, size_t offset, void *out, size_t size) {
+    if (!g || g->batch_active || !buffer || buffer->owner != g || buffer->temporary || !out ||
+        offset > buffer->size || size > buffer->size - offset) return -1;
+    if (!buffer->coherent) {
+        VkMappedMemoryRange range = {.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE, .memory = buffer->memory, .size = VK_WHOLE_SIZE};
+        VkResult result = g->vkInvalidateMappedMemoryRanges(g->device, 1, &range);
+        if (result != VK_SUCCESS) return dkr_vk_fail(g, "feedback readback failed: %d", result);
+    }
+    memcpy(out, (uint8_t *)buffer->mapped + offset, size);
     return 0;
 }
 
@@ -253,7 +284,9 @@ int dkr_vk_buffer_temporary(DkrGfx *g, const void *data, size_t size, DkrVkBuffe
         if (!(k = chunk_create(g, want))) return -1;
         k->next = r->chunks; r->chunks = k; offset = 0;
     }
-    DkrVkBuffer *b = calloc(1, sizeof *b);
+    DkrVkBuffer *b = r->free_temp_buffers;
+    if (b) { r->free_temp_buffers = b->next; memset(b, 0, sizeof *b); }
+    else b = calloc(1, sizeof *b);
     if (!b) return dkr_vk_fail(g, "out of memory creating a temporary buffer");
     b->owner = g; b->buffer = k->buffer; b->size = size; b->base = offset; b->temporary = 1;
     b->next = r->buffers; r->buffers = b; *out = b;
@@ -265,21 +298,28 @@ int dkr_vk_buffer_temporary(DkrGfx *g, const void *data, size_t size, DkrVkBuffe
 
 static void destroy_buffer(DkrGfx *g, DkrVkBuffer *b) {
     if (b->temporary) { free(b); return; } /* an arena slice owns no Vulkan object */
+    if (b->mapped) g->vkUnmapMemory(g->device, b->memory);
     if (b->buffer) g->vkDestroyBuffer(g->device, b->buffer, NULL);
     if (b->memory) g->vkFreeMemory(g->device, b->memory, NULL);
     free(b);
 }
 
-static void recycle(DkrGfx *g) {
+static void destroy_framebuffers(DkrGfx *g) {
     DkrVkResources *r = g->resources;
     if (!r) return;
     while (r->framebuffers) {
         Framebuffer *f = r->framebuffers; r->framebuffers = f->next;
         g->vkDestroyFramebuffer(g->device, f->framebuffer, NULL); free(f);
     }
+}
+
+static void recycle(DkrGfx *g) {
+    DkrVkResources *r = g->resources;
+    if (!r) return;
     for (DkrVkBuffer **link = &r->buffers; *link;) {
         DkrVkBuffer *b = *link;
-        if (b->temporary) { *link = b->next; destroy_buffer(g, b); } else link = &b->next;
+        if (b->temporary) { *link = b->next; b->next = r->free_temp_buffers; r->free_temp_buffers = b; }
+        else link = &b->next;
     }
     for (Chunk *k = r->chunks; k; k = k->next) k->used = 0;
 }
@@ -296,7 +336,7 @@ void dkr_vk_buffer_destroy(DkrGfx *g, DkrVkBuffer *b) {
 void dkr_vk_image_destroy(DkrGfx *g, DkrVkImage *image) {
     if (!g || !image || image->owner != g) return;
     if (g->batch_active) { dkr_vk_fail(g, "cannot destroy an image during a batch"); return; }
-    g->vkDeviceWaitIdle(g->device); recycle(g);
+    g->vkDeviceWaitIdle(g->device); recycle(g); destroy_framebuffers(g);
     DkrVkImage **link = &g->resources->images;
     while (*link && *link != image) link = &(*link)->next;
     if (!*link) return;
@@ -321,13 +361,44 @@ int dkr_vk_sampler_create(DkrGfx *g, const VkSamplerCreateInfo *info, DkrVkSampl
     return 0;
 }
 
-int dkr_vk_batch_begin(DkrGfx *g) {
+static void end_render_pass(DkrGfx *g) {
+    if (g && g->resources && g->resources->active_framebuffer) {
+        g->vkCmdEndRenderPass(g->command);
+        g->resources->active_framebuffer = VK_NULL_HANDLE;
+        g->resources->active_pass = VK_NULL_HANDLE;
+    }
+}
+
+static int get_framebuffer(DkrGfx *g, VkRenderPass pass, uint32_t view_count, const VkImageView *views,
+                           uint32_t width, uint32_t height, VkFramebuffer *out) {
+    DkrVkResources *r = g->resources;
+    for (Framebuffer *f = r->framebuffers; f; f = f->next) {
+        if (f->pass == pass && f->view_count == view_count && f->width == width && f->height == height &&
+            !memcmp(f->views, views, view_count * sizeof *views)) {
+            *out = f->framebuffer;
+            return 0;
+        }
+    }
+    Framebuffer *frame = calloc(1, sizeof *frame);
+    if (!frame) return dkr_vk_fail(g, "out of memory creating framebuffer");
+    frame->pass = pass; frame->view_count = view_count; frame->width = width; frame->height = height;
+    memcpy(frame->views, views, view_count * sizeof *views);
+    VkFramebufferCreateInfo create = {.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO, .renderPass = pass,
+        .attachmentCount = view_count, .pAttachments = views, .width = width, .height = height, .layers = 1};
+    VK_TRY(g, g->vkCreateFramebuffer(g->device, &create, NULL, &frame->framebuffer));
+    frame->next = r->framebuffers; r->framebuffers = frame;
+    *out = frame->framebuffer;
+    return 0;
+}
+
+int dkr_vk_batch_resume(DkrGfx *g) {
     if (!g || !g->device) return -1;
     if (g->batch_active) return dkr_vk_fail(g, "nested Vulkan batch");
     VK_TRY(g, g->vkWaitForFences(g->device, 1, &g->submitted, VK_TRUE, 5000000000ull));
-    recycle(g);
     DkrVkResources *r = resources(g);
     if (!r) return -1;
+    r->active_pass = VK_NULL_HANDLE;
+    r->active_framebuffer = VK_NULL_HANDLE;
     if (r->descriptors) VK_TRY(g, g->vkResetDescriptorPool(g->device, r->descriptors, 0));
     else {
         VkDescriptorPoolSize sizes[] = {{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 16384}, {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 16384},
@@ -345,8 +416,17 @@ int dkr_vk_batch_begin(DkrGfx *g) {
     return 0;
 }
 
+int dkr_vk_batch_begin(DkrGfx *g) {
+    if (!g || !g->device) return -1;
+    if (g->batch_active) return dkr_vk_fail(g, "nested Vulkan batch");
+    VK_TRY(g, g->vkWaitForFences(g->device, 1, &g->submitted, VK_TRUE, 5000000000ull));
+    recycle(g);
+    return dkr_vk_batch_resume(g);
+}
+
 int dkr_vk_batch_end(DkrGfx *g) {
     if (!g || !g->batch_active) return g ? dkr_vk_fail(g, "end without a Vulkan batch") : -1;
+    end_render_pass(g);
     VK_TRY(g, g->vkEndCommandBuffer(g->command));
     if (g->resources) for (Chunk *k = g->resources->chunks; k; k = k->next) if (k->used && !k->coherent) {
         VkMappedMemoryRange range = {.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE, .memory = k->memory, .size = VK_WHOLE_SIZE};
@@ -364,6 +444,7 @@ int dkr_vk_batch_end(DkrGfx *g) {
 
 int dkr_vk_image_ready(DkrGfx *g, DkrVkImage *image) {
     if (!image || image->owner != g) return dkr_vk_fail(g, "image belongs to a different graphics context");
+    end_render_pass(g);
     VkImageMemoryBarrier barrier = {.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
         .srcAccessMask = image->initialized ? VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT : 0,
         .dstAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT,
@@ -374,6 +455,13 @@ int dkr_vk_image_ready(DkrGfx *g, DkrVkImage *image) {
     g->vkCmdPipelineBarrier(g->command, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
         0, 0, NULL, 0, NULL, 1, &barrier);
     image->initialized = 1;
+    image->dirty = 0;
+    return 0;
+}
+
+static int image_ready_read(DkrGfx *g, DkrVkImage *image) {
+    if (!image || image->owner != g) return dkr_vk_fail(g, "image belongs to a different graphics context");
+    if (!image->initialized || image->dirty) return dkr_vk_image_ready(g, image);
     return 0;
 }
 
@@ -385,6 +473,7 @@ int dkr_vk_image_clear(DkrGfx *g, DkrVkImage *image, const float color[4]) {
     memcpy(value.float32, color, sizeof value.float32);
     VkImageSubresourceRange range = {VK_IMAGE_ASPECT_COLOR_BIT, 0, image->info.levels, 0, image->info.layers};
     g->vkCmdClearColorImage(g->command, image->image, VK_IMAGE_LAYOUT_GENERAL, &value, 1, &range);
+    image->dirty = 1;
     return 0;
 }
 
@@ -396,6 +485,41 @@ int dkr_vk_image_clear_depth(DkrGfx *g, DkrVkImage *image, VkImageAspectFlags as
     VkClearDepthStencilValue value = {depth, stencil};
     VkImageSubresourceRange range = {aspects, 0, 1, 0, 1};
     g->vkCmdClearDepthStencilImage(g->command, image->image, VK_IMAGE_LAYOUT_GENERAL, &value, 1, &range);
+    image->dirty = 1;
+    return 0;
+}
+
+int dkr_vk_attachment_clear(DkrGfx *g, DkrVkImage *image, DkrVkView *view, VkRect2D rect,
+                            VkImageAspectFlags aspects, const VkClearValue *value) {
+    if (!g || !g->batch_active || !image || !view || !value) return -1;
+    int depth = aspects != VK_IMAGE_ASPECT_COLOR_BIT;
+    VkImageUsageFlags usage = depth ? VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT : VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+    if (view->image != image || image->owner != g || !aspects || (aspects & ~image->info.aspect) ||
+        (depth && (aspects & VK_IMAGE_ASPECT_COLOR_BIT)) || !(image->usage & usage) ||
+        view->info.levels != 1 || view->info.layers != 1)
+        return dkr_vk_fail(g, "invalid clear attachment view/aspects");
+    unsigned width = image->info.width >> view->info.base_level, height = image->info.height >> view->info.base_level;
+    if (!width) width = 1; if (!height) height = 1;
+    if (rect.offset.x < 0 || rect.offset.y < 0 || (uint64_t)rect.offset.x + rect.extent.width > width ||
+        (uint64_t)rect.offset.y + rect.extent.height > height) return dkr_vk_fail(g, "clear rectangle exceeds attachment");
+    if (!rect.extent.width || !rect.extent.height) return 0;
+    DkrVkResources *r = resources(g);
+    if (!r || dkr_vk_image_ready(g, image)) return -1;
+    DkrVkPipelineInfo info = {0};
+    if (depth) info.depth = view->info.format;
+    else { info.color_count = 1; info.colors[0] = view->info.format; }
+    VkRenderPass pass = VK_NULL_HANDLE;
+    if (render_pass(g, &info, &pass)) return -1;
+    VkFramebuffer fb = VK_NULL_HANDLE;
+    if (get_framebuffer(g, pass, 1, &view->view, width, height, &fb)) return -1;
+    VkRenderPassBeginInfo begin = {.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO, .renderPass = pass,
+        .framebuffer = fb, .renderArea = {{0, 0}, {width, height}}};
+    VkClearAttachment clear = {.aspectMask = aspects, .colorAttachment = 0, .clearValue = *value};
+    VkClearRect area = {.rect = rect, .baseArrayLayer = 0, .layerCount = 1};
+    g->vkCmdBeginRenderPass(g->command, &begin, VK_SUBPASS_CONTENTS_INLINE);
+    g->vkCmdClearAttachments(g->command, 1, &clear, 1, &area);
+    g->vkCmdEndRenderPass(g->command);
+    image->dirty = 1;
     return 0;
 }
 
@@ -443,6 +567,7 @@ int dkr_vk_image_upload_region(DkrGfx *g, DkrVkImage *image, unsigned level, uns
     VkBufferImageCopy region = {.bufferOffset = staging->base, .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, level, layer, 1},
         .imageOffset = {(int32_t)x, (int32_t)y, 0}, .imageExtent = {width, height, 1}};
     g->vkCmdCopyBufferToImage(g->command, staging->buffer, image->image, VK_IMAGE_LAYOUT_GENERAL, 1, &region);
+    image->dirty = 1;
     return 0;
 }
 
@@ -456,13 +581,30 @@ int dkr_vk_image_copy(DkrGfx *g, DkrVkImage *source, unsigned sl, unsigned sa, u
     if (!sw) sw = 1; if (!sh) sh = 1; if (!dw) dw = 1; if (!dh) dh = 1;
     if (!width || !height || sx > sw || width > sw-sx || sy > sh || height > sh-sy || dx > dw || width > dw-dx || dy > dh || height > dh-dy)
         return dkr_vk_fail(g, "image copy rectangle exceeds storage");
-    if (dkr_vk_image_ready(g, source) || dkr_vk_image_ready(g, destination)) return -1;
+    if (image_ready_read(g, source) || dkr_vk_image_ready(g, destination)) return -1;
     VkImageCopy regions[2]; unsigned n = 0;
     const VkImageAspectFlags aspects[] = {VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_ASPECT_DEPTH_BIT, VK_IMAGE_ASPECT_STENCIL_BIT};
     for (unsigned i = 0; i < 3; i++) if (source->info.aspect & aspects[i])
         regions[n++] = (VkImageCopy){.srcSubresource = {aspects[i], sl, sa, 1}, .srcOffset = {(int32_t)sx, (int32_t)sy, 0},
             .dstSubresource = {aspects[i], dl, da, 1}, .dstOffset = {(int32_t)dx, (int32_t)dy, 0}, .extent = {width, height, 1}};
     g->vkCmdCopyImage(g->command, source->image, VK_IMAGE_LAYOUT_GENERAL, destination->image, VK_IMAGE_LAYOUT_GENERAL, n, regions);
+    destination->dirty = 1;
+    return 0;
+}
+
+int dkr_vk_image_blit(DkrGfx *g, DkrVkImage *source, unsigned sl, unsigned sa, const int32_t from[4],
+                      DkrVkImage *destination, unsigned dl, unsigned da, const int32_t to[4]) {
+    if (!g || !g->batch_active || !source || !destination || source->owner != g || destination->owner != g) return -1;
+    if (source == destination || source->info.aspect != destination->info.aspect ||
+        sl >= source->info.levels || dl >= destination->info.levels || sa >= source->info.layers || da >= destination->info.layers)
+        return dkr_vk_fail(g, "image blit needs distinct images with matching aspects");
+    if (image_ready_read(g, source) || dkr_vk_image_ready(g, destination)) return -1;
+    VkImageAspectFlags aspect = source->info.aspect;
+    VkImageBlit region = {.srcSubresource = {aspect, sl, sa, 1}, .srcOffsets = {{from[0], from[1], 0}, {from[2], from[3], 1}},
+                          .dstSubresource = {aspect, dl, da, 1}, .dstOffsets = {{to[0], to[1], 0}, {to[2], to[3], 1}}};
+    g->vkCmdBlitImage(g->command, source->image, VK_IMAGE_LAYOUT_GENERAL, destination->image, VK_IMAGE_LAYOUT_GENERAL, 1, &region,
+                      aspect == VK_IMAGE_ASPECT_COLOR_BIT ? VK_FILTER_LINEAR : VK_FILTER_NEAREST);
+    destination->dirty = 1;
     return 0;
 }
 
@@ -544,6 +686,15 @@ int dkr_vk_program_create(DkrGfx *g, const DkrVkShaderInfo *shaders, unsigned co
 }
 
 static int render_pass(DkrGfx *g, const DkrVkPipelineInfo *info, VkRenderPass *out) {
+    DkrVkResources *r = resources(g);
+    if (!r) return -1;
+    for (RenderPass *rp = r->render_passes; rp; rp = rp->next) {
+        if (rp->color_count == info->color_count && rp->depth == info->depth &&
+            !memcmp(rp->colors, info->colors, info->color_count * sizeof *info->colors)) {
+            *out = rp->pass;
+            return 0;
+        }
+    }
     VkAttachmentDescription attachments[9] = {{0}};
     VkAttachmentReference colors[8], depth;
     unsigned n = 0;
@@ -567,7 +718,13 @@ static int render_pass(DkrGfx *g, const DkrVkPipelineInfo *info, VkRenderPass *o
         .pDepthStencilAttachment = info->depth == VK_FORMAT_UNDEFINED ? NULL : &depth};
     VkRenderPassCreateInfo create = {.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO,
         .attachmentCount = n, .pAttachments = attachments, .subpassCount = 1, .pSubpasses = &subpass};
-    VK_TRY(g, g->vkCreateRenderPass(g->device, &create, NULL, out));
+    RenderPass *rp = calloc(1, sizeof *rp);
+    if (!rp) return dkr_vk_fail(g, "out of render-pass memory");
+    VK_TRY(g, g->vkCreateRenderPass(g->device, &create, NULL, &rp->pass));
+    rp->color_count = info->color_count; rp->depth = info->depth;
+    memcpy(rp->colors, info->colors, info->color_count * sizeof *info->colors);
+    rp->next = r->render_passes; r->render_passes = rp;
+    *out = rp->pass;
     return 0;
 }
 
@@ -600,6 +757,7 @@ static int pipeline(DkrGfx *g, DkrVkProgram *program, const DkrVkPipelineInfo *i
     VkPipelineViewportStateCreateInfo viewport = {.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO,
         .pNext = g->depth_clip_control ? &clip : NULL, .viewportCount = 1, .scissorCount = 1};
     VkPipelineRasterizationStateCreateInfo raster = {.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
+        .rasterizerDiscardEnable = info->rasterizer_discard,
         .depthClampEnable = info->depth_clamp, .polygonMode = info->polygon, .cullMode = info->cull, .frontFace = info->front,
         .depthBiasEnable = info->depth_bias, .lineWidth = 1.f};
     VkPipelineMultisampleStateCreateInfo samples = {.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
@@ -704,7 +862,7 @@ static int bind_descriptors(DkrGfx *g, const DkrVkDraw *draw, VkDescriptorSet se
                         src_view = snap_view;
                     }
                 }
-                if (dkr_vk_image_ready(g, src_image)) return -1;
+                if (image_ready_read(g, src_image)) return -1;
             }
             if (src_view && (!need_image || src_view->image != src_image)) return dkr_vk_fail(g, "descriptor view belongs to another image");
             images[i] = (VkDescriptorImageInfo){need_sampler ? d->sampler->sampler : VK_NULL_HANDLE,
@@ -720,12 +878,21 @@ int dkr_vk_draw(DkrGfx *g, const DkrVkDraw *draw) {
     if (!g || !g->batch_active || !draw || !draw->program || draw->program->owner != g) return -1;
     if (!draw->count || !draw->instances) return 0;
     const DkrVkPipelineInfo *info = &draw->pipeline;
-    if (info->color_count > 8 || (!info->color_count && !draw->depth)) return dkr_vk_fail(g, "draw has no valid render targets");
+    if (info->color_count > 8 || (!info->color_count && !draw->depth && !info->rasterizer_discard)) return dkr_vk_fail(g, "draw has no valid render targets");
     if (info->stream_count > DKR_VK_VERTEX_SLOTS || info->attribute_count > DKR_VK_VERTEX_SLOTS)
         return dkr_vk_fail(g, "vertex layout exceeds backend limits");
     uint32_t width = UINT32_MAX, height = UINT32_MAX;
     VkImageView views[9];
     unsigned view_count = 0;
+    int capturing = 0;
+    for (unsigned i = 0; i < 4; i++) if (draw->feedback[i]) {
+        DkrVkBuffer *b = draw->feedback[i]; capturing = 1;
+        if (!g->transform_feedback || b->owner != g || b->temporary || !draw->feedback_sizes[i] ||
+            draw->feedback_offsets[i] % 4 || draw->feedback_offsets[i] > b->size ||
+            draw->feedback_sizes[i] > b->size - draw->feedback_offsets[i])
+            return dkr_vk_fail(g, "invalid transform feedback buffer/range");
+    }
+    if (!info->color_count && !draw->depth) width = height = 1;
     for (unsigned i = 0; i < info->color_count + (draw->depth != NULL); i++) {
         int depth = i == info->color_count;
         DkrVkImage *image = depth ? draw->depth : draw->colors[i];
@@ -735,7 +902,6 @@ int dkr_vk_draw(DkrGfx *g, const DkrVkDraw *draw) {
         if (!image || image->owner != g || (view ? view->info.format : image->info.format) != format ||
             (view && view->image != image) || !(image->usage & usage))
             return dkr_vk_fail(g, "render target does not match its pipeline");
-        if (dkr_vk_image_ready(g, image)) return -1;
         unsigned iw = image->info.width >> (view ? view->info.base_level : 0), ih = image->info.height >> (view ? view->info.base_level : 0);
         if (!iw) iw = 1; if (!ih) ih = 1;
         if (iw < width) width = iw; if (ih < height) height = ih;
@@ -746,10 +912,6 @@ int dkr_vk_draw(DkrGfx *g, const DkrVkDraw *draw) {
         (uint64_t)draw->scissor.offset.x + draw->scissor.extent.width > width ||
         (uint64_t)draw->scissor.offset.y + draw->scissor.extent.height > height)
         return dkr_vk_fail(g, "invalid viewport/scissor for target extent");
-    Pipeline *p;
-    if (pipeline(g, draw->program, info, &p)) return -1;
-    VkDescriptorSet sets[DKR_VK_STAGES] = {0};
-    if (bind_descriptors(g, draw, sets)) return -1;
     for (unsigned i = 0; i < info->stream_count; i++) {
         unsigned binding = info->streams[i].binding;
         if (binding >= DKR_VK_VERTEX_SLOTS || !draw->vertices[binding] || draw->vertices[binding]->owner != g ||
@@ -762,28 +924,49 @@ int dkr_vk_draw(DkrGfx *g, const DkrVkDraw *draw) {
         if (!bytes || draw->indices->owner != g || draw->index_offset % bytes || draw->index_offset > draw->indices->size ||
             end > draw->indices->size - draw->index_offset) return dkr_vk_fail(g, "invalid index buffer range/type");
     }
-    Framebuffer *frame = calloc(1, sizeof *frame);
-    if (!frame) return dkr_vk_fail(g, "out of memory creating framebuffer");
-    frame->next = g->resources->framebuffers; g->resources->framebuffers = frame;
-    VkFramebufferCreateInfo create = {.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO, .renderPass = p->pass,
-        .attachmentCount = view_count, .pAttachments = views, .width = width, .height = height, .layers = 1};
-    VK_TRY(g, g->vkCreateFramebuffer(g->device, &create, NULL, &frame->framebuffer));
-    VkRenderPassBeginInfo begin = {.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO, .renderPass = p->pass,
-        .framebuffer = frame->framebuffer, .renderArea = {{0, 0}, {width, height}}};
-    g->vkCmdBeginRenderPass(g->command, &begin, VK_SUBPASS_CONTENTS_INLINE);
+    Pipeline *p;
+    if (pipeline(g, draw->program, info, &p)) return -1;
+    VkFramebuffer fb = VK_NULL_HANDLE;
+    if (get_framebuffer(g, p->pass, view_count, views, width, height, &fb)) return -1;
+    DkrVkResources *r = g->resources;
+    if (r->active_framebuffer != fb || capturing) end_render_pass(g);
+    VkDescriptorSet sets[DKR_VK_STAGES] = {0};
+    if (bind_descriptors(g, draw, sets)) return -1;
+    if (r->active_framebuffer != fb) {
+        end_render_pass(g);
+        for (unsigned i = 0; i < info->color_count + (draw->depth != NULL); i++) {
+            DkrVkImage *image = (i == info->color_count) ? draw->depth : draw->colors[i];
+            if (dkr_vk_image_ready(g, image)) return -1;
+            image->dirty = 1;
+        }
+        VkRenderPassBeginInfo begin = {.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO, .renderPass = p->pass,
+            .framebuffer = fb, .renderArea = {{0, 0}, {width, height}}};
+        g->vkCmdBeginRenderPass(g->command, &begin, VK_SUBPASS_CONTENTS_INLINE);
+        r->active_pass = p->pass;
+        r->active_framebuffer = fb;
+    }
     g->vkCmdBindPipeline(g->command, VK_PIPELINE_BIND_POINT_GRAPHICS, p->pipeline);
+    if (capturing) {
+        for (unsigned i = 0; i < 4; i++) if (draw->feedback[i]) {
+            VkBuffer buffer = draw->feedback[i]->buffer;
+            g->vkCmdBindTransformFeedbackBuffersEXT(g->command, i, 1, &buffer, &draw->feedback_offsets[i], &draw->feedback_sizes[i]);
+        }
+        g->vkCmdBeginTransformFeedbackEXT(g->command, 0, 0, NULL, NULL);
+    }
     for (unsigned i = 0; i < DKR_VK_STAGES; i++)
         if (sets[i]) g->vkCmdBindDescriptorSets(g->command, VK_PIPELINE_BIND_POINT_GRAPHICS, draw->program->layout, i, 1, &sets[i], 0, NULL);
-    g->vkCmdSetViewport(g->command, 0, 1, &draw->viewport);
-    g->vkCmdSetScissor(g->command, 0, 1, &draw->scissor);
-    g->vkCmdSetBlendConstants(g->command, draw->blend_constant);
-    g->vkCmdSetDepthBias(g->command, draw->depth_bias_constant, draw->depth_bias_clamp, draw->depth_bias_slope);
-    g->vkCmdSetStencilReference(g->command, VK_STENCIL_FACE_FRONT_BIT, info->stencil_front.reference);
-    g->vkCmdSetStencilReference(g->command, VK_STENCIL_FACE_BACK_BIT, info->stencil_back.reference);
-    g->vkCmdSetStencilCompareMask(g->command, VK_STENCIL_FACE_FRONT_BIT, info->stencil_front.compareMask);
-    g->vkCmdSetStencilCompareMask(g->command, VK_STENCIL_FACE_BACK_BIT, info->stencil_back.compareMask);
-    g->vkCmdSetStencilWriteMask(g->command, VK_STENCIL_FACE_FRONT_BIT, info->stencil_front.writeMask);
-    g->vkCmdSetStencilWriteMask(g->command, VK_STENCIL_FACE_BACK_BIT, info->stencil_back.writeMask);
+    if (!info->rasterizer_discard) {
+        g->vkCmdSetViewport(g->command, 0, 1, &draw->viewport);
+        g->vkCmdSetScissor(g->command, 0, 1, &draw->scissor);
+        g->vkCmdSetBlendConstants(g->command, draw->blend_constant);
+        g->vkCmdSetDepthBias(g->command, draw->depth_bias_constant, draw->depth_bias_clamp, draw->depth_bias_slope);
+        g->vkCmdSetStencilReference(g->command, VK_STENCIL_FACE_FRONT_BIT, info->stencil_front.reference);
+        g->vkCmdSetStencilReference(g->command, VK_STENCIL_FACE_BACK_BIT, info->stencil_back.reference);
+        g->vkCmdSetStencilCompareMask(g->command, VK_STENCIL_FACE_FRONT_BIT, info->stencil_front.compareMask);
+        g->vkCmdSetStencilCompareMask(g->command, VK_STENCIL_FACE_BACK_BIT, info->stencil_back.compareMask);
+        g->vkCmdSetStencilWriteMask(g->command, VK_STENCIL_FACE_FRONT_BIT, info->stencil_front.writeMask);
+        g->vkCmdSetStencilWriteMask(g->command, VK_STENCIL_FACE_BACK_BIT, info->stencil_back.writeMask);
+    }
     for (unsigned i = 0; i < info->stream_count; i++) {
         unsigned binding = info->streams[i].binding;
         VkDeviceSize offset = draw->vertices[binding]->base + draw->vertex_offsets[binding];
@@ -793,7 +976,14 @@ int dkr_vk_draw(DkrGfx *g, const DkrVkDraw *draw) {
         g->vkCmdBindIndexBuffer(g->command, draw->indices->buffer, draw->indices->base + draw->index_offset, draw->index_type);
         g->vkCmdDrawIndexed(g->command, draw->count, draw->instances, draw->first, draw->base_vertex, draw->first_instance);
     } else g->vkCmdDraw(g->command, draw->count, draw->instances, draw->first, draw->first_instance);
-    g->vkCmdEndRenderPass(g->command);
+    if (capturing) {
+        g->vkCmdEndTransformFeedbackEXT(g->command, 0, 0, NULL, NULL);
+        end_render_pass(g);
+        VkMemoryBarrier barrier = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER, .srcAccessMask = VK_ACCESS_TRANSFORM_FEEDBACK_WRITE_BIT_EXT,
+            .dstAccessMask = VK_ACCESS_HOST_READ_BIT};
+        g->vkCmdPipelineBarrier(g->command, VK_PIPELINE_STAGE_TRANSFORM_FEEDBACK_BIT_EXT, VK_PIPELINE_STAGE_HOST_BIT,
+            0, 1, &barrier, 0, NULL, 0, NULL);
+    }
     return 0;
 }
 
@@ -803,7 +993,13 @@ void dkr_vk_resources_destroy(DkrGfx *g) {
     /* Teardown is also valid after a recording error. vk.c has already waited for the device. */
     if (g->batch_active) g->vkResetCommandBuffer(g->command, 0);
     g->batch_active = 0;
+    r->active_pass = VK_NULL_HANDLE;
+    r->active_framebuffer = VK_NULL_HANDLE;
     recycle(g);
+    destroy_framebuffers(g);
+    while (r->free_temp_buffers) {
+        DkrVkBuffer *b = r->free_temp_buffers; r->free_temp_buffers = b->next; free(b);
+    }
     while (r->buffers) { DkrVkBuffer *b = r->buffers; r->buffers = b->next; destroy_buffer(g, b); }
     while (r->chunks) { Chunk *k = r->chunks; r->chunks = k->next; chunk_destroy(g, k); }
     while (r->images) dkr_vk_image_destroy(g, r->images);
@@ -817,7 +1013,6 @@ void dkr_vk_resources_destroy(DkrGfx *g) {
         while (p->pipelines) {
             Pipeline *v = p->pipelines; p->pipelines = v->next;
             if (v->pipeline) g->vkDestroyPipeline(g->device, v->pipeline, NULL);
-            if (v->pass) g->vkDestroyRenderPass(g->device, v->pass, NULL);
             free(v);
         }
         for (unsigned i = 0; i < DKR_VK_STAGES; i++) {
@@ -826,6 +1021,11 @@ void dkr_vk_resources_destroy(DkrGfx *g) {
         }
         if (p->layout) g->vkDestroyPipelineLayout(g->device, p->layout, NULL);
         free(p);
+    }
+    while (r->render_passes) {
+        RenderPass *rp = r->render_passes; r->render_passes = rp->next;
+        if (rp->pass) g->vkDestroyRenderPass(g->device, rp->pass, NULL);
+        free(rp);
     }
     if (r->descriptors) g->vkDestroyDescriptorPool(g->device, r->descriptors, NULL);
     free(r); g->resources = NULL;

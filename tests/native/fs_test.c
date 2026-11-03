@@ -24,6 +24,8 @@ void hos_stop(Cpu *c, const char *fmt, ...) {
     exit(2);
 }
 void kern_sync_poke(uint32_t handle) { (void)handle; }
+void kern_lock(void) {}
+void kern_unlock(void) {}
 
 static uint8_t msg[0x100];
 static Cpu cpu;

@@ -2,6 +2,19 @@
 
 Somente o que foi executado e verificado. Cada linha aponta para o comando que a reproduz (`docs/TESTING.md`).
 
+## 2026-11-03 — Launcher, configurações, resolução até 4×, FPS acima de 60 nos menus
+
+Detalhes e uso: `docs/LAUNCHER_E_CONFIGURACOES.md`.
+
+| Evidência | Resultado |
+|---|---|
+| `render_scale = 2` (render targets 3840×2160), janela 1920×1080, roteiro até o Play Mode | Imagem correta, **60 fps**, bordas visivelmente mais suaves que em 1× |
+| `fps_limit = 0`, VSync desligado, título | **80–220 fps** (~80 com a cena 3D) |
+| Transição título → Game Select a 60 fps e destravado | Mesma duração em tempo real (~1,3 s; fim em 10,64 s e 10,66 s) com 560 e 608 quadros: as animações usam tempo real. **Só verificado nos menus** |
+| VSync FIFO + limitador do host a 60 | ~53 fps (corrigido: o limitador não atua quando o FIFO já limita à taxa do monitor) |
+| Preparação a partir do NSP | Ticket copiado pelo leitor PFS0 igual ao extraído antes; ExeFS do `nstool --part0` **idêntica byte a byte** (`main`, `sdk`, `subsdk0`, `rtld`, `main.npdm`). RomFS e compilação completas pelo launcher **não executadas** neste registro (os arquivos já existiam) |
+| CTest / pytest | **14/14**; launcher 7/7 |
+
 ## 2026-11-03 — Cutscenes em vídeo tocam (movie::Decoder no Media Foundation)
 
 A biblioteca `movie` do SDK (`subsdk0`) usa o decodificador de hardware NvMMLite, ausente no PC: o jogo ficava para

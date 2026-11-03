@@ -91,7 +91,13 @@ static KThread *alloc_thread(void) {
 /* Called once, on the host thread that will run the guest main thread. */
 uint32_t kern_init(Cpu **main_cpu, uint64_t stack_top, uint64_t tlr_base, int prio, int core,
                    uint64_t exit_hostfn) {
-    InitializeCriticalSection(&g_kern);
+    InitializeCriticalSectionAndSpinCount(&g_kern, 4000);
+    HMODULE winmm = LoadLibraryA("winmm.dll");
+    if (winmm) {
+        typedef UINT (WINAPI *timeBeginPeriod_fn)(UINT);
+        timeBeginPeriod_fn p_timeBeginPeriod = (timeBeginPeriod_fn)(void *)GetProcAddress(winmm, "timeBeginPeriod");
+        if (p_timeBeginPeriod) p_timeBeginPeriod(1);
+    }
     g_tlr_base = tlr_base;
     g_exit_hostfn = exit_hostfn;
     KThread *t = alloc_thread();
@@ -111,16 +117,25 @@ uint32_t kern_init(Cpu **main_cpu, uint64_t stack_top, uint64_t tlr_base, int pr
  * Returns 1 if woken, 0 on timeout. */
 static int wait_current(int64_t timeout_ns) {
     KThread *t = t_self;
-    ULONGLONG duration = timeout_ns < 0 ? 0 : (ULONGLONG)timeout_ns / 1000000 + (timeout_ns % 1000000 != 0);
-    ULONGLONG deadline = GetTickCount64() + duration;
+    LARGE_INTEGER freq, start, now;
+    LONGLONG deadline = 0;
+    if (timeout_ns >= 0) {
+        QueryPerformanceFrequency(&freq);
+        QueryPerformanceCounter(&start);
+        LONGLONG ticks = (LONGLONG)((double)timeout_ns * (double)freq.QuadPart / 1e9);
+        if (timeout_ns > 0 && ticks <= 0) ticks = 1;
+        deadline = start.QuadPart + ticks;
+    }
     while (!t->woken) {
         DWORD ms = INFINITE;
         /* A signaled CV waiter moved to the mutex queue. Its timeout applies to the CV, not to re-locking. */
         if (timeout_ns >= 0 && t->wait_kind != W_MUTEX) {
-            ULONGLONG now = GetTickCount64();
-            if (now >= deadline) break;
-            ULONGLONG remaining = deadline - now;
-            ms = remaining >= INFINITE ? INFINITE - 1 : (DWORD)remaining;
+            QueryPerformanceCounter(&now);
+            if (now.QuadPart >= deadline) break;
+            LONGLONG rem_ticks = deadline - now.QuadPart;
+            LONGLONG rem_ms = (rem_ticks * 1000 + freq.QuadPart - 1) / freq.QuadPart;
+            if (rem_ms <= 0) rem_ms = 1;
+            ms = rem_ms >= INFINITE ? INFINITE - 1 : (DWORD)rem_ms;
         }
         SleepConditionVariableCS(&t->cv, &g_kern, ms);
     }
@@ -279,6 +294,22 @@ void kern_sleep(int64_t ns) {
         kern_unlock();
         SwitchToThread();
         kern_lock();
+        return;
+    }
+    static _Thread_local HANDLE s_timer;
+    static _Thread_local int s_timer_init;
+    if (!s_timer_init) {
+        s_timer_init = 1;
+        s_timer = CreateWaitableTimerExW(NULL, NULL, 0x2 /* CREATE_WAITABLE_TIMER_HIGH_RESOLUTION */, TIMER_ALL_ACCESS);
+    }
+    if (s_timer) {
+        t_self->wait_kind = W_SLEEP;
+        kern_unlock();
+        LARGE_INTEGER due = {.QuadPart = -(ns / 100 > 0 ? ns / 100 : 1)};
+        if (SetWaitableTimer(s_timer, &due, 0, NULL, NULL, FALSE))
+            WaitForSingleObject(s_timer, INFINITE);
+        kern_lock();
+        t_self->wait_kind = W_NONE;
     } else {
         t_self->wait_kind = W_SLEEP;
         wait_current(ns);

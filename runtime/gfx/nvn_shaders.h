@@ -13,6 +13,11 @@ typedef struct NvnProgramSnapshot {
     unsigned count;
     NvnShader shaders[6];
 } NvnProgramSnapshot;
+typedef struct NvnXfbLayout {
+    uint32_t strides[4], counts[4];
+    uint8_t locations[4][192];
+} NvnXfbLayout;
+int nvn_shader_xfb_layout(const NvnShader *shader, NvnXfbLayout *out);
 
 void nvn_shader_snapshot(Cpu *c, NvnShader *out, uint64_t control, uint64_t code);
 void nvn_shader_release(NvnShader *shader);

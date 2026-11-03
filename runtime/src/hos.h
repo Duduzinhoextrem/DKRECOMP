@@ -150,6 +150,8 @@ void hos_hid_handle(Cpu *c, Service *s, const IpcRequest *rq, IpcReply *rp);
 void hos_hid_tick(void);
 void hos_hid_set_test_input(uint64_t buttons, int32_t lx, int32_t ly, int32_t rx, int32_t ry);
 void hos_hid_clear_test_input(void);
+void hos_hid_set_test_player_input(unsigned player, int connected, uint64_t buttons,
+                                  int32_t lx, int32_t ly, int32_t rx, int32_t ry);
 void hos_vi_handle(Cpu *c, Service *s, const IpcRequest *rq, IpcReply *rp);
 uint64_t hos_vi_create_managed_layer(void);
 void hos_audren_handle(Cpu *c, Service *s, const IpcRequest *rq, IpcReply *rp);

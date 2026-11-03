@@ -6,3 +6,4 @@ ziglang==0.16.0     # Clang/LLD + MinGW-w64: builds generated C (x86-64) and ARM
 cmake==4.4.4
 ninja==1.13.2
 lz4==4.4.5
+Pillow==13.0.0      # Local launcher artwork rendering; permissive HPND license

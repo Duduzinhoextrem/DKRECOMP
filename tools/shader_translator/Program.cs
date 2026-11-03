@@ -33,6 +33,12 @@ static class DkrShaderTranslator
     {
         readonly byte[] _code; readonly JsonObject _job; int _binding = 1; public readonly List<string> Notes = new(); public readonly SortedSet<int> TexQueried = new(), ImgQueried = new();
         readonly byte[] _c1;
+        byte[] FeedbackLocations(int buffer) => _job["xfb"] is JsonArray a && buffer < a.Count && a[buffer]["locations"] is JsonArray values
+            ? values.Select(v => checked((byte)v.GetValue<int>())).ToArray() : Array.Empty<byte>();
+        public bool QueryHostSupportsTransformFeedback() => true;
+        public bool QueryTransformFeedbackEnabled() => _job["xfb"] is JsonArray a && a.Any(v => v["locations"] is JsonArray l && l.Count != 0);
+        public ReadOnlySpan<byte> QueryTransformFeedbackVaryingLocations(int bufferIndex) => FeedbackLocations(bufferIndex);
+        public int QueryTransformFeedbackStride(int bufferIndex) => _job["xfb"] is JsonArray a && bufferIndex < a.Count ? (int)a[bufferIndex]["stride"] : 0;
         public Accessor(byte[] code, JsonObject job) { _code = code; _job = job; _c1 = job["c1"] is JsonNode h ? Convert.FromHexString((string)h) : Array.Empty<byte>(); }
         public void Log(string message) => Notes.Add(message);
         // c1 constant segment (the 0x100 bytes before the control segment in the shader package): the jump table of indirect jump BRX lives here (LDC c[1]); without it the translator cannot resolve jump targets and control flow goes wrong (particle shaders loop forever)

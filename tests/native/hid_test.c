@@ -166,6 +166,26 @@ static void test_npad_layout_and_input(void) {
     CHECK(cur_state->stick_r_y == test_ry);
     CHECK((cur_state->attributes & 1) == 1);
 
+    // Player 2 must have its own slot, buttons, sticks and disconnection state.
+    const uint8_t *slot1 = guest + 0x9a00 + 0x5000;
+    const NpadCommonLifo *p2_lifo = (const NpadCommonLifo *)(slot1 + 0x28);
+    hos_hid_set_test_player_input(1, 1, 1ull << 3, 24000, 0, 0, 0);
+    hos_hid_tick();
+    uint32_t style1; memcpy(&style1, slot1, 4);
+    CHECK(style1 == 1);
+    const NpadCommonState *p2 = &p2_lifo->storage[p2_lifo->tail].state;
+    CHECK(p2->buttons == ((1ull << 3) | (1ull << 18)));
+    CHECK(p2->stick_l_x == 24000 && p2->stick_l_y == 0 && p2->attributes == 1);
+    cur_state = &full_key_lifo->storage[full_key_lifo->tail].state;
+    CHECK((cur_state->buttons & test_btns) == test_btns);
+    CHECK(cur_state->stick_l_x == test_lx);
+    hos_hid_set_test_player_input(1, 0, 0, 0, 0, 0, 0);
+    hos_hid_tick();
+    memcpy(&style1, slot1, 4); CHECK(style1 == 0);
+    p2 = &p2_lifo->storage[p2_lifo->tail].state;
+    CHECK(p2->buttons == 0 && p2->attributes == 0 && p2->stick_l_x == 0);
+    cur_state = &full_key_lifo->storage[full_key_lifo->tail].state;
+    CHECK(cur_state->stick_l_x == test_lx && cur_state->attributes == 1);
     hos_hid_clear_test_input();
 
     // Test ring advancement and wrap-around

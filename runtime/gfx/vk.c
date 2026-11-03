@@ -18,6 +18,25 @@ int dkr_vk_fail(DkrGfx *g, const char *fmt, ...) {
 
 #define fail dkr_vk_fail
 
+/* Window thread only. Borderless covers the monitor the window is on; windowed restores the previous rectangle. */
+static void set_borderless(DkrGfx *g, int on) {
+    HWND w = g->window;
+    if (on) {
+        GetWindowRect(w, &g->windowed);
+        MONITORINFO mi = {.cbSize = sizeof mi};
+        GetMonitorInfoW(MonitorFromWindow(w, MONITOR_DEFAULTTONEAREST), &mi);
+        SetWindowLongPtrW(w, GWL_STYLE, WS_POPUP | WS_VISIBLE);
+        SetWindowPos(w, HWND_TOP, mi.rcMonitor.left, mi.rcMonitor.top, mi.rcMonitor.right - mi.rcMonitor.left,
+                     mi.rcMonitor.bottom - mi.rcMonitor.top, SWP_FRAMECHANGED | SWP_SHOWWINDOW);
+    } else {
+        SetWindowLongPtrW(w, GWL_STYLE, WS_OVERLAPPEDWINDOW | WS_VISIBLE);
+        RECT r = g->windowed;
+        SetWindowPos(w, HWND_NOTOPMOST, r.left, r.top, r.right - r.left, r.bottom - r.top, SWP_FRAMECHANGED | SWP_SHOWWINDOW);
+    }
+    g->borderless = on;
+    g->dirty = 1;
+}
+
 static LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wp, LPARAM lp) {
     DkrGfx *g = (DkrGfx *)GetWindowLongPtrW(window, GWLP_USERDATA);
     if (message == WM_NCCREATE) {
@@ -28,6 +47,12 @@ static LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wp, LPARAM
         if (message == WM_CLOSE) { g->closed = 1; return 0; }
         if (message == WM_SIZE) g->dirty = 1;
         if (message == WM_ERASEBKGND) return 1;
+        /* Alt+Enter or F11: borderless full screen on the window's monitor and back. */
+        if ((message == WM_SYSKEYDOWN && wp == VK_RETURN && (lp & (1 << 29))) || (message == WM_KEYDOWN && wp == VK_F11 && !(lp & (1 << 30)))) {
+            set_borderless(g, !g->borderless);
+            return 0;
+        }
+        if (message == WM_SYSCHAR && wp == '\r') return 0; /* no beep for Alt+Enter */
     }
     return DefWindowProcW(window, message, wp, lp);
 }
@@ -110,6 +135,7 @@ static int create_instance(DkrGfx *g, int validation) {
  * input: after a click Windows waited 5 s and replaced it with a frozen "not responding" ghost. The window
  * therefore lives on a small thread of its own that only creates it and runs its message loop. */
 #define WM_DKR_DESTROY (WM_APP + 1)
+#define WM_DKR_TITLE (WM_APP + 2)
 typedef struct WindowStart {
     DkrGfx *g;
     const DkrGfxConfig *config;
@@ -133,11 +159,20 @@ static DWORD WINAPI window_thread(void *arg) {
     else if (!(g->window = CreateWindowExW(0, wc.lpszClassName, title, WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT,
             rect.right - rect.left, rect.bottom - rect.top, NULL, NULL, instance, g))) start->what = "CreateWindowExW";
     if (start->what) { start->error = GetLastError(); SetEvent(start->ready); return 1; }
-    if (start->config->visible) ShowWindow(g->window, SW_SHOW);
+    if (start->config->visible) {
+        ShowWindow(g->window, SW_SHOW);
+        if (start->config->borderless) set_borderless(g, 1);
+    }
     SetEvent(start->ready); /* `start` belongs to the creating thread and is not touched after this */
     MSG message;
     while (GetMessageW(&message, NULL, 0, 0) > 0) {
         if (message.message == WM_DKR_DESTROY) { DestroyWindow(g->window); PostQuitMessage(0); continue; }
+        if (message.message == WM_DKR_TITLE) {
+            wchar_t *text = (wchar_t *)message.lParam;
+            SetWindowTextW(g->window, text);
+            free(text);
+            continue;
+        }
         TranslateMessage(&message);
         DispatchMessageW(&message);
     }
@@ -209,48 +244,56 @@ static int create_device(DkrGfx *g) {
     float priority = 1.0f;
     VkDeviceQueueCreateInfo queue = {.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
         .queueFamilyIndex = g->family, .queueCount = 1, .pQueuePriorities = &priority};
-    const char *extensions[3] = {VK_KHR_SWAPCHAIN_EXTENSION_NAME};
+    const char *extensions[4] = {VK_KHR_SWAPCHAIN_EXTENSION_NAME};
     uint32_t extension_count = 1, available_count = 0;
     VK_TRY(g, g->vkEnumerateDeviceExtensionProperties(g->physical, NULL, &available_count, NULL));
     VkExtensionProperties *available = calloc(available_count ? available_count : 1, sizeof *available);
     if (!available) return fail(g, "out of memory reading draw capabilities");
     result = g->vkEnumerateDeviceExtensionProperties(g->physical, NULL, &available_count, available);
-    int has_clip = 0, has_robustness = 0;
+    int has_clip = 0, has_robustness = 0, has_xfb = 0;
     for (unsigned i = 0; result == VK_SUCCESS && i < available_count; i++) {
         if (!strcmp(available[i].extensionName, VK_EXT_DEPTH_CLIP_CONTROL_EXTENSION_NAME)) has_clip = 1;
         if (!strcmp(available[i].extensionName, VK_EXT_VERTEX_ATTRIBUTE_ROBUSTNESS_EXTENSION_NAME)) has_robustness = 1;
+        if (!strcmp(available[i].extensionName, VK_EXT_TRANSFORM_FEEDBACK_EXTENSION_NAME)) has_xfb = 1;
     }
     free(available);
     if (result != VK_SUCCESS) return fail(g, "cannot read draw capabilities: %d", result);
     if (has_clip) extensions[extension_count++] = VK_EXT_DEPTH_CLIP_CONTROL_EXTENSION_NAME;
     if (has_robustness) extensions[extension_count++] = VK_EXT_VERTEX_ATTRIBUTE_ROBUSTNESS_EXTENSION_NAME;
+    if (has_xfb) extensions[extension_count++] = VK_EXT_TRANSFORM_FEEDBACK_EXTENSION_NAME;
+    VkPhysicalDeviceTransformFeedbackFeaturesEXT feedback = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TRANSFORM_FEEDBACK_FEATURES_EXT};
     VkPhysicalDeviceVertexAttributeRobustnessFeaturesEXT robust = {
-        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VERTEX_ATTRIBUTE_ROBUSTNESS_FEATURES_EXT
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VERTEX_ATTRIBUTE_ROBUSTNESS_FEATURES_EXT,
+        .pNext = has_xfb ? &feedback : NULL
     };
     VkPhysicalDeviceDepthClipControlFeaturesEXT clip = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DEPTH_CLIP_CONTROL_FEATURES_EXT,
-        .pNext = has_robustness ? (void *)&robust : NULL
+        .pNext = has_robustness ? (void *)&robust : (has_xfb ? (void *)&feedback : NULL)
     };
     VkPhysicalDeviceVulkan11Features core11 = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES,
-        .pNext = has_clip ? (void *)&clip : (has_robustness ? (void *)&robust : NULL)
+        .pNext = has_clip ? (void *)&clip : (has_robustness ? (void *)&robust : (has_xfb ? (void *)&feedback : NULL))
     };
     VkPhysicalDeviceFeatures2 features = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2,
         .pNext = &core11};
     g->vkGetPhysicalDeviceFeatures2(g->physical, &features);
     g->depth_clip_control = has_clip && clip.depthClipControl;
     g->vertex_attribute_robustness = has_robustness && robust.vertexAttributeRobustness;
+    g->transform_feedback = has_xfb && feedback.transformFeedback;
+    VkPhysicalDeviceTransformFeedbackFeaturesEXT enable_feedback = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TRANSFORM_FEEDBACK_FEATURES_EXT, .transformFeedback = g->transform_feedback};
     VkPhysicalDeviceVertexAttributeRobustnessFeaturesEXT enable_robust = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VERTEX_ATTRIBUTE_ROBUSTNESS_FEATURES_EXT,
+        .pNext = g->transform_feedback ? &enable_feedback : NULL,
         .vertexAttributeRobustness = g->vertex_attribute_robustness
     };
     VkPhysicalDeviceDepthClipControlFeaturesEXT enable_clip = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DEPTH_CLIP_CONTROL_FEATURES_EXT,
-        .pNext = g->vertex_attribute_robustness ? (void *)&enable_robust : NULL,
+        .pNext = g->vertex_attribute_robustness ? (void *)&enable_robust : (g->transform_feedback ? (void *)&enable_feedback : NULL),
         .depthClipControl = g->depth_clip_control
     };
     VkPhysicalDeviceVulkan11Features enable11 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES,
-        .pNext = g->depth_clip_control ? (void *)&enable_clip : (g->vertex_attribute_robustness ? (void *)&enable_robust : NULL),
+        .pNext = g->depth_clip_control ? (void *)&enable_clip : (g->vertex_attribute_robustness ? (void *)&enable_robust : (g->transform_feedback ? (void *)&enable_feedback : NULL)),
         .shaderDrawParameters = core11.shaderDrawParameters};
     if (!enable11.shaderDrawParameters) return fail(g, "NVN shaders require shaderDrawParameters");
     VkDeviceCreateInfo device = {.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO, .queueCreateInfoCount = 1,
@@ -262,6 +305,11 @@ static int create_device(DkrGfx *g) {
     if (!g->vk##name) return fail(g, "missing Vulkan device entry point vk%s", #name); \
 } while (0);
     DEVICE_PROCS(LOAD_DEVICE)
+    if (g->transform_feedback) {
+        LOAD_DEVICE(CmdBindTransformFeedbackBuffersEXT)
+        LOAD_DEVICE(CmdBeginTransformFeedbackEXT)
+        LOAD_DEVICE(CmdEndTransformFeedbackEXT)
+    }
 #undef LOAD_DEVICE
     g->vkGetDeviceQueue(g->device, g->family, 0, &g->queue);
     VkCommandPoolCreateInfo pool = {.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
@@ -357,18 +405,15 @@ static int create_swapchain(DkrGfx *g) {
         VK_TRY(g, g->vkDeviceWaitIdle(g->device));
         destroy_swapchain(g);
     }
+    /* vsync setting: FIFO is always available; mailbox and immediate are used when the surface offers them. */
     uint32_t mode_count = 0;
     VkPresentModeKHR present_mode = VK_PRESENT_MODE_FIFO_KHR;
-    if (g->vkGetPhysicalDeviceSurfacePresentModesKHR(g->physical, g->surface, &mode_count, NULL) == VK_SUCCESS && mode_count) {
+    VkPresentModeKHR wanted = g->vsync == 1 ? VK_PRESENT_MODE_MAILBOX_KHR : g->vsync == 2 ? VK_PRESENT_MODE_IMMEDIATE_KHR : VK_PRESENT_MODE_FIFO_KHR;
+    if (wanted != VK_PRESENT_MODE_FIFO_KHR &&
+        g->vkGetPhysicalDeviceSurfacePresentModesKHR(g->physical, g->surface, &mode_count, NULL) == VK_SUCCESS && mode_count) {
         VkPresentModeKHR *modes = calloc(mode_count, sizeof *modes);
-        if (modes && g->vkGetPhysicalDeviceSurfacePresentModesKHR(g->physical, g->surface, &mode_count, modes) == VK_SUCCESS) {
-            for (uint32_t i = 0; i < mode_count; i++) {
-                if (modes[i] == VK_PRESENT_MODE_MAILBOX_KHR) {
-                    present_mode = VK_PRESENT_MODE_MAILBOX_KHR;
-                    break;
-                }
-            }
-        }
+        if (modes && g->vkGetPhysicalDeviceSurfacePresentModesKHR(g->physical, g->surface, &mode_count, modes) == VK_SUCCESS)
+            for (uint32_t i = 0; i < mode_count; i++) if (modes[i] == wanted) present_mode = wanted;
         free(modes);
     }
     VkSwapchainCreateInfoKHR info = {.sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR, .surface = g->surface,
@@ -389,7 +434,7 @@ static int create_swapchain(DkrGfx *g) {
     if (create_readback(g)) return -1;
     g->dirty = 0;
     fprintf(stderr, "vulkan: swapchain %ux%u, %u images, format %d, mode %s\n", extent.width, extent.height, g->image_count, g->format,
-            present_mode == VK_PRESENT_MODE_MAILBOX_KHR ? "mailbox" : "fifo");
+            present_mode == VK_PRESENT_MODE_MAILBOX_KHR ? "mailbox" : present_mode == VK_PRESENT_MODE_IMMEDIATE_KHR ? "immediate" : "fifo");
     return 0;
 }
 
@@ -400,6 +445,7 @@ int dkr_gfx_create(DkrGfx **out, const DkrGfxConfig *config) {
     if (!g) return -1;
     if (!config || !config->width || !config->height || config->width > 16384 || config->height > 16384)
         return fail(g, "invalid initial graphics dimensions");
+    g->borderless = 0; g->vsync = config->vsync; g->linear = config->linear; g->keep_aspect = config->keep_aspect;
     if (create_instance(g, config->validation) || create_window(g, config) || create_device(g)) return -1;
     return create_swapchain(g) < 0 ? -1 : 0;
 }
@@ -498,13 +544,26 @@ static int present_image(DkrGfx *g, const float color[4], DkrVkImage *source, co
         VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
     if (source) {
         if (dkr_vk_image_ready(g, source)) return -1;
+        /* Fit the image into the window: letterboxed to its own aspect ratio (bars cleared to black), or stretched. */
+        int32_t x0 = 0, y0 = 0, x1 = (int32_t)g->extent.width, y1 = (int32_t)g->extent.height;
+        if (g->keep_aspect && source->info.width && source->info.height) {
+            uint64_t sw = source->info.width, sh = source->info.height, dw = g->extent.width, dh = g->extent.height;
+            if (dw * sh > dh * sw) { int32_t w = (int32_t)(dh * sw / sh); x0 = (int32_t)(dw - (uint64_t)w) / 2; x1 = x0 + w; }
+            else if (dw * sh < dh * sw) { int32_t h = (int32_t)(dw * sh / sw); y0 = (int32_t)(dh - (uint64_t)h) / 2; y1 = y0 + h; }
+            if (x0 || y0) {
+                VkClearColorValue black = {{0, 0, 0, 1}};
+                VkImageSubresourceRange range = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+                g->vkCmdClearColorImage(g->command, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &black, 1, &range);
+                image_barrier(g, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                    VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
+            }
+        }
         VkImageBlit blit = {.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
             .srcOffsets = {{0, 0, 0}, {(int32_t)source->info.width, (int32_t)source->info.height, 1}},
             .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
-            .dstOffsets = {{0, g->present_flip ? (int32_t)g->extent.height : 0, 0},
-                           {(int32_t)g->extent.width, g->present_flip ? 0 : (int32_t)g->extent.height, 1}}};
+            .dstOffsets = {{x0, g->present_flip ? y1 : y0, 0}, {x1, g->present_flip ? y0 : y1, 1}}};
         g->vkCmdBlitImage(g->command, source->image, VK_IMAGE_LAYOUT_GENERAL, image,
-            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit, VK_FILTER_NEAREST);
+            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit, g->linear ? VK_FILTER_LINEAR : VK_FILTER_NEAREST);
     } else {
         VkClearColorValue clear;
         memcpy(clear.float32, color, sizeof clear.float32);
@@ -561,6 +620,13 @@ int dkr_vk_image_present(DkrGfx *g, DkrVkImage *source, const char *capture_bmp)
 }
 
 const char *dkr_gfx_error(const DkrGfx *g) { return g ? g->error : "out of host memory"; }
+void dkr_gfx_set_title(DkrGfx *g, const char *utf8) {
+    if (!g || !g->window_thread || !utf8) return;
+    wchar_t *text = calloc(256, sizeof *text);
+    if (!text) return;
+    if (!MultiByteToWideChar(CP_UTF8, 0, utf8, -1, text, 256) ||
+        !PostThreadMessageW(GetThreadId(g->window_thread), WM_DKR_TITLE, 0, (LPARAM)text)) free(text);
+}
 uint64_t dkr_gfx_frames(const DkrGfx *g) { return g ? g->frames : 0; }
 void dkr_gfx_set_present_flip(DkrGfx *g, int flip) { if (g) g->present_flip = flip != 0; }
 uint32_t dkr_gfx_validation_errors(const DkrGfx *g) { return g ? (uint32_t)g->validation_errors : 0; }

@@ -226,6 +226,25 @@ static void test_shader_cache(void) {
     st32(a + 116, 0x5000f); st32(a + 64, 1); CHECK(dkr_shader_cache_parse(data, sizeof data, &cache, error) == -1);
 }
 
+static void test_feedback_layout(void) {
+    uint8_t control[0x840] = {0};
+    NvnShader shader = {.control_size = sizeof control, .control = control};
+    NvnXfbLayout layout;
+    st32((uint64_t)(uintptr_t)control + 8, 13);
+    control[0xdc] = 0x20; control[0xdd] = 0x21;
+    control[0x4dc] = control[0x4dd] = 3;
+    control[0x6dc] = 24; control[0x6e8] = 2;
+    const uint8_t expected[] = {32, 33, 34, 36, 37, 38};
+    CHECK(!nvn_shader_xfb_layout(&shader, &layout));
+    CHECK(layout.counts[0] == 6 && layout.strides[0] == 24);
+    CHECK(!memcmp(layout.locations[0], expected, sizeof expected));
+    control[0x6dc] = 20; CHECK(nvn_shader_xfb_layout(&shader, &layout) == -1);
+    control[0x6dc] = 24; control[0x2dc] = 3; CHECK(nvn_shader_xfb_layout(&shader, &layout) == -1);
+    control[0x2dc] = 0; control[0x6e4] = 1; CHECK(nvn_shader_xfb_layout(&shader, &layout) == -1);
+    control[0x6e4] = 0; control[0xdc] = 255; CHECK(nvn_shader_xfb_layout(&shader, &layout) == -1);
+    shader.control_size = 0x700; CHECK(nvn_shader_xfb_layout(&shader, &layout) == -1);
+}
+
 int main(int argc, char **argv) {
     dkr_nvn_register(NULL, 0);
     if (argc == 3 && !strcmp(argv[1], "--cache-probe")) return cache_probe(argv[2]);
@@ -287,6 +306,7 @@ int main(int argc, char **argv) {
     test_command_lifetime();
     test_shader_lifetime();
     test_shader_cache();
+    test_feedback_layout();
     for (unsigned i = 0x100; i < sizeof pool; i++) CHECK(pool[i] == 0xa5);
     cpu.x[0] = (uint64_t)(uintptr_t)pool_builder;
     rt_call(&cpu, dkr_nvn_proc_address("nvnTextureBuilderGetZCullStorageSize"));

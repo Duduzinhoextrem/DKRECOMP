@@ -50,6 +50,7 @@ typedef struct DkrVkPipelineInfo {
     VkFrontFace front;
     VkPolygonMode polygon;
     VkBool32 depth_test, depth_write, depth_clamp, depth_minus_w, depth_bias, stencil_test;
+    VkBool32 rasterizer_discard;
     VkCompareOp depth_compare;
     VkStencilOpState stencil_front, stencil_back;
 } DkrVkPipelineInfo;
@@ -78,6 +79,8 @@ typedef struct DkrVkDraw {
     uint32_t descriptor_count;
     uint32_t count, first, instances, first_instance;
     int32_t base_vertex;
+    DkrVkBuffer *feedback[4];
+    VkDeviceSize feedback_offsets[4], feedback_sizes[4];
 } DkrVkDraw;
 
 /* Resources belong to gfx and are also reclaimed by dkr_gfx_destroy. Destroy explicit resources only
@@ -88,20 +91,29 @@ int dkr_vk_image_view(DkrGfx *gfx, DkrVkImage *image, const DkrVkViewInfo *info,
 void dkr_vk_image_destroy(DkrGfx *gfx, DkrVkImage *image);
 int dkr_vk_buffer_create(DkrGfx *gfx, const void *data, size_t size, DkrVkBuffer **out);
 int dkr_vk_buffer_temporary(DkrGfx *gfx, const void *data, size_t size, DkrVkBuffer **out);
+int dkr_vk_buffer_read(DkrGfx *gfx, DkrVkBuffer *buffer, size_t offset, void *out, size_t size);
+int dkr_vk_feedback_supported(DkrGfx *gfx);
 void dkr_vk_buffer_destroy(DkrGfx *gfx, DkrVkBuffer *buffer);
 int dkr_vk_sampler_create(DkrGfx *gfx, const VkSamplerCreateInfo *info, DkrVkSampler **out);
 int dkr_vk_program_create(DkrGfx *gfx, const DkrVkShaderInfo *shaders, unsigned count,
                           const DkrVkBinding *bindings, unsigned binding_count, DkrVkProgram **out);
 int dkr_vk_batch_begin(DkrGfx *gfx);
+int dkr_vk_batch_resume(DkrGfx *gfx);
 int dkr_vk_batch_end(DkrGfx *gfx);
 int dkr_vk_image_upload(DkrGfx *gfx, DkrVkImage *image, unsigned level, unsigned layer, const void *data, size_t size);
 int dkr_vk_image_upload_region(DkrGfx *gfx, DkrVkImage *image, unsigned level, unsigned layer,
                                 unsigned x, unsigned y, unsigned width, unsigned height, const void *data, size_t size);
 int dkr_vk_image_clear(DkrGfx *gfx, DkrVkImage *image, const float color[4]);
 int dkr_vk_image_clear_depth(DkrGfx *gfx, DkrVkImage *image, VkImageAspectFlags aspects, float depth, uint32_t stencil);
+/* Clear exactly one attachment mip/layer and a clipped rectangle, preserving all other texels/aspects. */
+int dkr_vk_attachment_clear(DkrGfx *gfx, DkrVkImage *image, DkrVkView *view, VkRect2D rect,
+                            VkImageAspectFlags aspects, const VkClearValue *value);
 int dkr_vk_image_copy(DkrGfx *gfx, DkrVkImage *source, unsigned source_level, unsigned source_layer, unsigned sx, unsigned sy,
                       DkrVkImage *destination, unsigned destination_level, unsigned destination_layer, unsigned dx, unsigned dy,
                       unsigned width, unsigned height);
+/* Scaled copy of one color/depth subresource rectangle into another (vkCmdBlitImage; linear for color). */
+int dkr_vk_image_blit(DkrGfx *gfx, DkrVkImage *source, unsigned source_level, unsigned source_layer, const int32_t source_rect[4],
+                      DkrVkImage *destination, unsigned destination_level, unsigned destination_layer, const int32_t destination_rect[4]);
 int dkr_vk_draw(DkrGfx *gfx, const DkrVkDraw *draw);
 int dkr_vk_image_present(DkrGfx *gfx, DkrVkImage *image, const char *capture_bmp);
 /* Presented images are stored bottom-up (lower-left window origin): flip them vertically on the way to the window. */
@@ -118,7 +130,7 @@ struct DkrVkImage {
     VkImageView target_view;
     VkImageUsageFlags usage;
     DkrVkView *views;
-    int initialized;
+    int initialized, dirty;
 };
 struct DkrVkView { DkrVkView *next; DkrVkImage *image; DkrVkViewInfo info; VkImageView view; };
 struct DkrVkBuffer {
@@ -126,6 +138,8 @@ struct DkrVkBuffer {
     DkrGfx *owner;
     VkBuffer buffer;
     VkDeviceMemory memory;
+    void *mapped;
+    int coherent;
     size_t size;
     int temporary;      /* 1: a slice of the batch upload arena, released when the next batch begins */
     VkDeviceSize base;  /* byte offset of this buffer inside `buffer` (non-zero only for arena slices) */

@@ -21,7 +21,13 @@ Ferramenta de **recompilação estática** que, a longo prazo, deve converter a 
 - Testes diferenciais: o mesmo código ARM64 roda no Unicorn e recompilado, e precisa dar o mesmo resultado
   (dezenas de milhares de instruções aleatórias e programas C inteiros em O0/O1/O2/Os).
 
-## Começar
+## Jogar
+
+Dê dois cliques em **`DKRecomp.bat`**. O launcher prepara o jogo a partir do **seu** NSP (com o seu `nstool` e as suas
+chaves), compila e abre o jogo, com opções de janela/tela cheia, resolução de renderização até 8K, limite de FPS,
+VSync e áudio. Guia: [docs/LAUNCHER_E_CONFIGURACOES.md](docs/LAUNCHER_E_CONFIGURACOES.md).
+
+## Começar (desenvolvimento)
 
 Requisitos: Windows 10/11 x86-64, Python 3.13, Git.
 
@@ -50,6 +56,7 @@ Mais comandos em [docs/TESTING.md](docs/TESTING.md).
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Modelo de execução e organização do código |
 | [docs/ROADMAP.md](docs/ROADMAP.md) | Marcos (MVP 1–6) e critérios de aceitação |
 | [docs/PROGRESS.md](docs/PROGRESS.md) | Progresso real, com evidências |
+| [docs/LAUNCHER_E_CONFIGURACOES.md](docs/LAUNCHER_E_CONFIGURACOES.md) | Launcher, configurações, resolução, FPS e vídeos |
 | [docs/TESTING.md](docs/TESTING.md) | Como testar e o que cada teste prova |
 | [docs/KNOWN_ISSUES.md](docs/KNOWN_ISSUES.md) | Limitações e bloqueios |
 | [docs/LEGAL.md](docs/LEGAL.md) | Regras sobre arquivos proprietários |

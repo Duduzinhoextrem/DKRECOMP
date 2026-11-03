@@ -141,7 +141,7 @@ typedef struct Session {
     Domain *dom; /* non-NULL once converted to a domain; clones of a domain session share it */
 } Session;
 static Session g_sess[MAX_SESSIONS];
-static Session *g_current; /* the session of the request being handled */
+static _Thread_local Session *g_current; /* the session of the request being handled */
 
 static void retain_service(Service *s) { s->refs++; }
 static void release_service(Service *s) {

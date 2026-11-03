@@ -7,6 +7,7 @@
 #include "nvn_internal.h"
 #include "nvn_replay.h"
 #include "perf.h"
+#include "dkr/settings.h"
 #include "../src/hos.h"
 
 #define WIN32_LEAN_AND_MEAN
@@ -142,7 +143,11 @@ static void device_get_integer(Cpu *c) { /* void nvnDeviceGetInteger(const NVNde
     if (what >= sizeof g_devinfo / sizeof *g_devinfo) hos_stop(c, "nvnDeviceGetInteger: property %#x is not known", what);
     int value = g_devinfo[what];
     memcpy((void *)(uintptr_t)c->x[2], &value, sizeof value);
-    hos_log("nvn: DeviceGetInteger %#x -> %d\n", what, value);
+    static unsigned logged;
+    if (logged < 16 || getenv("DKR_VERBOSE_NVN")) {
+        logged++;
+        hos_log("nvn: DeviceGetInteger %#x -> %d\n", what, value);
+    }
 }
 
 /* NVNboolean nvnDeviceRegisterFastClear{Color,Colori,Colorui}(dev, const T *color, NVNformat), ...Depth(dev, float).
@@ -262,7 +267,18 @@ void dkr_nvn_graphics_init(Cpu *c) {
     const char *hidden = getenv("DKR_GFX_HIDDEN");
     const char *val_env = getenv("DKR_VK_VALIDATION");
     int validation = (val_env && *val_env && strcmp(val_env, "0")) ? 1 : 0;
-    DkrGfxConfig config = {1280, 720, "DKRecomp", !(hidden && *hidden && strcmp(hidden, "0")), validation};
+    const DkrSettings *settings = dkr_settings();
+    unsigned width = settings->window_width, height = settings->window_height;
+    if (!width || !height) { /* 75% of the primary monitor's work area, 16:9 */
+        RECT work = {0, 0, 1920, 1080};
+        SystemParametersInfoW(SPI_GETWORKAREA, 0, &work, 0);
+        width = (unsigned)(work.right - work.left) * 3 / 4; height = width * 9 / 16;
+        if (height > (unsigned)(work.bottom - work.top) * 3 / 4) { height = (unsigned)(work.bottom - work.top) * 3 / 4; width = height * 16 / 9; }
+        if (width < 640 || height < 360) { width = 1280; height = 720; }
+    }
+    DkrGfxConfig config = {width, height, "DKRecomp", !(hidden && *hidden && strcmp(hidden, "0")), validation,
+                           settings->display_mode == DKR_DISPLAY_BORDERLESS, (int)settings->vsync, settings->linear_filter,
+                           settings->keep_aspect};
     if (dkr_gfx_create(&g_graphics, &config)) hos_stop(c, "Vulkan initialization failed: %s", dkr_gfx_error(g_graphics));
     hos_log("nvn: host Vulkan device ready, guest work memory %#llx +%#llx; no game frame submitted\n",
             (unsigned long long)g_work_memory, (unsigned long long)g_work_size);

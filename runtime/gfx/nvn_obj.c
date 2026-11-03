@@ -13,6 +13,7 @@
 #include "nvn_shaders.h"
 #include "nvn_replay.h"
 #include "perf.h"
+#include "dkr/settings.h"
 #include "../src/hos.h"
 
 #define WIN32_LEAN_AND_MEAN
@@ -89,8 +90,12 @@ static void pool_initialize(Cpu *c) { /* NVNboolean (NVNmemoryPool *, const NVNm
         hos_stop(c, "nvn: memory pool storage %#llx+%#llx is not 4 KiB aligned", (unsigned long long)p.mem,
                  (unsigned long long)p.size);
     *(Pool *)PTR(c->x[0]) = p;
-    hos_log("nvn: MemoryPool %#llx storage %#llx+%#llx flags %#x\n", (unsigned long long)c->x[0],
-            (unsigned long long)p.mem, (unsigned long long)p.size, p.flags);
+    static unsigned pool_logged;
+    if (pool_logged < 16 || getenv("DKR_VERBOSE_NVN")) {
+        pool_logged++;
+        hos_log("nvn: MemoryPool %#llx storage %#llx+%#llx flags %#x\n", (unsigned long long)c->x[0],
+                (unsigned long long)p.mem, (unsigned long long)p.size, p.flags);
+    }
     c->x[0] = 1;
 }
 
@@ -281,10 +286,14 @@ static void texture_initialize(Cpu *c) { /* NVNboolean (NVNtexture *, const NVNt
                      (unsigned long long)t.storage_size, (unsigned long long)p->size);
     }
     memcpy(PTR(c->x[0]), &t, sizeof t);
-    hos_log("nvn: Texture #%u %ux%ux%u levels %u format %#x target %u flags %#x storage %#llx+%#llx\n", t.serial,
-            tex32(&t, TB_WIDTH), tex32(&t, TB_HEIGHT), tex32(&t, TB_DEPTH), tex32(&t, TB_LEVELS),
-            tex32(&t, TB_FORMAT), tex32(&t, TB_TARGET), tex32(&t, TB_FLAGS), (unsigned long long)off,
-            (unsigned long long)t.storage_size);
+    static unsigned tex_logged;
+    if (tex_logged < 16 || getenv("DKR_VERBOSE_NVN")) {
+        tex_logged++;
+        hos_log("nvn: Texture #%u %ux%ux%u levels %u format %#x target %u flags %#x storage %#llx+%#llx\n", t.serial,
+                tex32(&t, TB_WIDTH), tex32(&t, TB_HEIGHT), tex32(&t, TB_DEPTH), tex32(&t, TB_LEVELS),
+                tex32(&t, TB_FORMAT), tex32(&t, TB_TARGET), tex32(&t, TB_FLAGS), (unsigned long long)off,
+                (unsigned long long)t.storage_size);
+    }
     c->x[0] = 1;
 }
 
@@ -336,11 +345,12 @@ static void sampler_finalize(Cpu *c) { ((Sampler *)PTR(c->x[0]))->magic = 0; }
  * registered descriptors live in a host table keyed by the descriptor memory, which is what command buffers bind. */
 typedef struct { uint64_t pool, offset; uint32_t count, pad; } DescPool;
 FITS(DescPool, 0x18);
-typedef struct { uint8_t texture[sizeof(Texture)], view[0x24]; } TexDesc; /* view: NVNtextureView, 0x24 bytes */
+typedef struct { NvnTextureInfo info; uint8_t valid; } TexDesc;
 typedef struct { uint8_t sampler[sizeof(Sampler)]; } SampDesc;
 typedef struct { uint64_t memory; uint32_t count, kind; void *entries; } DescTable;
 static DescTable g_tables[64];
 static SRWLOCK g_tables_lock = SRWLOCK_INIT;
+static void texture_info(Cpu *c, const Texture *t, const uint8_t *view, NvnTextureInfo *o);
 
 static void desc_pool_initialize(Cpu *c, int kind) { /* NVNboolean (pool, const NVNmemoryPool *, ptrdiff_t, int n) */
     Pool *p = pool_of(c, c->x[1]);
@@ -381,11 +391,12 @@ static void *desc_entry(Cpu *c, uint64_t pool_obj, int kind, int id) {
 }
 
 static void texture_pool_register(Cpu *c) { /* RegisterTexture/RegisterImage (pool, int id, texture, view) */
+    NvnTextureInfo info;
+    texture_info(c, texture_of(c, c->x[2]), c->x[3] ? PTR(c->x[3]) : NULL, &info);
     AcquireSRWLockExclusive(&g_tables_lock);
     TexDesc *e = desc_entry(c, c->x[0], 0, (int)c->x[1]);
-    memcpy(e->texture, texture_of(c, c->x[2]), sizeof(Texture));
-    if (c->x[3]) memcpy(e->view, PTR(c->x[3]), sizeof e->view);
-    else memset(e->view, 0, sizeof e->view);
+    e->info = info;
+    e->valid = 1;
     ReleaseSRWLockExclusive(&g_tables_lock);
 }
 
@@ -441,12 +452,12 @@ void dkr_nvn_texture_info(Cpu *c, uint64_t texture, const void *view, NvnTexture
     texture_info(c, texture_of(c, texture), view, out);
 }
 void dkr_nvn_texture_binding(Cpu *c, uint64_t pool, unsigned id, NvnTextureInfo *out) {
-    TexDesc entry;
     AcquireSRWLockShared(&g_tables_lock);
-    memcpy(&entry, desc_entry(c, pool, 0, (int)id), sizeof entry);
+    TexDesc *e = desc_entry(c, pool, 0, (int)id);
+    uint8_t valid = e->valid;
+    if (valid) *out = e->info;
     ReleaseSRWLockShared(&g_tables_lock);
-    Texture t; memcpy(&t, entry.texture, sizeof t);
-    texture_info(c, &t, entry.view, out);
+    if (!valid) hos_stop(c, "nvn: texture descriptor is not initialized");
 }
 void dkr_nvn_sampler_binding(Cpu *c, uint64_t pool, unsigned id, uint8_t builder[0x48]) {
     Sampler entry;
@@ -784,14 +795,43 @@ static void queue_present(Cpu *c) { /* void (NVNqueue *, NVNwindow *, int index)
     LARGE_INTEGER now, freq;
     QueryPerformanceFrequency(&freq);
     QueryPerformanceCounter(&now);
+    /* The game's swap interval at 60 Hz, or the user's frame-rate limit if lower; 0 = no host pacing at all */
+    unsigned limit = dkr_settings()->fps_limit;
     LONGLONG period = freq.QuadPart * (s->interval > 0 ? s->interval : 1) / 60;
+    if (limit && freq.QuadPart / limit > period) period = freq.QuadPart / limit;
+    if (!limit) period = 0;
+    /* With FIFO VSync the display already paces presentation: a host sleep on top of it beat against the refresh
+     * (53 fps measured at a 60 fps limit). The host only paces below the display's refresh rate. */
+    static int refresh = -1;
+    if (refresh < 0) { HDC dc = GetDC(NULL); refresh = dc ? GetDeviceCaps(dc, VREFRESH) : 0; if (dc) ReleaseDC(NULL, dc); }
+    if (dkr_settings()->vsync == DKR_VSYNC_ON && refresh > 1 && (!limit || limit >= (unsigned)refresh)) period = 0;
     /* Late by more than a few frames: present now and restart the cadence from here. Adding a period after the
      * reset made every late frame sleep a full extra period, which halved an already low frame rate. */
-    if (!s->deadline.QuadPart || now.QuadPart - s->deadline.QuadPart > period * 4) s->deadline = now;
+    if (!period || !s->deadline.QuadPart || now.QuadPart - s->deadline.QuadPart > period * 4) s->deadline = now;
     else s->deadline.QuadPart += period;
     LONGLONG wait = s->deadline.QuadPart - now.QuadPart;
     int64_t pace0 = dkr_perf_on ? dkr_perf_now() : 0;
-    if (wait > 0) Sleep((DWORD)(wait * 1000 / freq.QuadPart));
+    if (wait > 0) {
+        static HANDLE timer = NULL;
+        static int timer_init = 0;
+        if (!timer_init) {
+            timer_init = 1;
+            timer = CreateWaitableTimerExW(NULL, NULL, 0x2 /* CREATE_WAITABLE_TIMER_HIGH_RESOLUTION */, TIMER_ALL_ACCESS);
+        }
+        LONGLONG margin = freq.QuadPart / 1000;
+        if (wait > margin && timer) {
+            LARGE_INTEGER due = {.QuadPart = -((wait - margin) * 10000000 / freq.QuadPart)};
+            if (due.QuadPart < 0 && SetWaitableTimer(timer, &due, 0, NULL, NULL, FALSE))
+                WaitForSingleObject(timer, 50);
+        } else if (wait > margin) {
+            Sleep((DWORD)((wait - margin) * 1000 / freq.QuadPart));
+        }
+        for (;;) {
+            QueryPerformanceCounter(&now);
+            if (now.QuadPart >= s->deadline.QuadPart) break;
+            YieldProcessor();
+        }
+    }
     DKR_PERF_ADD(pace, dkr_perf_now() - pace0);
     dkr_nvn_replay_present(c, s->textures[i], s->frames + 1);
     if (++s->frames == 1 || s->frames % 60 == 0)

@@ -81,9 +81,12 @@ def parse(raw: bytes, check_hashes: bool = True) -> Nso:
         raise NsoError("truncated header")
     flags = struct.unpack_from("<I", raw, 0xC)[0]
     names = ("text", "ro", "data")
-    segs, blobs = [], []
+    segs = []
+    headers = [struct.unpack_from("<III", raw, 0x10 + i * 0x10) for i in range(3)]
+    end = max((mem_off + size for _file_off, mem_off, size in headers), default=0)
+    img = bytearray(end)
     for i, name in enumerate(names):
-        file_off, mem_off, size = struct.unpack_from("<III", raw, 0x10 + i * 0x10)
+        file_off, mem_off, size = headers[i]
         comp = struct.unpack_from("<I", raw, 0x60 + i * 4)[0]
         if file_off + comp > len(raw):
             raise NsoError(f"{name}: segment past end of file")
@@ -97,13 +100,11 @@ def parse(raw: bytes, check_hashes: bool = True) -> Nso:
             want = raw[0xA0 + i * 0x20:0xC0 + i * 0x20]
             ok = hashlib.sha256(data).digest() == want
         segs.append(Segment(name, mem_off, size, ok))
-        blobs.append((mem_off, data))
+        img[mem_off:mem_off + len(data)] = data
+        del data
     bss = struct.unpack_from("<I", raw, 0x3C)[0]
-    end = max(off + len(d) for off, d in blobs)
-    img = bytearray(end)
-    for off, d in blobs:
-        img[off:off + len(d)] = d
     nso = Nso(build_id=raw[0x40:0x60].hex(), flags=flags, segments=segs, bss_size=bss, image=bytes(img))
+    del img
     _parse_mod0(nso)
     return nso
 

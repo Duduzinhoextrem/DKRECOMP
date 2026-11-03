@@ -189,22 +189,47 @@ int nvn_tex_level(const NvnTexDesc *d, unsigned level, unsigned layer, NvnTexLev
  * Full MIT notice: third_party/LICENSE-MacNativeGames.txt. Bounds checking/copy interface below is DKRecomp's. */
 uint64_t nvn_tex_block_offset(uint32_t x, uint32_t y, uint32_t z, uint32_t row_bytes, uint32_t rows, unsigned th, unsigned td) {
     uint32_t bh = 1u << th, bd = 1u << td;
-    uint64_t columns = (row_bytes + 63) / 64, block_rows = (rows + 8 * bh - 1) / (8 * bh), block = 512ull * bh * bd;
-    uint32_t gob = (x % 64 / 32)*256 + (y % 8 / 2)*64 + (x % 32 / 16)*32 + (y % 2)*16 + x % 16;
-    return (z / bd)*columns*block_rows*block + (y / (8*bh))*columns*block + (x / 64)*block +
-           ((z % bd)*bh + (y % (8*bh))/8)*512ull + gob;
+    uint64_t columns = (row_bytes + 63) >> 6, block_rows = (rows + 8 * bh - 1) >> (3 + th), block = 512ull << (th + td);
+    uint32_t gob = ((x & 32) << 3) | ((y & 6) << 5) | ((x & 16) << 1) | ((y & 1) << 4) | (x & 15);
+    return (z >> td) * columns * block_rows * block + (y >> (3 + th)) * columns * block + (x >> 6) * block +
+           (((z & (bd - 1)) << th) + ((y >> 3) & (bh - 1))) * 512ull + gob;
 }
 
 int nvn_tex_linearize(const NvnTexDesc *d, const void *storage, uint64_t size, unsigned level, unsigned layer,
                       void *linear, uint64_t bytes) {
     NvnTexLevel l;
     if (!storage || !linear || nvn_tex_level(d, level, layer, &l) || bytes < l.linear_size) return -1;
-    for (uint32_t z = 0; z < l.depth; z++) for (uint32_t y = 0; y < l.rows; y++) for (uint32_t x = 0; x < l.row_bytes; x += 16) {
-        uint32_t n = l.row_bytes - x < 16 ? l.row_bytes - x : 16;
-        uint64_t offset = l.offset + (l.linear_stride ? (uint64_t)y*l.linear_stride + x :
-            nvn_tex_block_offset(x, y, z, l.row_bytes, l.rows, l.tile_h, l.tile_d));
-        if (offset > size || n > size - offset) return -1;
-        memcpy((uint8_t *)linear + ((uint64_t)z*l.rows + y)*l.row_bytes + x, (const uint8_t *)storage + offset, n);
+    const uint8_t *src = (const uint8_t *)storage;
+    uint8_t *dst = (uint8_t *)linear;
+    if (l.linear_stride) {
+        if (!l.rows || !l.row_bytes) return 0;
+        uint64_t last_end = l.offset + (uint64_t)(l.rows - 1) * l.linear_stride + l.row_bytes;
+        if (l.offset > size || last_end > size) return -1;
+        if (l.linear_stride == l.row_bytes) {
+            memcpy(dst, src + l.offset, (size_t)l.linear_size);
+        } else {
+            for (uint32_t y = 0; y < l.rows; y++)
+                memcpy(dst + (size_t)y * l.row_bytes, src + l.offset + (size_t)y * l.linear_stride, l.row_bytes);
+        }
+        return 0;
+    }
+    unsigned th = l.tile_h, td = l.tile_d;
+    uint32_t bh = 1u << th, bd = 1u << td;
+    uint64_t columns = (l.row_bytes + 63) >> 6, block_rows = (l.rows + 8 * bh - 1) >> (3 + th), block = 512ull << (th + td);
+    for (uint32_t z = 0; z < l.depth; z++) {
+        uint64_t z_base = l.offset + (z >> td) * columns * block_rows * block + ((uint64_t)(z & (bd - 1)) << (th + 9));
+        for (uint32_t y = 0; y < l.rows; y++) {
+            uint64_t y_base = z_base + (y >> (3 + th)) * columns * block +
+                              ((uint64_t)((y >> 3) & (bh - 1)) << 9) + ((y & 6) << 5) + ((y & 1) << 4);
+            uint8_t *dst_row = dst + ((uint64_t)z * l.rows + y) * l.row_bytes;
+            for (uint32_t x = 0; x < l.row_bytes; x += 16) {
+                uint32_t n = l.row_bytes - x < 16 ? l.row_bytes - x : 16;
+                uint64_t offset = y_base + (x >> 6) * block + ((x & 32) << 3) + ((x & 16) << 1);
+                if (offset > size || n > size - offset) return -1;
+                if (n == 16) memcpy(dst_row + x, src + offset, 16);
+                else memcpy(dst_row + x, src + offset, n);
+            }
+        }
     }
     return 0;
 }

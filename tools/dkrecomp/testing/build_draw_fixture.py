@@ -14,14 +14,14 @@ def main():
     args = parser.parse_args()
     args.out.parent.mkdir(parents=True, exist_ok=True)
     lines = ['/* Generated from our synthetic SPIR-V assembly; no game data. */', '#include <stdint.h>']
-    for stage in ('vert', 'frag'):
-        path = args.out.parent / f'draw.{stage}.spv'
-        subprocess.run([str(args.assembler), '--target-env', 'vulkan1.1', str(args.source / f'draw.{stage}.spvasm'),
+    for name, stage in (('draw', 'vert'), ('draw', 'frag'), ('feedback', 'vert')):
+        path = args.out.parent / f'{name}.{stage}.spv'
+        subprocess.run([str(args.assembler), '--target-env', 'vulkan1.1', str(args.source / f'{name}.{stage}.spvasm'),
                         '-o', str(path)], check=True)
         subprocess.run([str(args.validator), '--target-env', 'vulkan1.3', str(path)], check=True)
         raw = path.read_bytes()
         words = struct.unpack(f'<{len(raw) // 4}I', raw)
-        lines.append(f'static const uint32_t draw_{stage}[] = {{')
+        lines.append(f'static const uint32_t {name}_{stage}[] = {{')
         for i in range(0, len(words), 8):
             lines.append('    ' + ', '.join(f'0x{w:08x}' for w in words[i:i + 8]) + ',')
         lines.append('};')

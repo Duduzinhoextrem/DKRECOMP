@@ -9,6 +9,8 @@
  * SVCs are implemented as the boot needs them. Anything else stops the run with a
  * report, so each attempt shows exactly where the next piece of work is. Register conventions follow switchbrew
  * (SVC page): outputs come back in w0 (result) and x1.. as the libnx wrappers expect. */
+#include "dkr/settings.h"
+#include "dkr/gamepad.h"
 #include "hos.h"
 #ifdef DKR_ENABLE_GFX
 #include "dkr/nvn.h"
@@ -387,6 +389,8 @@ static void svc_dispatch(Cpu *c, uint32_t n, uint64_t pc) {
     case 0x21: /* SendSyncRequest(handle w0): the message is in the thread local region */
         c->x[0] = hos_send_sync_request(c, (uint32_t)c->x[0], (uint8_t *)(uintptr_t)c->tpidrro, 0x100);
         return;
+    }
+    switch (n) {
     case 0x22: /* SendSyncRequestWithUserBuffer(buffer x0, size x1, handle w2) */
         c->x[0] = hos_send_sync_request(c, (uint32_t)c->x[2], (uint8_t *)(uintptr_t)c->x[0], (uint32_t)c->x[1]);
         return;
@@ -414,6 +418,15 @@ static void svc_dispatch(Cpu *c, uint32_t n, uint64_t pc) {
 }
 
 static void svc_handler(Cpu *c, uint32_t n, uint64_t pc) {
+    if (quiet_svc(n)) {
+        switch (n) {
+        case 0x10: kern_note_svc(svc_name(n), pc); c->x[0] = (uint64_t)kern_current_core(); return;
+        case 0x1E: kern_note_svc(svc_name(n), pc); c->x[0] = rt_cntvct(); return;
+        case 0x24: kern_note_svc(svc_name(n), pc); c->x[0] = R_OK; c->x[1] = 0x51; return;
+        case 0x5F: kern_note_svc(svc_name(n), pc); c->x[0] = R_OK; return;
+        default: break;
+        }
+    }
     kern_lock();
     svc_dispatch(c, n, pc);
     kern_unlock();
@@ -479,6 +492,11 @@ static DWORD WINAPI watchdog(void *p) {
 int main(int argc, char **argv) {
     const char *dir = argc > 1 ? argv[1] : ".";
     unsigned seconds = argc > 2 ? (unsigned)atoi(argv[2]) : 60;
+    char default_config[4096];
+    snprintf(default_config, sizeof default_config, "%s/../../config.local.toml", dir);
+    const char *config_path = getenv("DKR_CONFIG");
+    dkr_settings_load(config_path ? config_path : default_config);
+    dkr_gamepad_init();
     char default_romfs[4096];
     snprintf(default_romfs, sizeof default_romfs, "%s/../../user_files/romfs.bin", dir);
     const char *romfs_path = argc > 3 ? argv[3] : getenv("DKR_ROMFS");
@@ -489,6 +507,13 @@ int main(int argc, char **argv) {
     hos_save_configure(save_root ? save_root : default_save_root, PROGRAM_ID);
     g_log = fopen("dkctf_boot.log", "w");
     SetUnhandledExceptionFilter(crash_report);
+    {
+        const DkrSettings *s = dkr_settings();
+        hos_log("settings: %s, window %ux%u, render scale %.2f, vsync %d, fps limit %u, filter %s, aspect %s, stats %s, mute %s\n",
+                s->display_mode == DKR_DISPLAY_BORDERLESS ? "borderless" : "windowed", s->window_width, s->window_height,
+                s->render_scale, (int)s->vsync, s->fps_limit, s->linear_filter ? "linear" : "nearest",
+                s->keep_aspect ? "kept" : "stretched", s->show_stats ? "on" : "off", s->mute ? "on" : "off");
+    }
     if (rt_load_modules(dkr_modules, dkr_module_count, dir)) return 2;
     for (size_t i = 0; i < dkr_module_count; i++) {
         const DkrModule *m = &dkr_modules[i];

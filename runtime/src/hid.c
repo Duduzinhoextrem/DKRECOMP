@@ -1,7 +1,9 @@
 /* Initial HID service: the applet resource owns the service's 256 KiB input shared memory.
  * Command/layout reference: switchbrew HID services, firmware 4.x. Initially all controllers are disconnected.
- * Host input (keyboard + XInput) polls asynchronously and updates shared memory Npad rings at ~200 Hz. */
+ * Host input (keyboard + SDL3 / XInput) polls asynchronously and updates shared memory Npad rings at ~200 Hz. */
 #include "hos.h"
+#include "dkr/gamepad.h"
+#include "dkr/settings.h"
 #include <stdlib.h>
 #include <string.h>
 
@@ -9,6 +11,7 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #define DKR_BARRIER() MemoryBarrier()
+static SRWLOCK g_hid_lock = SRWLOCK_INIT;
 #else
 #define DKR_BARRIER() __atomic_thread_fence(__ATOMIC_SEQ_CST)
 #endif
@@ -82,25 +85,20 @@ static float g_vibration_value[4] = {0.f, 160.f, 0.f, 320.f};
 static uint64_t g_sampling_number = 0;
 
 static int g_test_input_override = 0;
-static uint64_t g_test_buttons = 0;
-static int32_t g_test_lx = 0, g_test_ly = 0, g_test_rx = 0, g_test_ry = 0;
+static DkrGamepadState g_test_players[2];
 
-void hos_hid_set_test_input(uint64_t buttons, int32_t lx, int32_t ly, int32_t rx, int32_t ry) {
+void hos_hid_set_test_player_input(unsigned player, int connected, uint64_t buttons,
+                                  int32_t lx, int32_t ly, int32_t rx, int32_t ry) {
+    if (player >= 2) return;
     g_test_input_override = 1;
-    g_test_buttons = buttons;
-    g_test_lx = lx;
-    g_test_ly = ly;
-    g_test_rx = rx;
-    g_test_ry = ry;
+    g_test_players[player] = (DkrGamepadState){buttons, lx, ly, rx, ry, connected};
 }
-
+void hos_hid_set_test_input(uint64_t buttons, int32_t lx, int32_t ly, int32_t rx, int32_t ry) {
+    hos_hid_set_test_player_input(0, 1, buttons, lx, ly, rx, ry);
+}
 void hos_hid_clear_test_input(void) {
     g_test_input_override = 0;
-    g_test_buttons = 0;
-    g_test_lx = 0;
-    g_test_ly = 0;
-    g_test_rx = 0;
-    g_test_ry = 0;
+    memset(g_test_players, 0, sizeof g_test_players);
 }
 
 typedef struct VibrationList {
@@ -217,36 +215,6 @@ static void load_user32(void) {
     }
 }
 
-typedef struct {
-    WORD wButtons;
-    BYTE bLeftTrigger;
-    BYTE bRightTrigger;
-    SHORT sThumbLX;
-    SHORT sThumbLY;
-    SHORT sThumbRX;
-    SHORT sThumbRY;
-} XINPUT_GAMEPAD_LOCAL;
-
-typedef struct {
-    DWORD dwPacketNumber;
-    XINPUT_GAMEPAD_LOCAL Gamepad;
-} XINPUT_STATE_LOCAL;
-
-typedef DWORD (WINAPI *XInputGetState_Fn)(DWORD dwUserIndex, XINPUT_STATE_LOCAL *pState);
-static XInputGetState_Fn pXInputGetState = NULL;
-static int g_xinput_loaded = 0;
-
-static void load_xinput(void) {
-    if (g_xinput_loaded) return;
-    g_xinput_loaded = 1;
-    HMODULE h = LoadLibraryA("xinput1_4.dll");
-    if (!h) h = LoadLibraryA("xinput1_3.dll");
-    if (!h) h = LoadLibraryA("xinput9_1_0.dll");
-    if (h) {
-        pXInputGetState = (XInputGetState_Fn)GetProcAddress(h, "XInputGetState");
-    }
-}
-
 /* GetAsyncKeyState reads the global keyboard: without this check, typing in any other window drove the game. */
 static int game_has_focus(void) {
     HWND foreground = GetForegroundWindow();
@@ -349,55 +317,7 @@ static void poll_keyboard(uint64_t *buttons, int32_t *lx, int32_t *ly, int32_t *
     #undef KEY_DOWN
 }
 
-static void poll_xinput(uint64_t *buttons, int32_t *lx, int32_t *ly, int32_t *rx, int32_t *ry) {
-    if (!g_xinput_loaded) load_xinput();
-    if (!pXInputGetState) return;
 
-    XINPUT_STATE_LOCAL st;
-    if (pXInputGetState(0, &st) != 0) return;
-
-    WORD b = st.Gamepad.wButtons;
-    if (b & 0x1000) *buttons |= (1ull << 1); // A -> Switch B
-    if (b & 0x2000) *buttons |= (1ull << 0); // B -> Switch A
-    if (b & 0x4000) *buttons |= (1ull << 3); // X -> Switch Y
-    if (b & 0x8000) *buttons |= (1ull << 2); // Y -> Switch X
-
-    if (b & 0x0001) *buttons |= (1ull << 13); // Up
-    if (b & 0x0002) *buttons |= (1ull << 15); // Down
-    if (b & 0x0004) *buttons |= (1ull << 12); // Left
-    if (b & 0x0008) *buttons |= (1ull << 14); // Right
-
-    if (b & 0x0100) *buttons |= (1ull << 6); // LB -> L
-    if (b & 0x0200) *buttons |= (1ull << 7); // RB -> R
-    if (st.Gamepad.bLeftTrigger > 30)  *buttons |= (1ull << 8); // LT -> ZL
-    if (st.Gamepad.bRightTrigger > 30) *buttons |= (1ull << 9); // RT -> ZR
-    if (b & 0x0040) *buttons |= (1ull << 4); // LS -> Stick L
-    if (b & 0x0080) *buttons |= (1ull << 5); // RS -> Stick R
-    if (b & 0x0010) *buttons |= (1ull << 10); // Start -> Plus
-    if (b & 0x0020) *buttons |= (1ull << 11); // Back -> Minus
-
-    // Left stick with deadzone (~4000)
-    int sx = st.Gamepad.sThumbLX, sy = st.Gamepad.sThumbLY;
-    if (abs(sx) > 4000) {
-        if (sx > 32767) sx = 32767; else if (sx < -32767) sx = -32767;
-        *lx = sx;
-    }
-    if (abs(sy) > 4000) {
-        if (sy > 32767) sy = 32767; else if (sy < -32767) sy = -32767;
-        *ly = sy;
-    }
-
-    // Right stick with deadzone (~4000)
-    int rsx = st.Gamepad.sThumbRX, rsy = st.Gamepad.sThumbRY;
-    if (abs(rsx) > 4000) {
-        if (rsx > 32767) rsx = 32767; else if (rsx < -32767) rsx = -32767;
-        *rx = rsx;
-    }
-    if (abs(rsy) > 4000) {
-        if (rsy > 32767) rsy = 32767; else if (rsy < -32767) rsy = -32767;
-        *ry = rsy;
-    }
-}
 #endif
 
 static void add_stick_direction_buttons(uint64_t *buttons, int32_t lx, int32_t ly, int32_t rx, int32_t ry) {
@@ -413,46 +333,67 @@ static void add_stick_direction_buttons(uint64_t *buttons, int32_t lx, int32_t l
 }
 
 void hos_hid_tick(void) {
-    if (!g_npad_active || !g_memory) return;
+#ifdef _WIN32
+    AcquireSRWLockExclusive(&g_hid_lock);
+#endif
+    if (!g_npad_active || !g_memory) {
+#ifdef _WIN32
+        ReleaseSRWLockExclusive(&g_hid_lock);
+#endif
+        return;
+    }
     uint8_t *memory = hos_shared_memory_data(g_memory, NULL);
-    if (!memory) return;
+    if (!memory) {
+#ifdef _WIN32
+        ReleaseSRWLockExclusive(&g_hid_lock);
+#endif
+        return;
+    }
 
-    uint64_t buttons = 0;
-    int32_t lx = 0, ly = 0, rx = 0, ry = 0;
-
+    DkrGamepadState players[2] = {{0}};
     if (g_test_input_override) {
-        buttons = g_test_buttons;
-        lx = g_test_lx;
-        ly = g_test_ly;
-        rx = g_test_rx;
-        ry = g_test_ry;
+        memcpy(players, g_test_players, sizeof players);
     } else {
 #ifdef _WIN32
-        poll_keyboard(&buttons, &lx, &ly, &rx, &ry);
-        poll_xinput(&buttons, &lx, &ly, &rx, &ry);
-        buttons |= script_buttons();
+        dkr_gamepad_poll_players(players);
+        if (!game_has_focus() && !dkr_settings()->input_background)
+            for (unsigned p = 0; p < 2; p++) {
+                int connected = players[p].connected;
+                memset(&players[p], 0, sizeof players[p]);
+                players[p].connected = connected;
+            }
+        poll_keyboard(&players[0].buttons, &players[0].lx, &players[0].ly, &players[0].rx, &players[0].ry);
+        players[0].buttons |= script_buttons();
 #endif
+        players[0].connected = 1; /* keyboard is always available to player 1 */
     }
-    add_stick_direction_buttons(&buttons, lx, ly, rx, ry);
-
     uint64_t sample = ++g_sampling_number;
-
-    // Slot 0 (Player 1)
-    uint8_t *slot0 = memory + 0x9a00;
-    uint32_t style0 = (1u << 0); // FullKey (1) - single active controller style
-    if (g_supported_styles && (g_supported_styles & style0)) {
-        style0 = g_supported_styles & style0;
+    for (unsigned p = 0; p < 2; p++) {
+        DkrGamepadState *pad = &players[p];
+        uint8_t *slot = memory + 0x9a00 + p * 0x5000;
+        uint32_t old_style, style = pad->connected && (g_supported_ids & (1u << p)) &&
+            (!g_supported_styles || (g_supported_styles & 1)) ? 1 : 0;
+        memcpy(&old_style, slot, 4);
+        memcpy(slot, &style, 4);
+        if (!style) memset(pad, 0, sizeof *pad);
+        add_stick_direction_buttons(&pad->buttons, pad->lx, pad->ly, pad->rx, pad->ry);
+        npad_lifo_write((NpadCommonLifo *)(slot + 0x28), sample, pad->buttons,
+                        pad->lx, pad->ly, pad->rx, pad->ry, style ? 1 : 0);
+        if (style) sixaxis_lifo_write((SixAxisSensorLifo *)(slot + 0x1758), sample);
+        if (style != old_style && g_style_events[p]) hos_event_set(g_style_events[p], 1);
     }
-    memcpy(slot0 + 0, &style0, sizeof style0);
-    npad_lifo_write((NpadCommonLifo *)(slot0 + 0x28), sample, buttons, lx, ly, rx, ry, 1);
-    sixaxis_lifo_write((SixAxisSensorLifo *)(slot0 + 0x1758), sample);
-
-    // Slot 8 (Handheld)
+    /* Compatibility alias of player 1 for clients requesting the Handheld style. */
     uint8_t *slot8 = memory + 0x9a00 + 8 * 0x5000;
-    uint32_t style8 = (1u << 1); // Handheld (2)
-    memcpy(slot8 + 0, &style8, sizeof style8);
-    npad_lifo_write((NpadCommonLifo *)(slot8 + 0x28 + 1 * 0x350), sample, buttons, lx, ly, rx, ry, 1);
-    sixaxis_lifo_write((SixAxisSensorLifo *)(slot8 + 0x1e60), sample);
+    uint32_t style8 = (g_supported_ids & (1u << 8)) && (!g_supported_styles || (g_supported_styles & 2)) ? 2 : 0;
+    memcpy(slot8, &style8, 4);
+    DkrGamepadState *p1 = &players[0];
+    npad_lifo_write((NpadCommonLifo *)(slot8 + 0x28 + 0x350), sample,
+        style8 ? p1->buttons : 0, style8 ? p1->lx : 0, style8 ? p1->ly : 0,
+        style8 ? p1->rx : 0, style8 ? p1->ry : 0, style8 ? 1 : 0);
+    if (style8) sixaxis_lifo_write((SixAxisSensorLifo *)(slot8 + 0x1e60), sample);
+#ifdef _WIN32
+    ReleaseSRWLockExclusive(&g_hid_lock);
+#endif
 }
 
 #ifdef _WIN32
@@ -485,7 +426,7 @@ static DWORD WINAPI npad_worker_thread(LPVOID arg) {
 static void stop_npad_thread(void) {
     if (!g_npad_thread) return;
     g_npad_thread_running = 0;
-    WaitForSingleObject(g_npad_thread, 200);
+    WaitForSingleObject(g_npad_thread, INFINITE);
     CloseHandle(g_npad_thread);
     g_npad_thread = NULL;
 }
@@ -670,21 +611,31 @@ void hos_hid_handle(Cpu *c, Service *s, const IpcRequest *rq, IpcReply *rp) {
         hos_reply_interface(rp, list);
         return;
     }
-    case 201: /* SendVibrationValue(u32 handle, pad, VibrationValue at +8, u64 aruid). No host rumble yet: */
-        if (rq->args_size < 24) { rp->result = HOS_KERNEL(103); return; } /* accept and remember the value */
+    case 201: /* SendVibrationValue(u32 handle, pad, VibrationValue at +8, u64 aruid) */
+        if (rq->args_size < 24) { rp->result = HOS_KERNEL(103); return; }
         memcpy(g_vibration_value, rq->args + 8, sizeof g_vibration_value);
+        if (g_vibration_permitted)
+            dkr_gamepad_rumble(0, g_vibration_value[0], g_vibration_value[2]);
         return;
     case 202: /* GetActualVibrationValue(u32 handle, pad, u64 aruid) -> VibrationValue */
         if (rq->args_size < 4) { rp->result = HOS_KERNEL(103); return; }
         memcpy(rp->data + rp->data_size, g_vibration_value, sizeof g_vibration_value);
         rp->data_size += sizeof g_vibration_value;
         return;
-    case 206: /* SendVibrationValues(u64 aruid, A handles, A values): accepted, no host rumble */
-        if (rq->na >= 2 && rq->a[1].size >= 16) memcpy(g_vibration_value, (const void *)(uintptr_t)rq->a[1].addr, sizeof g_vibration_value);
+    case 206: /* SendVibrationValues(u64 aruid, A handles, A values) */
+        if (rq->na >= 2 && rq->a[1].size >= 16) {
+            memcpy(g_vibration_value, (const void *)(uintptr_t)rq->a[1].addr, sizeof g_vibration_value);
+            if (g_vibration_permitted)
+                dkr_gamepad_rumble(0, g_vibration_value[0], g_vibration_value[2]);
+        }
         return;
     case 204: /* PermitVibration(bool) */
         if (!rq->args_size) { rp->result = HOS_KERNEL(103); return; }
         g_vibration_permitted = rq->args[0] != 0;
+        if (!g_vibration_permitted) {
+            dkr_gamepad_rumble(0, 0.f, 0.f);
+            dkr_gamepad_rumble(1, 0.f, 0.f);
+        }
         return;
     case 205: /* IsVibrationPermitted -> bool */
         RP_PUT(rp, uint8_t, g_vibration_permitted);

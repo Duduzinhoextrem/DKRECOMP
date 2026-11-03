@@ -151,6 +151,38 @@ static int load(Cpu *c, const wchar_t *path, unsigned stage, DkrShaderCache *out
     if (ok && (out->stage != stage || memcmp(out->compiler, client.identity, 32))) { dkr_shader_cache_free(out); ok = 0; }
     return ok;
 }
+static int spv_has_xfb(const DkrShaderCache *cache) {
+    size_t words = cache->spv_size / 4;
+    for (size_t p = 5; p < words;) {
+        unsigned count = cache->spv[p] >> 16, op = cache->spv[p] & 0xffff;
+        if (!count || count > words - p) break;
+        if (op == 17 && count == 2 && cache->spv[p + 1] == 53) return 1; /* OpCapability TransformFeedback */
+        if (op != 17) break; /* capabilities come first in SPIR-V modules */
+        p += count;
+    }
+    return 0;
+}
+static int load_compatible_variant(Cpu *c, const NvnShader *shader, const NvnShaderInputs *inputs, DkrShaderCache *out) {
+    wchar_t pattern[4096];
+    swprintf(pattern, 4096, L"%ls/%hs_*.dkrspv", client.directory, shader->key);
+    WIN32_FIND_DATAW fd;
+    HANDLE h = FindFirstFileW(pattern, &fd);
+    if (h == INVALID_HANDLE_VALUE) return 0;
+    int found = 0;
+    do {
+        wchar_t path[4096];
+        swprintf(path, 4096, L"%ls/%ls", client.directory, fd.cFileName);
+        if (load(c, path, shader->stage, out)) {
+            if (!out->notes && spv_has_xfb(out) == (inputs->transform_feedback != 0)) {
+                found = 1;
+                break;
+            }
+            dkr_shader_cache_free(out);
+        }
+    } while (FindNextFileW(h, &fd));
+    FindClose(h);
+    return found;
+}
 
 void nvn_shader_translate(Cpu *c, const NvnShader *shader, const NvnShaderInputs *inputs, DkrShaderCache *cache) {
     initialize(c);
@@ -161,6 +193,7 @@ void nvn_shader_translate(Cpu *c, const NvnShader *shader, const NvnShaderInputs
         if (cache->notes) hos_stop(c, "shader: cached variant %s still has unresolved resource assumptions", key);
         return;
     }
+    if (load_compatible_variant(c, shader, inputs, cache)) return;
     unsigned skip = shader->stage == 5 ? (ld32((uint64_t)(uintptr_t)shader->code) == 0x12345679 ? 0x100 : 0) : 0x30;
     swprintf(code_path, 4096, L"%ls/%hs.maxwell", client.directory, key);
     FILE *file = _wfopen(code_path, L"wb");
@@ -194,6 +227,17 @@ void nvn_shader_translate(Cpu *c, const NvnShader *shader, const NvnShaderInputs
     for (unsigned i = 0; i < 8; i++) if (inputs->outputs[i])
         append(c, &request, "%s\"%u\":\"%s\"", comma++ ? "," : "", i, kinds[integer_format(inputs->outputs[i])]);
     append(c, &request, "},\"primitive\":%u", inputs->primitive);
+    if (inputs->transform_feedback) {
+        NvnXfbLayout layout;
+        if (nvn_shader_xfb_layout(shader, &layout)) hos_stop(c, "shader: unsupported transform feedback control layout");
+        append(c, &request, ",\"xfb\":[");
+        for (unsigned b = 0; b < 4; b++) {
+            append(c, &request, "%s{\"stride\":%u,\"locations\":[", b ? "," : "", layout.strides[b]);
+            for (unsigned i = 0; i < layout.counts[b]; i++) append(c, &request, "%s%u", i ? "," : "", layout.locations[b][i]);
+            append(c, &request, "]}");
+        }
+        append(c, &request, "]");
+    }
     if (shader->stage == 5) append(c, &request, ",\"local\":[%u,%u,%u],\"shared\":%u",
         ld32((uint64_t)(uintptr_t)shader->control + 0x748), ld32((uint64_t)(uintptr_t)shader->control + 0x74c),
         ld32((uint64_t)(uintptr_t)shader->control + 0x750), ld32((uint64_t)(uintptr_t)shader->control + 0x754));
@@ -203,20 +247,30 @@ void nvn_shader_translate(Cpu *c, const NvnShader *shader, const NvnShaderInputs
     if (!WriteFile(client.input, request.data, (DWORD)request.size, &written, NULL) || written != request.size)
         hos_stop(c, "shader: translator request failed (%lu)", GetLastError());
     free(request.data);
-    char reply[8192]; unsigned length = 0; ULONGLONG deadline = GetTickCount64() + 30000;
+    char reply[8192]; unsigned length = 0; ULONGLONG start_tick = GetTickCount64(), deadline = start_tick + 30000;
+    unsigned spins = 0;
     for (;;) {
         DWORD available = 0;
         if (!PeekNamedPipe(client.output, NULL, 0, NULL, &available, NULL)) hos_stop(c, "shader: translator pipe closed");
         if (!available) {
             if (WaitForSingleObject(client.process, 0) == WAIT_OBJECT_0) hos_stop(c, "shader: translator exited; inspect translator.log");
-            if (GetTickCount64() >= deadline) hos_stop(c, "shader: translator request timed out; inspect translator.log");
-            Sleep(1); continue;
+            ULONGLONG now = GetTickCount64();
+            if (now >= deadline) hos_stop(c, "shader: translator request timed out; inspect translator.log");
+            if (spins++ < 2000) YieldProcessor();
+            else if (now - start_tick < 20) SwitchToThread();
+            else Sleep(1);
+            continue;
         }
-        char value; DWORD got;
-        if (!ReadFile(client.output, &value, 1, &got, NULL) || got != 1) hos_stop(c, "shader: cannot read compiler reply");
-        if (value == '\n') break;
-        if (length + 1 == sizeof reply) hos_stop(c, "shader: compiler reply exceeds limit");
-        if (value != '\r') reply[length++] = value;
+        char buf[512];
+        DWORD to_read = available < sizeof buf ? available : (DWORD)sizeof buf, got = 0;
+        if (!ReadFile(client.output, buf, to_read, &got, NULL) || !got) hos_stop(c, "shader: cannot read compiler reply");
+        int done = 0;
+        for (DWORD i = 0; i < got; i++) {
+            if (buf[i] == '\n') { done = 1; break; }
+            if (length + 1 == sizeof reply) hos_stop(c, "shader: compiler reply exceeds limit");
+            if (buf[i] != '\r') reply[length++] = buf[i];
+        }
+        if (done) break;
     }
     reply[length] = 0;
     if (strncmp(reply, "ok ", 3) || strcmp(reply + 3, key)) hos_stop(c, "shader: %s", reply);
