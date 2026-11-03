@@ -5,12 +5,17 @@
 #include "hos.h"
 #include "dkr/audio_sdk.h"
 #include <stdatomic.h>
+#include <stdio.h>
+#include <string.h>
 #include <stdlib.h>
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <mmsystem.h>
 
-enum { PARAM_SIZE = 0x38, FRAME_MAX = 1024, OUTPUT_BUFFERS = 4 };
+/* WinMM completes buffers on the audio engine's ~10 ms period, so 5 ms buffers (one SDK frame each) were
+ * consumed at ~116/s instead of 200/s: constant underruns and an audio clock running at ~58% speed. Each WinMM
+ * buffer now carries FRAMES_PER_BUFFER SDK frames (20 ms) and up to OUTPUT_BUFFERS of them may be queued. */
+enum { PARAM_SIZE = 0x38, FRAME_MAX = 1024, FRAMES_PER_BUFFER = 4, OUTPUT_BUFFERS = 6, PREBUFFER = 4 };
 static _Thread_local int t_in_open;
 static _Atomic int g_open;
 static uint64_t g_handle[2], g_owned_work, g_thread_memory, g_worker_entry;
@@ -19,6 +24,23 @@ static SRWLOCK g_render_lock = SRWLOCK_INIT;
 static int16_t g_frame[FRAME_MAX * 2];
 static int g_frame_samples;
 static uint64_t g_frames, g_nonsilent;
+
+/* DKR_PERF=1: once per second, how long one SDK audio frame takes to render and how often WinMM ran dry. */
+typedef struct AudioStats { int on; LARGE_INTEGER freq, start; int64_t busy, worst; unsigned frames, starved, late; uint64_t loud; } AudioStats;
+static void stats_frame(AudioStats *s, int64_t ticks, int starved) {
+    if (!s->on) return;
+    s->busy += ticks; if (ticks > s->worst) s->worst = ticks;
+    s->frames++; s->starved += starved != 0;
+    if (ticks * 48000 > (int64_t)g_samples * s->freq.QuadPart) s->late++;
+    LARGE_INTEGER now; QueryPerformanceCounter(&now);
+    if (now.QuadPart - s->start.QuadPart < s->freq.QuadPart) return;
+    double ms = 1000.0 / (double)s->freq.QuadPart;
+    fprintf(stderr, "perf audio: %u frames/s (need %u), render avg %.2f ms worst %.2f ms (budget %.2f), %u over budget, %u starved, %llu with sound\n",
+            s->frames, 48000 / (g_samples ? g_samples : 240), s->frames ? s->busy * ms / s->frames : 0, s->worst * ms,
+            g_samples * 1000.0 / 48000, s->late, s->starved, (unsigned long long)(g_nonsilent - s->loud));
+    s->loud = g_nonsilent;
+    s->start = now; s->busy = s->worst = 0; s->frames = s->starved = s->late = 0;
+}
 
 /* Calls use the current guest thread's actual registers/TLR. Preserve the surrounding host hook's arguments. */
 static uint64_t call(Cpu *c, uint64_t address, unsigned n, const uint64_t *args) {
@@ -102,8 +124,12 @@ static void render_main(Cpu *c) {
     int null_output = getenv("DKR_AUDIO_NULL") != NULL;
     MMRESULT error = null_output ? MMSYSERR_NODRIVER : waveOutOpen(&device, WAVE_MAPPER, &format,
                                          (DWORD_PTR)event, 0, CALLBACK_EVENT);
-    int16_t pcm[OUTPUT_BUFFERS][FRAME_MAX * 2] = {{0}};
+    static int16_t pcm[OUTPUT_BUFFERS][FRAME_MAX * 2 * FRAMES_PER_BUFFER]; /* one renderer at a time (g_open) */
     WAVEHDR headers[OUTPUT_BUFFERS] = {{0}};
+    AudioStats stats = {0};
+    const char *perf = getenv("DKR_PERF");
+    stats.on = perf && *perf && strcmp(perf, "0");
+    QueryPerformanceFrequency(&stats.freq); QueryPerformanceCounter(&stats.start);
     if (error) {
         hos_log("audio: %s (WinMM result %u); rendering with a timer, no host sound\n",
                 null_output ? "null output requested" : "output device unavailable", error);
@@ -112,27 +138,54 @@ static void render_main(Cpu *c) {
             kern_lock(); kern_sleep((int64_t)g_samples * 1000000000 / 48000); kern_unlock();
         }
     } else {
-        hos_log("audio: WinMM output opened, 48 kHz stereo, %u x %u samples\n", OUTPUT_BUFFERS, g_samples);
+        hos_log("audio: WinMM output opened, 48 kHz stereo, %u x %u samples, paced at %u Hz\n",
+                OUTPUT_BUFFERS, g_samples * FRAMES_PER_BUFFER, 48000 / g_samples);
         waveOutPause(device);
         for (unsigned i = 0; i < OUTPUT_BUFFERS; i++) {
             headers[i].lpData = (LPSTR)pcm[i];
-            headers[i].dwBufferLength = g_samples * 4;
+            headers[i].dwBufferLength = g_samples * 4 * FRAMES_PER_BUFFER;
             if (waveOutPrepareHeader(device, &headers[i], sizeof headers[i]))
                 hos_stop(c, "cannot prepare audio output buffer");
         }
-        unsigned index = 0, queued = 0;
+        /* One SDK frame per console period (g_samples / 48 kHz = 5 ms), as the game's audio thread expects, on a
+         * high-resolution timer. When the device queue runs low the wait is skipped to catch up; when the queue
+         * is full rendering waits for the device, so its clock wins over QueryPerformanceCounter in the long run. */
+        HANDLE timer = CreateWaitableTimerExW(NULL, NULL, 0x2 /* CREATE_WAITABLE_TIMER_HIGH_RESOLUTION */, TIMER_ALL_ACCESS);
+        LARGE_INTEGER freq, now, next;
+        QueryPerformanceFrequency(&freq); QueryPerformanceCounter(&next);
+        const int64_t period = freq.QuadPart * g_samples / 48000;
+        unsigned index = 0, queued = 0, started = 0;
         while (atomic_load(&g_open)) {
             WAVEHDR *header = &headers[index];
             ResetEvent(event);
             if ((header->dwFlags & WHDR_INQUEUE) && !(header->dwFlags & WHDR_DONE)) {
-                WaitForSingleObject(event, 10);
+                WaitForSingleObject(event, 5);
                 continue;
             }
-            render_frame(c, pcm[index]);
+            unsigned pending = 0;
+            for (unsigned i = 0; i < OUTPUT_BUFFERS; i++)
+                pending += (headers[i].dwFlags & WHDR_INQUEUE) && !(headers[i].dwFlags & WHDR_DONE);
+            int starved = started && pending == 0;
+            for (unsigned f = 0; f < FRAMES_PER_BUFFER && atomic_load(&g_open); f++) {
+                QueryPerformanceCounter(&now);
+                if (now.QuadPart - next.QuadPart > period * 8) next = now; /* far behind: restart the cadence */
+                int64_t wait = next.QuadPart - now.QuadPart;
+                if (wait > 0 && started && pending >= 3) { /* keep >= 60 ms queued: MME underruns below ~25 ms */
+                    LARGE_INTEGER due = {.QuadPart = -(wait * 10000000 / freq.QuadPart)};
+                    if (timer && SetWaitableTimer(timer, &due, 0, NULL, NULL, FALSE)) WaitForSingleObject(timer, INFINITE);
+                    else Sleep((DWORD)(wait * 1000 / freq.QuadPart));
+                }
+                next.QuadPart += period;
+                LARGE_INTEGER t0, t1; QueryPerformanceCounter(&t0);
+                render_frame(c, pcm[index] + (size_t)f * g_samples * 2);
+                QueryPerformanceCounter(&t1);
+                stats_frame(&stats, t1.QuadPart - t0.QuadPart, starved && f == 0);
+            }
             if (waveOutWrite(device, header, sizeof *header)) hos_stop(c, "cannot submit audio output buffer");
-            if (++queued == OUTPUT_BUFFERS) waveOutRestart(device);
+            if (!started && ++queued >= PREBUFFER) { waveOutRestart(device); started = 1; }
             index = (index + 1) % OUTPUT_BUFFERS;
         }
+        if (timer) CloseHandle(timer);
         waveOutReset(device);
         for (unsigned i = 0; i < OUTPUT_BUFFERS; i++) waveOutUnprepareHeader(device, &headers[i], sizeof headers[i]);
         waveOutClose(device);

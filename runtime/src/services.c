@@ -100,12 +100,19 @@ static void am_common_handle(Cpu *c, Service *s, const IpcRequest *rq, IpcReply 
 }
 
 /* ISelfController: the setters below only record a preference the host does not act on yet. */
+static uint32_t g_idle_extension;
 static void am_self_handle(Cpu *c, Service *s, const IpcRequest *rq, IpcReply *rp) {
     switch (rq->cmd) {
     case 1: case 2:                 /* LockExit, UnlockExit */
     case 10: case 11: case 12:      /* SetScreenShotPermission, Set{Operation,Performance}ModeChangedNotification */
     case 13: case 14: case 16:      /* SetFocusHandlingMode, SetRestartMessageEnabled, SetOutOfFocusSuspendingEnabled */
-    case 19: case 50: case 62:      /* SetAlbumImageOrientation, SetHandlesRequestToDisplay, SetIdleTimeDetectionExtension */
+    case 19: case 50:               /* SetAlbumImageOrientation, SetHandlesRequestToDisplay */
+        return;
+    case 62: /* SetIdleTimeDetectionExtension(u32): remembered for the getter; the host has no idle dimming */
+        if (rq->args_size >= 4) g_idle_extension = RQ_GET(rq, uint32_t, 0);
+        return;
+    case 63: /* GetIdleTimeDetectionExtension -> u32 */
+        RP_PUT(rp, uint32_t, g_idle_extension);
         return;
     case 9: /* GetLibraryAppletLaunchableEvent -> copy handle */
         rp->copy[rp->ncopy++] = hos_new_event(1);

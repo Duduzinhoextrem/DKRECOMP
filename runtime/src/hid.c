@@ -77,6 +77,8 @@ static uint64_t g_handheld_mode;
 static uint32_t g_supported_styles, g_supported_ids = 0x3ff;
 static uint32_t g_style_events[10];
 static int g_vibration_permitted = 1;
+/* Last VibrationValue sent by the game (amp_low, freq_low, amp_high, freq_high); starts as the neutral value. */
+static float g_vibration_value[4] = {0.f, 160.f, 0.f, 320.f};
 static uint64_t g_sampling_number = 0;
 
 static int g_test_input_override = 0;
@@ -245,10 +247,62 @@ static void load_xinput(void) {
     }
 }
 
+/* GetAsyncKeyState reads the global keyboard: without this check, typing in any other window drove the game. */
+static int game_has_focus(void) {
+    HWND foreground = GetForegroundWindow();
+    DWORD pid = 0;
+    if (foreground) GetWindowThreadProcessId(foreground, &pid);
+    return pid == GetCurrentProcessId();
+}
+
+/* DKR_INPUT_SCRIPT="start-end:BUTTON+BUTTON;..." holds buttons between two times in seconds since the first input
+ * poll, for unattended runs (e.g. "8-8.3:L+R;12-12.2:A"). Names: A B X Y L R ZL ZR PLUS MINUS LEFT UP RIGHT DOWN. */
+typedef struct ScriptStep { double start, end; uint64_t buttons; } ScriptStep;
+static ScriptStep g_script[64];
+static int g_script_count = -1;
+static LARGE_INTEGER g_script_origin;
+
+static uint64_t script_buttons(void) {
+    if (g_script_count < 0) {
+        g_script_count = 0;
+        QueryPerformanceCounter(&g_script_origin);
+        const char *text = getenv("DKR_INPUT_SCRIPT");
+        static const struct { const char *name; int bit; } names[] = {{"A", 0}, {"B", 1}, {"X", 2}, {"Y", 3},
+            {"L", 6}, {"R", 7}, {"ZL", 8}, {"ZR", 9}, {"PLUS", 10}, {"MINUS", 11}, {"LEFT", 12}, {"UP", 13},
+            {"RIGHT", 14}, {"DOWN", 15}};
+        while (text && *text && g_script_count < 64) {
+            ScriptStep step = {0};
+            char *end;
+            step.start = strtod(text, &end);
+            if (*end != '-') break;
+            step.end = strtod(end + 1, &end);
+            if (*end != ':') break;
+            text = end + 1;
+            while (*text && *text != ';') {
+                size_t n = strcspn(text, "+;");
+                for (unsigned i = 0; i < sizeof names / sizeof *names; i++)
+                    if (strlen(names[i].name) == n && !_strnicmp(text, names[i].name, n)) step.buttons |= 1ull << names[i].bit;
+                text += n;
+                if (*text == '+') text++;
+            }
+            if (*text == ';') text++;
+            g_script[g_script_count++] = step;
+        }
+        if (g_script_count) hos_log("hid: input script with %d steps\n", g_script_count);
+    }
+    if (!g_script_count) return 0;
+    LARGE_INTEGER now, freq;
+    QueryPerformanceCounter(&now); QueryPerformanceFrequency(&freq);
+    double t = (double)(now.QuadPart - g_script_origin.QuadPart) / (double)freq.QuadPart;
+    uint64_t buttons = 0;
+    for (int i = 0; i < g_script_count; i++) if (t >= g_script[i].start && t < g_script[i].end) buttons |= g_script[i].buttons;
+    return buttons;
+}
+
 static void poll_keyboard(uint64_t *buttons, int32_t *lx, int32_t *ly, int32_t *rx, int32_t *ry) {
     (void)rx; (void)ry;
     if (!g_user32_loaded) load_user32();
-    if (!pGetAsyncKeyState) return;
+    if (!pGetAsyncKeyState || !game_has_focus()) return;
 
     #define KEY_DOWN(k) ((pGetAsyncKeyState(k) & 0x8000) != 0)
 
@@ -376,6 +430,7 @@ void hos_hid_tick(void) {
 #ifdef _WIN32
         poll_keyboard(&buttons, &lx, &ly, &rx, &ry);
         poll_xinput(&buttons, &lx, &ly, &rx, &ry);
+        buttons |= script_buttons();
 #endif
     }
     add_stick_direction_buttons(&buttons, lx, ly, rx, ry);
@@ -537,6 +592,17 @@ void hos_hid_handle(Cpu *c, Service *s, const IpcRequest *rq, IpcReply *rp) {
     case 104: /* DeactivateNpad */
         g_npad_active = 0;
         return;
+    case 107: /* DisconnectNpad(u32 id, pad, u64 aruid): the host pad stays attached (Ryujinx also keeps it) */
+        if (rq->args_size < 4) { rp->result = HOS_KERNEL(103); return; }
+        hos_log("hid: DisconnectNpad %#x ignored; host input stays connected\n", RQ_GET(rq, uint32_t, 0));
+        return;
+    case 108: { /* GetPlayerLedPattern(u32 id) -> u64 pattern */
+        if (rq->args_size < 4) { rp->result = HOS_KERNEL(103); return; }
+        static const uint64_t patterns[8] = {0x1, 0x3, 0x7, 0xf, 0x9, 0x5, 0xd, 0x6};
+        uint32_t id = RQ_GET(rq, uint32_t, 0);
+        RP_PUT(rp, uint64_t, id < 8 ? patterns[id] : 0);
+        return;
+    }
     case 100: /* SetSupportedNpadStyleSet(u32 styles, pad, u64 aruid) */
         if (rq->args_size < 16 || !rq->has_pid) { rp->result = HOS_KERNEL(103); return; }
         g_supported_styles = RQ_GET(rq, uint32_t, 0);
@@ -604,6 +670,18 @@ void hos_hid_handle(Cpu *c, Service *s, const IpcRequest *rq, IpcReply *rp) {
         hos_reply_interface(rp, list);
         return;
     }
+    case 201: /* SendVibrationValue(u32 handle, pad, VibrationValue at +8, u64 aruid). No host rumble yet: */
+        if (rq->args_size < 24) { rp->result = HOS_KERNEL(103); return; } /* accept and remember the value */
+        memcpy(g_vibration_value, rq->args + 8, sizeof g_vibration_value);
+        return;
+    case 202: /* GetActualVibrationValue(u32 handle, pad, u64 aruid) -> VibrationValue */
+        if (rq->args_size < 4) { rp->result = HOS_KERNEL(103); return; }
+        memcpy(rp->data + rp->data_size, g_vibration_value, sizeof g_vibration_value);
+        rp->data_size += sizeof g_vibration_value;
+        return;
+    case 206: /* SendVibrationValues(u64 aruid, A handles, A values): accepted, no host rumble */
+        if (rq->na >= 2 && rq->a[1].size >= 16) memcpy(g_vibration_value, (const void *)(uintptr_t)rq->a[1].addr, sizeof g_vibration_value);
+        return;
     case 204: /* PermitVibration(bool) */
         if (!rq->args_size) { rp->result = HOS_KERNEL(103); return; }
         g_vibration_permitted = rq->args[0] != 0;

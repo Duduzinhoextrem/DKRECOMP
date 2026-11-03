@@ -74,6 +74,56 @@ AUDIO_SYMBOLS = {
 }
 
 
+# NintendoSDK movie library: movie::Decoder wraps NVIDIA's hardware decoder, which the host lacks. Every member is
+# replaced by runtime/src/movie.c (Media Foundation); movie::Extractor, plain CPU code, stays recompiled.
+MOVIE_OVERRIDES = {
+    "_ZN5movie7DecoderC1ENS_11DecoderTypeENS_19DecoderOutputFormatENS_11DecoderModeE": "dkr_movie_ctor",
+    "_ZN5movie7DecoderC2ENS_11DecoderTypeENS_19DecoderOutputFormatENS_11DecoderModeE": "dkr_movie_ctor",
+    "_ZN5movie7DecoderC1ENS_11DecoderTypeENS_19DecoderOutputFormatENS_11DecoderModeEi": "dkr_movie_ctor_priority",
+    "_ZN5movie7DecoderC2ENS_11DecoderTypeENS_19DecoderOutputFormatENS_11DecoderModeEi": "dkr_movie_ctor_priority",
+    "_ZN5movie7DecoderD1Ev": "dkr_movie_dtor",
+    "_ZN5movie7DecoderD2Ev": "dkr_movie_dtor",
+    "_ZN5movie7DecoderD0Ev": "dkr_movie_dtor_delete",
+    "_ZN5movie7Decoder9ConfigureEPNS_9MediaDataE": "dkr_movie_configure",
+    "_ZN5movie7Decoder20RegisterClientEventsEPNS_13DecoderEventsE": "dkr_movie_register_events",
+    "_ZN5movie7Decoder5StartEv": "dkr_movie_start",
+    "_ZN5movie7Decoder4StopEv": "dkr_movie_stop",
+    "_ZN5movie7Decoder5FlushEv": "dkr_movie_flush",
+    "_ZN5movie7Decoder5ResetEv": "dkr_movie_reset",
+    "_ZN5movie7Decoder12GetLastErrorEv": "dkr_movie_last_error",
+    "_ZN5movie7Decoder23AcquireInputBufferIndexEPiS1_": "dkr_movie_acquire_input",
+    "_ZN5movie7Decoder14GetInputBufferEiPNS_6BufferE": "dkr_movie_get_input",
+    "_ZN5movie7Decoder24SendInputBufferForDecodeEiiilj": "dkr_movie_send_input",
+    "_ZN5movie7Decoder24AcquireOutputBufferIndexEPiPlPjS1_": "dkr_movie_acquire_output",
+    "_ZN5movie7Decoder19GetOutputBufferSizeEPiS1_": "dkr_movie_output_size",
+    "_ZN5movie7Decoder15GetOutputFormatEPNS_9MediaDataE": "dkr_movie_output_format",
+    "_ZN5movie7Decoder21GetOutputBufferFormatEiPNS_9MediaDataE": "dkr_movie_output_buffer_format",
+    "_ZN5movie7Decoder15GetOutputBufferEiPNS_6BufferE": "dkr_movie_get_output",
+    "_ZN5movie7Decoder15GetOutputBufferEiPNS_6BufferEPNS_9MediaDataE": "dkr_movie_get_output_format",
+    "_ZN5movie7Decoder24ReleaseOutputBufferIndexEi": "dkr_movie_release_output",
+}
+MOVIE_SYMBOLS = {
+    "vtable": "_ZTVN5movie7DecoderE",
+    "signal_event": "_ZN2nn2os11SignalEventEPNS0_9EventTypeE",
+    "buffer_set_data": "_ZN5movie6Buffer18SetDataAndCapacityEPvm",
+    "buffer_set_range": "_ZN5movie6Buffer8SetRangeEii",
+    "buffer_data": "_ZNK5movie6Buffer4DataEv",
+    "buffer_capacity": "_ZNK5movie6Buffer8CapacityEv",
+    "buffer_size": "_ZNK5movie6Buffer4SizeEv",
+    "media_set_int32": "_ZN5movie9MediaData8SetInt32EPKci",
+    "media_set_rect": "_ZN5movie9MediaData7SetRectEPKciiii",
+    "media_find_int32": "_ZNK5movie9MediaData9FindInt32EPKcPi",
+    "media_find_buffer": "_ZNK5movie9MediaData10FindBufferEPKcPPNS_6BufferE",
+}
+
+
+def movie_overrides(syms: Dict[str, int]) -> Dict[str, str]:
+    """The movie::Decoder overrides, only when the application links the movie library and its helpers."""
+    if not all(sym in syms for sym in MOVIE_SYMBOLS.values()):
+        return {}
+    return MOVIE_OVERRIDES
+
+
 def write_if_changed(path: str, text: str) -> bool:
     data = text.encode("utf-8")
     if os.path.exists(path) and open(path, "rb").read() == data:
@@ -351,6 +401,10 @@ def write_layout(mods: List[linker.LinkedModule], syms: Dict[str, int], npdm_sta
         lines += ['#include "dkr/audio_sdk.h"', 'const DkrAudioSdk dkr_audio_sdk = {']
         lines += [f"    .{field} = 0x{syms[symbol]:x}ull," for field, symbol in AUDIO_SYMBOLS.items()]
         lines.append('};')
+        movie = all(sym in syms for sym in MOVIE_SYMBOLS.values())
+        lines += ['#include "dkr/movie_sdk.h"', 'const DkrMovieSdk dkr_movie_sdk = {']
+        lines += [f"    .{field} = 0x{syms[symbol] if movie else 0:x}ull," for field, symbol in MOVIE_SYMBOLS.items()]
+        lines.append('};')
     write_if_changed(os.path.join(out, "layout.c"), "\n".join(lines) + "\n")
 
 
@@ -378,7 +432,7 @@ def write_ninja(out: str, modules: List[Dict], gfx: bool = False) -> None:
         f"inc = -I{inc}",
         f"runtime_flags = {'-DDKR_ENABLE_GFX' if gfx else ''}",
         f"gfx_inc = -I{os.path.join(ROOT, 'toolchain', 'vulkan-headers', 'include').replace(chr(92), '/')}",
-        f"libs = {'-luser32 -lgdi32 -lwinmm -lbcrypt' if gfx else ''}",
+        f"libs = {'-luser32 -lgdi32 -lwinmm -lbcrypt -lmfplat -lole32' if gfx else ''}",
         "rule cc",
         "  command = $cc $cflags $inc -MMD -MF $out.d -c $in -o $out",
         "  depfile = $out.d",
@@ -411,12 +465,12 @@ def write_ninja(out: str, modules: List[Dict], gfx: bool = False) -> None:
         objs.append(o)
         lines.append(f"build {o}: cc_runtime {esc(os.path.join(ROOT, 'runtime', 'src', src))}")
     if gfx:
-        for src in ("audio_sdk.c", "audio_pcm.c"):
+        for src in ("audio_sdk.c", "audio_pcm.c", "movie.c"):
             o = f"obj/rt/{src[:-2]}.o"
             objs.append(o)
             lines.append(f"build {o}: cc_runtime {esc(os.path.join(ROOT, 'runtime', 'src', src))}")
     if gfx:
-        for src in ("vk.c", "vk_draw.c", "nvn.c", "nvn_obj.c", "nvn_tex.c", "nvn_commands.c", "nvn_shaders.c", "shader_cache.c", "shader_client.c", "astc.c", "nvn_replay.c"):
+        for src in ("vk.c", "vk_draw.c", "perf.c", "nvn.c", "nvn_obj.c", "nvn_tex.c", "nvn_commands.c", "nvn_shaders.c", "shader_cache.c", "shader_client.c", "astc.c", "nvn_replay.c"):
             o = f"obj/gfx/{src[:-2]}.o"
             objs.append(o)
             lines.append(f"build {o}: cc_gfx {esc(os.path.join(ROOT, 'runtime', 'gfx', src))}")
@@ -445,7 +499,7 @@ def generate(exefs: str, out: str, per_file: int, gfx: bool = False) -> Dict:
     results = []
     for lm in mods:
         results.append(lift_module(lm, os.path.join(out, lm.name), per_file,
-                                   GFX_OVERRIDES | AUDIO_OVERRIDES if gfx else None))
+                                   GFX_OVERRIDES | AUDIO_OVERRIDES | movie_overrides(syms) if gfx else None))
         img = os.path.join(out, f"{lm.name}.img")
         if not os.path.exists(img) or open(img, "rb").read() != bytes(lm.image):
             with open(img, "wb") as fh:

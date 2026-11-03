@@ -6,6 +6,7 @@
 #include "dkr/gfx.h"
 #include "nvn_internal.h"
 #include "nvn_replay.h"
+#include "perf.h"
 #include "../src/hos.h"
 
 #define WIN32_LEAN_AND_MEAN
@@ -257,6 +258,7 @@ void dkr_nvn_graphics_init(Cpu *c) {
     if (!g_registered || g_graphics) hos_stop(c, "nv::InitializeGraphics called out of sequence");
     if (!c->x[0] || !c->x[1]) hos_stop(c, "nv::InitializeGraphics needs guest work memory");
     g_work_memory = c->x[0]; g_work_size = c->x[1];
+    dkr_perf_init();
     const char *hidden = getenv("DKR_GFX_HIDDEN");
     const char *val_env = getenv("DKR_VK_VALIDATION");
     int validation = (val_env && *val_env && strcmp(val_env, "0")) ? 1 : 0;

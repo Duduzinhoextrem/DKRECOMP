@@ -37,7 +37,9 @@ typedef struct DkrVkResources DkrVkResources;
 struct DkrGfx {
     HMODULE loader;
     HWND window;
-    int closed, dirty, validation;
+    HANDLE window_thread;          /* owns the window and pumps its messages (see create_window) */
+    volatile LONG closed, dirty;   /* written by the window thread, read by the presenting thread */
+    int validation, present_flip;
     volatile LONG validation_errors;
     char error[512];
     uint64_t frames;

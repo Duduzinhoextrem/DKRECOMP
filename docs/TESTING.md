@@ -374,3 +374,15 @@ de parcels malformados (offsets/tamanho, token UTF-16, campos truncados) sem mut
 rejeita revisão futura, valores negativos/grandes, sample count inválido e campos truncados, sem alterar a saída.
 
 Ver `docs/PROGRESS.md`. Regra: resultado só entra na documentação se foi produzido por um comando acima.
+
+## Diagnóstico de desempenho e testes sem interação (2026-11-03)
+
+| Variável | Efeito |
+|---|---|
+| `DKR_PERF=1` | uma linha `perf:` por segundo (fps, ms por frame, replay, espera da GPU, draws, buffers temporários) e `perf audio:` (quadros/s, tempo de render, esvaziamentos do WinMM) |
+| `DKR_INPUT_SCRIPT="4-4.3:L+R;14-14.2:A"` | segura botões entre dois tempos em segundos (A B X Y L R ZL ZR PLUS MINUS LEFT UP RIGHT DOWN) |
+| `DKR_GFX_CAPTURE_EVERY=N` | salva também cada N-ésimo quadro como `<DKR_GFX_CAPTURE>.<quadro>.bmp` |
+| `DKR_TRACE_DRAWS=N` | registra no log cada draw do quadro N (alvo, viewport, scissor, blend, profundidade) |
+
+Use `DKR_SAVE_ROOT` com uma pasta temporária em execuções automáticas para não alterar o save real. O teclado só é
+lido com a janela do jogo em foco.

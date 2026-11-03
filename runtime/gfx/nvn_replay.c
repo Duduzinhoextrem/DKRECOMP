@@ -5,10 +5,12 @@
 #include "shader_client.h"
 #include "vk_draw.h"
 #include "astc.h"
+#include "perf.h"
 #include "../src/hos.h"
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <math.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -48,11 +50,20 @@ typedef struct Replay {
     VkFrontFace winding;
     VkPolygonMode polygon;
     uint64_t draws;
+    /* Guest vertex/index ranges already copied into this batch. Draws of one submission usually bind the same
+     * large pool range; copying it once per batch instead of once per draw is what keeps the menu interactive.
+     * Cleared at each batch and whenever the replay itself writes guest memory (UpdateUniformBuffer). */
+    struct { uint64_t address, size; DkrVkBuffer *buffer; } uploaded[64];
+    unsigned uploaded_count, uploaded_next;
+    int xfb_active, discard; /* transform feedback between Begin/End (not paused); SetRasterizerDiscard */
 } Replay;
+static uint64_t g_xfb_skipped; /* draws skipped because transform feedback is not emulated */
 static Image *images;
 static Sampler *samplers;
 static Program *programs;
 static SRWLOCK lock = SRWLOCK_INIT;
+static int g_trace_draws; /* set while the frame named by DKR_TRACE_DRAWS is being replayed */
+static int g_lower_left;  /* NVN window origin of the last draw; the presented image is then stored bottom-up */
 
 static uint32_t u32(const void *p) { uint32_t v; memcpy(&v, p, 4); return v; }
 static float f32(const void *p) { float v; memcpy(&v, p, 4); return v; }
@@ -118,6 +129,7 @@ static Image *image(Replay *s, const NvnTextureInfo *t, int sample) {
         hos_log("replay: image #%u %ux%u format %#x at %#llx\n", t->serial, info.width, info.height, t->desc.format, (unsigned long long)t->address);
     }
     if (sample && !entry->uploaded && !entry->rendered) {
+        int64_t t0 = dkr_perf_on ? dkr_perf_now() : 0;
         if (entry->image->info.aspect != VK_IMAGE_ASPECT_COLOR_BIT) {
             entry->uploaded = 1;
         } else {
@@ -141,6 +153,7 @@ static Image *image(Replay *s, const NvnTextureInfo *t, int sample) {
             }
             entry->uploaded = 1;
         }
+        if (dkr_perf_on) { dkr_perf.upload += dkr_perf_now() - t0; dkr_perf.uploads++; }
     }
     return entry;
 }
@@ -270,11 +283,31 @@ static VkPrimitiveTopology topology(Replay *s, unsigned primitive) {
     }
 }
 
+static DkrVkBuffer *guest_buffer(Replay *s, uint64_t address, uint64_t size) {
+    for (unsigned i = 0; i < s->uploaded_count; i++)
+        if (s->uploaded[i].address == address && s->uploaded[i].size == size) return s->uploaded[i].buffer;
+    DkrVkBuffer *buffer = NULL;
+    REQUIRE(dkr_vk_buffer_temporary(s->gfx, PTR(address), (size_t)size, &buffer));
+    unsigned slot = s->uploaded_count < 64 ? s->uploaded_count++ : s->uploaded_next++ % 64;
+    s->uploaded[slot].address = address; s->uploaded[slot].size = size; s->uploaded[slot].buffer = buffer;
+    return buffer;
+}
+
 static void draw(Replay *s, unsigned primitive, unsigned first, unsigned count, unsigned instances, unsigned base_instance,
                   uint64_t indices, unsigned index_type, int32_t base_vertex) {
     if (!count || !instances) return;
+    /* Transform feedback is not emulated yet (it needs XFB layouts from the shader translator and
+     * VK_EXT_transform_feedback). A capturing draw is skipped rather than drawn without its capture; consumers
+     * then read whatever the destination buffer holds. A rasterizer-discard draw produces no fragments anyway. */
+    if (s->xfb_active || s->discard) {
+        if (s->xfb_active && !g_xfb_skipped++) hos_log("replay: transform feedback is not emulated; capturing draws are skipped\n");
+        return;
+    }
     DkrVkDraw d = {0}; DkrVkDescriptor descriptors[128]; unsigned nd = 0;
-    const NvnShader *selected[6]; Program *p = program(s, primitive, selected);
+    const NvnShader *selected[6];
+    int64_t t0 = dkr_perf_on ? dkr_perf_now() : 0;
+    Program *p = program(s, primitive, selected);
+    if (dkr_perf_on) { dkr_perf.program += dkr_perf_now() - t0; dkr_perf.draws++; }
     d.program = p->program; d.pipeline.topology = topology(s, primitive); d.pipeline.color_count = s->target_count;
     d.pipeline.depth_test = s->depth_test; d.pipeline.depth_write = s->depth_write; d.pipeline.depth_compare = s->depth_compare;
     d.pipeline.stencil_test = s->stencil_test; d.pipeline.depth_clamp = s->depth_clamp; d.pipeline.depth_bias = s->depth_bias;
@@ -302,7 +335,14 @@ static void draw(Replay *s, unsigned primitive, unsigned first, unsigned count, 
     if (!width || !height) hos_stop(s->cpu, "NVN replay: draw without targets");
     float x = s->has_viewport ? s->viewport[0] : 0, y = s->has_viewport ? s->viewport[1] : 0;
     float w = s->has_viewport ? s->viewport[2] : (float)width, h = s->has_viewport ? s->viewport[3] : (float)height;
-    d.viewport = (VkViewport){x, y+h, w, -h, s->depth_range[0], s->depth_range[1]};
+    /* NVN_WINDOW_ORIGIN_MODE_LOWER_LEFT (Tropical Freeze) is GL's convention: NDC y = -1 and window y = 0 are row 0 of
+     * the target, exactly like a Vulkan viewport with positive height. Keeping that memory layout makes viewports,
+     * scissors, gl_FragCoord and render targets later sampled as textures match the console; only presentation flips.
+     * The upper-left origin (D3D-like, the TotK case) needs the negative-height viewport instead. The front face is
+     * swapped above for the lower-left origin, as a positive-height viewport reverses the winding seen by Vulkan. */
+    g_lower_left = ld32(s->device + 0x1978) == 0;
+    d.viewport = g_lower_left ? (VkViewport){x, y, w, h, s->depth_range[0], s->depth_range[1]}
+                              : (VkViewport){x, y+h, w, -h, s->depth_range[0], s->depth_range[1]};
     int64_t sx = s->has_scissor ? s->scissor[0] : 0, sy = s->has_scissor ? s->scissor[1] : 0;
     int64_t right = s->has_scissor ? sx + s->scissor[2] : width, bottom = s->has_scissor ? sy + s->scissor[3] : height;
     if (sx < 0) sx = 0; if (sy < 0) sy = 0; if (right > width) right = width; if (bottom > height) bottom = height;
@@ -324,7 +364,7 @@ static void draw(Replay *s, unsigned primitive, unsigned first, unsigned count, 
         d.pipeline.streams[d.pipeline.stream_count++] = (VkVertexInputBindingDescription){i, stride, divisor ? VK_VERTEX_INPUT_RATE_INSTANCE : VK_VERTEX_INPUT_RATE_VERTEX};
         if (!s->vertices[i].address || !s->vertices[i].size || s->vertices[i].size > 0x4000000)
             hos_stop(s->cpu, "NVN replay: vertex range %u invalid or needs pool-backed buffer", i);
-        REQUIRE(dkr_vk_buffer_temporary(s->gfx, PTR(s->vertices[i].address), (size_t)s->vertices[i].size, &d.vertices[i]));
+        d.vertices[i] = guest_buffer(s, s->vertices[i].address, s->vertices[i].size);
     }
     uint8_t support_data[1408], driver[65536] = {0}; support(support_data, w, h);
     for (unsigned stage = 0; stage < 6; stage++) if (selected[stage]) {
@@ -367,12 +407,26 @@ static void draw(Replay *s, unsigned primitive, unsigned first, unsigned count, 
     if (indices) {
         if (index_type != 1 && index_type != 2) hos_stop(s->cpu, "NVN replay: byte indices need conversion");
         d.index_type = index_type == 1 ? VK_INDEX_TYPE_UINT16 : VK_INDEX_TYPE_UINT32;
-        REQUIRE(dkr_vk_buffer_temporary(s->gfx, PTR(indices), (size_t)count*(index_type == 1 ? 2 : 4), &d.indices));
+        d.indices = guest_buffer(s, indices, (uint64_t)count*(index_type == 1 ? 2 : 4));
     }
     REQUIRE(dkr_vk_draw(s->gfx, &d));
     for (unsigned i = 0; i < s->target_count; i++) targets[i]->rendered = 1;
     if (depth) depth->rendered = 1;
-    if (++s->draws == 1) hos_log("replay: first NVN draw recorded on Vulkan (%u vertices/indices)\n", count);
+    if (++s->draws == 1) {
+        hos_log("replay: first NVN draw recorded on Vulkan (%u vertices/indices)\n", count);
+        hos_log("replay: window origin %s, depth mode %s\n", ld32(s->device + 0x1978) ? "upper-left" : "lower-left",
+                ld32(s->device + 0x197c) ? "near is zero" : "near is -w");
+    }
+    if (g_trace_draws) {
+        hos_log("draw: prim %u count %u inst %u | target %ux%u fmt %#x x%u depth %s | vp %s %.0f,%.0f %.0fx%.0f | sc %s %d,%d %ux%u -> %d,%d %ux%u"
+                " | blend %u/%u depth %u/%u stencil %u cull %u | %u descriptors\n",
+                primitive, count, instances, width, height, s->target_count ? s->colors[0].format : 0, s->target_count,
+                s->has_depth ? "yes" : "no", s->has_viewport ? "set" : "full", x, y, w, h, s->has_scissor ? "set" : "full",
+                s->has_scissor ? s->scissor[0] : 0, s->has_scissor ? s->scissor[1] : 0,
+                s->has_scissor ? (unsigned)s->scissor[2] : width, s->has_scissor ? (unsigned)s->scissor[3] : height,
+                d.scissor.offset.x, d.scissor.offset.y, d.scissor.extent.width, d.scissor.extent.height,
+                s->blend_enable[0], s->write_mask[0], s->depth_test, s->depth_write, s->stencil_test, s->cull, nd);
+    }
 }
 
 static VkCompareOp compare(Replay *s, uint64_t v) {
@@ -499,10 +553,18 @@ static void visit(const NvnRecord *r, void *user) {
     else if (IS("SetDepthClamp")) s->depth_clamp = x[1] != 0;
     else if (IS("SetPolygonOffsetClamp")) for (unsigned i = 0; i < 3; i++) s->bias[i] = f32(&r->v[i]);
     else if (IS("SetConservativeRasterEnable")) { if (x[1]) hos_stop(s->cpu, "NVN replay: conservative rasterization needs support"); }
+    else if (IS("BindTransformFeedbackBuffer") || IS("BindTransformFeedbackBuffers")) { /* see draw(): not emulated */ }
+    else if (IS("BeginTransformFeedback") || IS("ResumeTransformFeedback")) s->xfb_active = 1;
+    else if (IS("EndTransformFeedback") || IS("PauseTransformFeedback")) s->xfb_active = 0;
+    else if (IS("SetRasterizerDiscard")) s->discard = x[1] != 0;
+    else if (IS("DrawTransformFeedback")) {
+        if (!g_xfb_skipped++) hos_log("replay: transform feedback is not emulated; DrawTransformFeedback is skipped\n");
+    }
     else if (IS("Barrier")) { /* Full resource barriers surround each draw/upload in vk_draw.c. */ }
     else if (IS("UpdateUniformBuffer")) {
         if (x[3] > x[2] || x[4] > x[2] - x[3]) hos_stop(s->cpu, "NVN replay: uniform update exceeds its range");
         memcpy(PTR(x[1] + x[3]), PTR(x[5]), (size_t)x[4]);
+        s->uploaded_count = 0; /* the write may alias a range uploaded earlier in this batch */
     } else if (IS("CopyBufferToTexture")) {
         NvnTextureInfo t; dkr_nvn_texture_info(s->cpu, x[2], PTR(x[3]), &t);
         uint32_t box[6]; memcpy(box, PTR(x[4]), sizeof box);
@@ -585,15 +647,19 @@ void dkr_nvn_replay_submit(Cpu *cpu, uint64_t device, void **state, const uint64
     }
     s->cpu = cpu; s->gfx = dkr_nvn_graphics(); s->device = device;
     if (!s->gfx) hos_stop(cpu, "NVN replay: no graphics context");
+    int64_t t0 = dkr_perf_on ? dkr_perf_now() : 0;
     REQUIRE(dkr_vk_batch_begin(s->gfx));
+    s->uploaded_count = 0; /* arena slices of the previous batch were recycled by batch_begin */
     dkr_nvn_visit_commands(cpu, handles, count, visit, s);
     REQUIRE(dkr_vk_batch_end(s->gfx));
+    if (dkr_perf_on) { dkr_perf.replay += dkr_perf_now() - t0; dkr_perf.submits++; }
     ReleaseSRWLockExclusive(&lock);
 }
 void dkr_nvn_replay_present(Cpu *cpu, uint64_t texture, uint64_t frame) {
     const char *enabled = getenv("DKR_GFX_REPLAY");
     if (enabled && !strcmp(enabled, "0")) return;
     AcquireSRWLockExclusive(&lock);
+    int64_t t0 = dkr_perf_on ? dkr_perf_now() : 0;
     Replay state = {.cpu = cpu, .gfx = dkr_nvn_graphics()}, *s = &state;
     NvnTextureInfo info; dkr_nvn_texture_info(cpu, texture, NULL, &info);
     Image *entry = images;
@@ -602,16 +668,32 @@ void dkr_nvn_replay_present(Cpu *cpu, uint64_t texture, uint64_t frame) {
     if (!dkr_gfx_poll(s->gfx)) hos_stop(cpu, "graphics window closed");
     const char *path = getenv("DKR_GFX_CAPTURE"), *at = getenv("DKR_GFX_CAPTURE_FRAME");
     uint64_t capture_frame = at ? strtoull(at, NULL, 10) : 60;
+    /* DKR_GFX_CAPTURE_EVERY=N also saves every Nth frame as <path>.<frame>.bmp. */
+    const char *every_text = getenv("DKR_GFX_CAPTURE_EVERY");
+    uint64_t every = every_text ? strtoull(every_text, NULL, 10) : 0;
+    char numbered[4096];
+    const char *capture = NULL;
+    if (path && frame == capture_frame) capture = path;
+    else if (path && every && frame % every == 0 && snprintf(numbered, sizeof numbered, "%s.%llu.bmp", path,
+             (unsigned long long)frame) < (int)sizeof numbered) capture = numbered;
     uint64_t before = dkr_gfx_frames(s->gfx);
+    dkr_gfx_set_present_flip(s->gfx, g_lower_left);
     do {
-        REQUIRE(dkr_vk_image_present(s->gfx, entry->image, path && frame == capture_frame ? path : NULL));
+        REQUIRE(dkr_vk_image_present(s->gfx, entry->image, capture));
         if (dkr_gfx_frames(s->gfx) == before) {
             if (!dkr_gfx_poll(s->gfx)) hos_stop(cpu, "graphics window closed");
             Sleep(1);
         }
     } while (dkr_gfx_frames(s->gfx) == before);
     if (frame == 1) hos_log("replay: first NVN texture presented through Vulkan\n");
+    const char *trace = getenv("DKR_TRACE_DRAWS");
+    uint64_t trace_frame = trace ? strtoull(trace, NULL, 10) : 0;
+    if (g_trace_draws) hos_log("draw: end of traced frame\n");
+    g_trace_draws = trace_frame && frame + 1 == trace_frame;
+    if (g_trace_draws) hos_log("draw: tracing frame %llu\n", (unsigned long long)trace_frame);
+    if (dkr_perf_on) dkr_perf.present += dkr_perf_now() - t0;
     ReleaseSRWLockExclusive(&lock);
+    dkr_perf_frame();
 }
 void dkr_nvn_replay_queue_destroy(void *state) { free(state); }
 void dkr_nvn_replay_cleanup(void) {

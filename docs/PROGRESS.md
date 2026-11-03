@@ -2,6 +2,40 @@
 
 Somente o que foi executado e verificado. Cada linha aponta para o comando que a reproduz (`docs/TESTING.md`).
 
+## 2026-11-03 — Cutscenes em vídeo tocam (movie::Decoder no Media Foundation)
+
+A biblioteca `movie` do SDK (`subsdk0`) usa o decodificador de hardware NvMMLite, ausente no PC: o jogo ficava para
+sempre no loading antes da abertura. Todos os membros de `movie::Decoder` agora são substituídos por
+`runtime/src/movie.c` (overrides gerados por `gen.py`, endereços auxiliares do SDK em `layout.c`). O `movie::Extractor`
+(MP4) continua sendo o código original recompilado. H.264 → NV12 e AAC → PCM16 pelo Media Foundation do Windows,
+sem dependência nova.
+
+| Evidência (roteiro `DKR_INPUT_SCRIPT` até a abertura, `DKR_PERF=1`) | Resultado |
+|---|---|
+| `intro.mp4` (H.264 1280×720, 29,97 fps; AAC 6 canais 32 kHz) | **Toca**: aniversário do DK, chegada dos Snowmads, cenas seguintes capturadas |
+| Vídeo | **30 quadros/s** entregues ao jogo (43 de 71 segundos com 30; 29–31 nos demais), decodificação **0,6–0,9 ms** por quadro |
+| Áudio do filme | 31–32 pacotes AAC/s, PCM com som; saída do jogo com som em 200 de 200 quadros/s |
+| Jogo durante o filme | 60 fps apresentados |
+| CTest / pytest | **14/14**; **66 passam, 5 pulados** (novo teste da seleção de overrides) |
+
+## 2026-11-03 — Menus a 60 fps, origem da janela corrigida, áudio sem underruns e menus até a abertura
+
+Medido com `DKR_PERF=1` (linha `perf:` por segundo) e um amostrador de CPU externo ao projeto, no mesmo RTX 5060 Ti.
+
+| Problema | Causa medida | Correção | Resultado |
+|---|---|---|---|
+| Menu a **2,7 fps** | Replay criava **1.120 buffers por frame** (um `vkAllocateMemory` cada) e copiava **~880 MB por frame**: o vertex buffer inteiro por draw. 65% da thread de render em criar/destruir alocações | Arena de upload persistente (chunks de 64 MiB reciclados por batch) e cópia única de cada faixa de vértices/índices por batch | **60 fps estáveis**, ~20 MB/frame, replay ~7 ms |
+| Frames atrasados dormiam um período a mais | O pacer de 60 Hz somava um período depois de reiniciar o prazo | Sem espera quando atrasado | — |
+| Janela "Não está respondendo" ao clicar | Mensagens lidas pela thread do present, não pela que criou a janela | Thread própria só para a janela | Sem congelamento |
+| Parada ao focar a janela / ao iniciar | `hid` 201 (`SendVibrationValue`), 107 (`DisconnectNpad`), `ISelfController` 63 | Implementados (vibração aceita sem rumble) | Navegação até a abertura |
+| Faixa espelhada e cenário errado no menu | O jogo usa **origem inferior esquerda** (`window origin lower-left` no log); o viewport era sempre invertido | Viewport positivo (layout de memória igual ao console) e inversão só na apresentação | Praia, mar e céu corretos nos menus |
+| Áudio picotado | WinMM com 4 buffers de 5 ms: **116 quadros/s de 200**, ~15 esvaziamentos por segundo | Buffers de 20 ms, ≥60 ms na fila, render a 200 Hz por timer de alta resolução | **200 quadros/s, 0 esvaziamentos** |
+| Parada no Controller Select | `BindTransformFeedbackBuffer` | Draws com transform feedback/rasterizer discard são pulados e registrados no log | Continua até a abertura |
+
+Roteiro automático (`DKR_INPUT_SCRIPT`) passou por título → Game Select → Play Mode → Controller Select → Character Select →
+carregamento. **A abertura (`intro.mp4`) não toca e o jogo fica no loading**: `movie::Decoder` depende do NvMMLite. CTest
+**14/14** e pytest **65 passam, 5 pulados**.
+
 ## 2026-11-01 — Boot de 60s atinge 8M+ SVCs: Geometry Shaders com topologia Points, zero erros de validação e 420+ frames apresentados
 
 O jogo avançou além da tela de carregamento e eliminou todos os erros de validação Vulkan e roadblocks de inicialização de HID e geometria:

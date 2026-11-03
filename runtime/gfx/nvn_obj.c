@@ -12,6 +12,7 @@
 #include "nvn_commands.h"
 #include "nvn_shaders.h"
 #include "nvn_replay.h"
+#include "perf.h"
 #include "../src/hos.h"
 
 #define WIN32_LEAN_AND_MEAN
@@ -784,10 +785,14 @@ static void queue_present(Cpu *c) { /* void (NVNqueue *, NVNwindow *, int index)
     QueryPerformanceFrequency(&freq);
     QueryPerformanceCounter(&now);
     LONGLONG period = freq.QuadPart * (s->interval > 0 ? s->interval : 1) / 60;
+    /* Late by more than a few frames: present now and restart the cadence from here. Adding a period after the
+     * reset made every late frame sleep a full extra period, which halved an already low frame rate. */
     if (!s->deadline.QuadPart || now.QuadPart - s->deadline.QuadPart > period * 4) s->deadline = now;
-    s->deadline.QuadPart += period;
+    else s->deadline.QuadPart += period;
     LONGLONG wait = s->deadline.QuadPart - now.QuadPart;
+    int64_t pace0 = dkr_perf_on ? dkr_perf_now() : 0;
     if (wait > 0) Sleep((DWORD)(wait * 1000 / freq.QuadPart));
+    DKR_PERF_ADD(pace, dkr_perf_now() - pace0);
     dkr_nvn_replay_present(c, s->textures[i], s->frames + 1);
     if (++s->frames == 1 || s->frames % 60 == 0)
         hos_log("nvn: present #%llu (texture %d)\n", (unsigned long long)s->frames, i);

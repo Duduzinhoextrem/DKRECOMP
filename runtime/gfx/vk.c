@@ -105,22 +105,59 @@ static int create_instance(DkrGfx *g, int validation) {
     return 0;
 }
 
-static int create_window(DkrGfx *g, const DkrGfxConfig *config) {
+/* A window's messages can only be retrieved by the thread that created it. The game presents from a different
+ * guest thread than the one that initializes graphics, so pumping from the presenter never saw the window's
+ * input: after a click Windows waited 5 s and replaced it with a frozen "not responding" ghost. The window
+ * therefore lives on a small thread of its own that only creates it and runs its message loop. */
+#define WM_DKR_DESTROY (WM_APP + 1)
+typedef struct WindowStart {
+    DkrGfx *g;
+    const DkrGfxConfig *config;
+    HANDLE ready;
+    DWORD error;
+    const char *what;
+} WindowStart;
+
+static DWORD WINAPI window_thread(void *arg) {
+    WindowStart *start = arg;
+    DkrGfx *g = start->g;
     HINSTANCE instance = GetModuleHandleW(NULL);
     WNDCLASSEXW wc = {.cbSize = sizeof wc, .lpfnWndProc = window_proc, .hInstance = instance,
         .hCursor = LoadCursorW(NULL, MAKEINTRESOURCEW(32512)), .lpszClassName = L"DKRecomp.Vulkan.Window"};
-    if (!RegisterClassExW(&wc) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS)
-        return fail(g, "RegisterClassExW failed: %lu", GetLastError());
     wchar_t title[256];
-    if (!MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, config->title ? config->title : "DKRecomp", -1, title, 256))
-        return fail(g, "invalid or too long window title");
-    RECT rect = {0, 0, (LONG)config->width, (LONG)config->height};
-    if (!AdjustWindowRect(&rect, WS_OVERLAPPEDWINDOW, FALSE)) return fail(g, "AdjustWindowRect failed");
-    g->window = CreateWindowExW(0, wc.lpszClassName, title, WS_OVERLAPPEDWINDOW,
-        CW_USEDEFAULT, CW_USEDEFAULT, rect.right - rect.left, rect.bottom - rect.top,
-        NULL, NULL, instance, g);
-    if (!g->window) return fail(g, "CreateWindowExW failed: %lu", GetLastError());
-    if (config->visible) ShowWindow(g->window, SW_SHOW);
+    RECT rect = {0, 0, (LONG)start->config->width, (LONG)start->config->height};
+    if (!RegisterClassExW(&wc) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) start->what = "RegisterClassExW";
+    else if (!MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, start->config->title ? start->config->title : "DKRecomp", -1, title, 256))
+        start->what = "the window title";
+    else if (!AdjustWindowRect(&rect, WS_OVERLAPPEDWINDOW, FALSE)) start->what = "AdjustWindowRect";
+    else if (!(g->window = CreateWindowExW(0, wc.lpszClassName, title, WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT,
+            rect.right - rect.left, rect.bottom - rect.top, NULL, NULL, instance, g))) start->what = "CreateWindowExW";
+    if (start->what) { start->error = GetLastError(); SetEvent(start->ready); return 1; }
+    if (start->config->visible) ShowWindow(g->window, SW_SHOW);
+    SetEvent(start->ready); /* `start` belongs to the creating thread and is not touched after this */
+    MSG message;
+    while (GetMessageW(&message, NULL, 0, 0) > 0) {
+        if (message.message == WM_DKR_DESTROY) { DestroyWindow(g->window); PostQuitMessage(0); continue; }
+        TranslateMessage(&message);
+        DispatchMessageW(&message);
+    }
+    return 0;
+}
+
+static int create_window(DkrGfx *g, const DkrGfxConfig *config) {
+    HINSTANCE instance = GetModuleHandleW(NULL);
+    WindowStart start = {g, config, CreateEventW(NULL, TRUE, FALSE, NULL), 0, NULL};
+    if (!start.ready) return fail(g, "CreateEventW failed: %lu", GetLastError());
+    g->window_thread = CreateThread(NULL, 0, window_thread, &start, 0, NULL);
+    if (!g->window_thread) { CloseHandle(start.ready); return fail(g, "cannot start the window thread: %lu", GetLastError()); }
+    HANDLE wait[2] = {start.ready, g->window_thread};
+    WaitForMultipleObjects(2, wait, FALSE, INFINITE);
+    CloseHandle(start.ready);
+    if (start.what || !g->window) {
+        WaitForSingleObject(g->window_thread, INFINITE);
+        CloseHandle(g->window_thread); g->window_thread = NULL; g->window = NULL;
+        return fail(g, "%s failed: %lu", start.what ? start.what : "window thread", start.error);
+    }
     VkWin32SurfaceCreateInfoKHR surface = {.sType = VK_STRUCTURE_TYPE_WIN32_SURFACE_CREATE_INFO_KHR,
         .hinstance = instance, .hwnd = g->window};
     VK_TRY(g, g->vkCreateWin32SurfaceKHR(g->instance, &surface, NULL, &g->surface));
@@ -367,14 +404,8 @@ int dkr_gfx_create(DkrGfx **out, const DkrGfxConfig *config) {
     return create_swapchain(g) < 0 ? -1 : 0;
 }
 
-int dkr_gfx_poll(DkrGfx *g) {
-    if (!g || !g->window) return 0;
-    MSG message;
-    while (PeekMessageW(&message, g->window, 0, 0, PM_REMOVE)) {
-        TranslateMessage(&message);
-        DispatchMessageW(&message);
-    }
-    return !g->closed;
+int dkr_gfx_poll(DkrGfx *g) { /* messages are pumped by the window thread */
+    return g && g->window && !g->closed;
 }
 
 int dkr_gfx_resize(DkrGfx *g, uint32_t width, uint32_t height) {
@@ -470,7 +501,8 @@ static int present_image(DkrGfx *g, const float color[4], DkrVkImage *source, co
         VkImageBlit blit = {.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
             .srcOffsets = {{0, 0, 0}, {(int32_t)source->info.width, (int32_t)source->info.height, 1}},
             .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
-            .dstOffsets = {{0, 0, 0}, {(int32_t)g->extent.width, (int32_t)g->extent.height, 1}}};
+            .dstOffsets = {{0, g->present_flip ? (int32_t)g->extent.height : 0, 0},
+                           {(int32_t)g->extent.width, g->present_flip ? 0 : (int32_t)g->extent.height, 1}}};
         g->vkCmdBlitImage(g->command, source->image, VK_IMAGE_LAYOUT_GENERAL, image,
             VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit, VK_FILTER_NEAREST);
     } else {
@@ -530,6 +562,7 @@ int dkr_vk_image_present(DkrGfx *g, DkrVkImage *source, const char *capture_bmp)
 
 const char *dkr_gfx_error(const DkrGfx *g) { return g ? g->error : "out of host memory"; }
 uint64_t dkr_gfx_frames(const DkrGfx *g) { return g ? g->frames : 0; }
+void dkr_gfx_set_present_flip(DkrGfx *g, int flip) { if (g) g->present_flip = flip != 0; }
 uint32_t dkr_gfx_validation_errors(const DkrGfx *g) { return g ? (uint32_t)g->validation_errors : 0; }
 
 uint32_t dkr_gfx_destroy(DkrGfx *g) {
@@ -546,7 +579,11 @@ uint32_t dkr_gfx_destroy(DkrGfx *g) {
     if (g->surface) g->vkDestroySurfaceKHR(g->instance, g->surface, NULL);
     if (g->debug && g->destroy_debug) g->destroy_debug(g->instance, g->debug, NULL);
     if (g->instance && g->vkDestroyInstance) g->vkDestroyInstance(g->instance, NULL);
-    if (g->window) DestroyWindow(g->window);
+    if (g->window_thread) {
+        PostThreadMessageW(GetThreadId(g->window_thread), WM_DKR_DESTROY, 0, 0);
+        WaitForSingleObject(g->window_thread, 5000);
+        CloseHandle(g->window_thread);
+    }
     if (g->loader) FreeLibrary(g->loader);
     uint32_t errors = (uint32_t)g->validation_errors;
     free(g);

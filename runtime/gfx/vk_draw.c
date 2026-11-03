@@ -2,6 +2,7 @@
  * Batches currently complete synchronously. This intentionally favors a verifiable lifetime model before
  * introducing asynchronous submissions; there are no guessed "GPU complete" fences in this layer. */
 #include "vk_internal.h"
+#include "perf.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -25,6 +26,18 @@ struct DkrVkProgram {
     Pipeline *pipelines;
 };
 typedef struct Framebuffer { struct Framebuffer *next; VkFramebuffer framebuffer; } Framebuffer;
+/* Transient uploads (vertex/index/uniform data, texture staging) are carved out of large persistently mapped
+ * chunks instead of one VkBuffer + vkAllocateMemory each. Batches wait for the GPU before the next one begins,
+ * so every chunk is rewound in recycle(). Chunks are kept for reuse; a larger upload gets its own chunk. */
+typedef struct Chunk {
+    struct Chunk *next;
+    VkBuffer buffer;
+    VkDeviceMemory memory;
+    uint8_t *mapped;
+    VkDeviceSize size, used;
+    int coherent;
+} Chunk;
+#define ARENA_CHUNK (64ull << 20)
 struct DkrVkResources {
     DkrVkBuffer *buffers;
     DkrVkImage *images;
@@ -34,6 +47,8 @@ struct DkrVkResources {
     VkDescriptorPool descriptors;
     VkPhysicalDeviceProperties properties;
     DkrVkImage *snapshot;
+    Chunk *chunks;
+    VkDeviceSize arena_align;
 };
 
 static DkrVkResources *resources(DkrGfx *g) {
@@ -176,14 +191,80 @@ int dkr_vk_buffer_create(DkrGfx *g, const void *data, size_t size, DkrVkBuffer *
     return 0;
 }
 
+static Chunk *chunk_create(DkrGfx *g, VkDeviceSize size) {
+    Chunk *k = calloc(1, sizeof *k);
+    if (!k) { dkr_vk_fail(g, "out of memory creating an upload chunk"); return NULL; }
+    k->size = size;
+    VkBufferCreateInfo create = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = size,
+        .usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT |
+                 VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+        .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
+    VkMemoryRequirements required;
+    VkMemoryPropertyFlags flags = 0;
+    uint32_t index;
+    if (g->vkCreateBuffer(g->device, &create, NULL, &k->buffer) != VK_SUCCESS) goto fail;
+    g->vkGetBufferMemoryRequirements(g->device, k->buffer, &required);
+    index = memory_type(g, required.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT, VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, &flags);
+    if (index == UINT32_MAX) goto fail;
+    VkMemoryAllocateInfo allocate = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, .allocationSize = required.size, .memoryTypeIndex = index};
+    if (g->vkAllocateMemory(g->device, &allocate, NULL, &k->memory) != VK_SUCCESS ||
+        g->vkBindBufferMemory(g->device, k->buffer, k->memory, 0) != VK_SUCCESS ||
+        g->vkMapMemory(g->device, k->memory, 0, VK_WHOLE_SIZE, 0, (void **)&k->mapped) != VK_SUCCESS) goto fail;
+    k->coherent = (flags & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) != 0;
+    return k;
+fail:
+    if (k->buffer) g->vkDestroyBuffer(g->device, k->buffer, NULL);
+    if (k->memory) g->vkFreeMemory(g->device, k->memory, NULL);
+    free(k);
+    dkr_vk_fail(g, "cannot create a %llu-byte upload chunk", (unsigned long long)size);
+    return NULL;
+}
+
+static void chunk_destroy(DkrGfx *g, Chunk *k) {
+    if (k->mapped) g->vkUnmapMemory(g->device, k->memory);
+    if (k->buffer) g->vkDestroyBuffer(g->device, k->buffer, NULL);
+    if (k->memory) g->vkFreeMemory(g->device, k->memory, NULL);
+    free(k);
+}
+
 int dkr_vk_buffer_temporary(DkrGfx *g, const void *data, size_t size, DkrVkBuffer **out) {
     if (!g || !g->batch_active) return g ? dkr_vk_fail(g, "temporary buffer outside a batch") : -1;
-    if (dkr_vk_buffer_create(g, data, size, out)) return -1;
-    (*out)->temporary = 1;
+    if (!out) return -1;
+    *out = NULL;
+    if (!size || size > (1u << 30)) return dkr_vk_fail(g, "invalid buffer size %zu", size);
+    DkrVkResources *r = resources(g);
+    if (!r) return -1;
+    if (!r->arena_align) {
+        /* One alignment that satisfies uniform/storage descriptors, index buffers and copy offsets of any format. */
+        VkDeviceSize a = 256;
+        const VkPhysicalDeviceLimits *l = &r->properties.limits;
+        if (l->minUniformBufferOffsetAlignment > a) a = l->minUniformBufferOffsetAlignment;
+        if (l->minStorageBufferOffsetAlignment > a) a = l->minStorageBufferOffsetAlignment;
+        r->arena_align = a;
+    }
+    Chunk *k = r->chunks;
+    VkDeviceSize offset = 0;
+    for (; k; k = k->next) {
+        offset = (k->used + r->arena_align - 1) & ~(r->arena_align - 1);
+        if (offset <= k->size && size <= k->size - offset) break;
+    }
+    if (!k) {
+        VkDeviceSize want = size > ARENA_CHUNK ? (size + 0xffff) & ~0xffffull : ARENA_CHUNK;
+        if (!(k = chunk_create(g, want))) return -1;
+        k->next = r->chunks; r->chunks = k; offset = 0;
+    }
+    DkrVkBuffer *b = calloc(1, sizeof *b);
+    if (!b) return dkr_vk_fail(g, "out of memory creating a temporary buffer");
+    b->owner = g; b->buffer = k->buffer; b->size = size; b->base = offset; b->temporary = 1;
+    b->next = r->buffers; r->buffers = b; *out = b;
+    if (data) memcpy(k->mapped + offset, data, size); else memset(k->mapped + offset, 0, size);
+    k->used = offset + size;
+    DKR_PERF_ADD(temp_buffers, 1); DKR_PERF_ADD(temp_bytes, (int64_t)size);
     return 0;
 }
 
 static void destroy_buffer(DkrGfx *g, DkrVkBuffer *b) {
+    if (b->temporary) { free(b); return; } /* an arena slice owns no Vulkan object */
     if (b->buffer) g->vkDestroyBuffer(g->device, b->buffer, NULL);
     if (b->memory) g->vkFreeMemory(g->device, b->memory, NULL);
     free(b);
@@ -200,6 +281,7 @@ static void recycle(DkrGfx *g) {
         DkrVkBuffer *b = *link;
         if (b->temporary) { *link = b->next; destroy_buffer(g, b); } else link = &b->next;
     }
+    for (Chunk *k = r->chunks; k; k = k->next) k->used = 0;
 }
 
 void dkr_vk_buffer_destroy(DkrGfx *g, DkrVkBuffer *b) {
@@ -266,11 +348,17 @@ int dkr_vk_batch_begin(DkrGfx *g) {
 int dkr_vk_batch_end(DkrGfx *g) {
     if (!g || !g->batch_active) return g ? dkr_vk_fail(g, "end without a Vulkan batch") : -1;
     VK_TRY(g, g->vkEndCommandBuffer(g->command));
+    if (g->resources) for (Chunk *k = g->resources->chunks; k; k = k->next) if (k->used && !k->coherent) {
+        VkMappedMemoryRange range = {.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE, .memory = k->memory, .size = VK_WHOLE_SIZE};
+        VK_TRY(g, g->vkFlushMappedMemoryRanges(g->device, 1, &range));
+    }
     VkSubmitInfo submit = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO, .commandBufferCount = 1, .pCommandBuffers = &g->command};
     VK_TRY(g, g->vkResetFences(g->device, 1, &g->submitted));
     VK_TRY(g, g->vkQueueSubmit(g->queue, 1, &submit, g->submitted));
     g->batch_active = 0;
+    int64_t t0 = dkr_perf_on ? dkr_perf_now() : 0;
     VK_TRY(g, g->vkWaitForFences(g->device, 1, &g->submitted, VK_TRUE, 5000000000ull));
+    DKR_PERF_ADD(gpu_wait, dkr_perf_now() - t0);
     return g->validation_errors ? dkr_vk_fail(g, "Vulkan draw batch reported validation errors") : 0;
 }
 
@@ -352,7 +440,7 @@ int dkr_vk_image_upload_region(DkrGfx *g, DkrVkImage *image, unsigned level, uns
     if (!expected || expected != size) return dkr_vk_fail(g, "unsupported format or wrong image upload size (%zu/%zu)", size, expected);
     DkrVkBuffer *staging;
     if (dkr_vk_buffer_temporary(g, data, size, &staging) || dkr_vk_image_ready(g, image)) return -1;
-    VkBufferImageCopy region = {.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, level, layer, 1},
+    VkBufferImageCopy region = {.bufferOffset = staging->base, .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, level, layer, 1},
         .imageOffset = {(int32_t)x, (int32_t)y, 0}, .imageExtent = {width, height, 1}};
     g->vkCmdCopyBufferToImage(g->command, staging->buffer, image->image, VK_IMAGE_LAYOUT_GENERAL, 1, &region);
     return 0;
@@ -495,6 +583,7 @@ static int pipeline(DkrGfx *g, DkrVkProgram *program, const DkrVkPipelineInfo *i
     Pipeline *p = calloc(1, sizeof *p);
     if (!p) return dkr_vk_fail(g, "out of memory creating a pipeline");
     p->info = *info; p->next = program->pipelines; program->pipelines = p; *out = p;
+    DKR_PERF_ADD(pipelines, 1);
     if (render_pass(g, info, &p->pass)) return -1;
     VkPipelineShaderStageCreateInfo shaders[DKR_VK_STAGES];
     unsigned n = 0;
@@ -562,8 +651,8 @@ static int bind_descriptors(DkrGfx *g, const DkrVkDraw *draw, VkDescriptorSet se
             const VkPhysicalDeviceLimits *limits = &g->resources->properties.limits;
             uint64_t align = b->type == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER ? limits->minUniformBufferOffsetAlignment : limits->minStorageBufferOffsetAlignment;
             uint64_t max = b->type == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER ? limits->maxUniformBufferRange : limits->maxStorageBufferRange;
-            if ((align && d->offset % align) || d->size > max) return dkr_vk_fail(g, "buffer descriptor violates device alignment/range");
-            buffers[i] = (VkDescriptorBufferInfo){d->buffer->buffer, d->offset, d->size};
+            if ((align && (d->buffer->base + d->offset) % align) || d->size > max) return dkr_vk_fail(g, "buffer descriptor violates device alignment/range");
+            buffers[i] = (VkDescriptorBufferInfo){d->buffer->buffer, d->buffer->base + d->offset, d->size};
             writes[i].pBufferInfo = &buffers[i];
         } else {
             int need_image = b->type == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER || b->type == VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE || b->type == VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
@@ -697,10 +786,11 @@ int dkr_vk_draw(DkrGfx *g, const DkrVkDraw *draw) {
     g->vkCmdSetStencilWriteMask(g->command, VK_STENCIL_FACE_BACK_BIT, info->stencil_back.writeMask);
     for (unsigned i = 0; i < info->stream_count; i++) {
         unsigned binding = info->streams[i].binding;
-        g->vkCmdBindVertexBuffers(g->command, binding, 1, &draw->vertices[binding]->buffer, &draw->vertex_offsets[binding]);
+        VkDeviceSize offset = draw->vertices[binding]->base + draw->vertex_offsets[binding];
+        g->vkCmdBindVertexBuffers(g->command, binding, 1, &draw->vertices[binding]->buffer, &offset);
     }
     if (draw->indices) {
-        g->vkCmdBindIndexBuffer(g->command, draw->indices->buffer, draw->index_offset, draw->index_type);
+        g->vkCmdBindIndexBuffer(g->command, draw->indices->buffer, draw->indices->base + draw->index_offset, draw->index_type);
         g->vkCmdDrawIndexed(g->command, draw->count, draw->instances, draw->first, draw->base_vertex, draw->first_instance);
     } else g->vkCmdDraw(g->command, draw->count, draw->instances, draw->first, draw->first_instance);
     g->vkCmdEndRenderPass(g->command);
@@ -715,6 +805,7 @@ void dkr_vk_resources_destroy(DkrGfx *g) {
     g->batch_active = 0;
     recycle(g);
     while (r->buffers) { DkrVkBuffer *b = r->buffers; r->buffers = b->next; destroy_buffer(g, b); }
+    while (r->chunks) { Chunk *k = r->chunks; r->chunks = k->next; chunk_destroy(g, k); }
     while (r->images) dkr_vk_image_destroy(g, r->images);
     while (r->samplers) {
         DkrVkSampler *s = r->samplers; r->samplers = s->next;

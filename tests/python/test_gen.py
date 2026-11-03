@@ -105,3 +105,15 @@ int main(void) {
     assert built.returncode == 0, built.stdout + built.stderr
     run = subprocess.run([str(executable)], capture_output=True, text=True, timeout=10)
     assert run.returncode == 0, run.stdout + run.stderr
+
+
+def test_movie_overrides_need_the_movie_library_helpers():
+    assert gen.movie_overrides({}) == {}
+    syms = {name: 0x1000 + 8 * i for i, name in enumerate(gen.MOVIE_SYMBOLS.values())}
+    overrides = gen.movie_overrides(syms)
+    assert overrides == gen.MOVIE_OVERRIDES
+    # Every movie::Decoder member the game imports is replaced, so no SDK DecoderImpl is ever built.
+    for member in ("C1ENS_11DecoderTypeENS_19DecoderOutputFormatENS_11DecoderModeE", "D1Ev", "9ConfigureEPNS_9MediaDataE",
+                   "24SendInputBufferForDecodeEiiilj", "24AcquireOutputBufferIndexEPiPlPjS1_", "24ReleaseOutputBufferIndexEi"):
+        assert "_ZN5movie7Decoder" + member in overrides
+    assert all(host.startswith("dkr_movie_") for host in overrides.values())

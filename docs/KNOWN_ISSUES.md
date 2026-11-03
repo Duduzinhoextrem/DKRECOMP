@@ -1,5 +1,16 @@
 # Problemas conhecidos
 
+## Prioridades medidas em 2026-11-03
+
+- **Vídeos:** tocam pelo Media Foundation (`runtime/src/movie.c`), só no modo CPU com saída NV12 e áudio AAC. O modo de textura NVN (mode 2) e outros codecs são recusados com log. Ainda não testados: `outro.mp4`, `dkBand.mp4` e os `Demo1–4` da tela de título.
+- **Transform feedback não é emulado.** Draws com captura ativa são pulados (o modelo 3D do controle no Controller
+  Select fica preto). Exige layouts XFB no tradutor de shaders e `VK_EXT_transform_feedback`.
+- **Cópias de vértices:** ~20 MB/frame ainda são copiados da memória do guest a cada batch. Mapear os memory pools com
+  `VK_EXT_external_memory_host` eliminaria a cópia.
+- **CPU:** C gerado em `-O1`; `rt_dispatch` faz busca binária a cada chamada indireta. Hoje não limita os menus (a thread
+  do jogo fica ociosa), mas deve pesar na gameplay.
+- **Áudio:** WinMM exige ≥ ~25–50 ms na fila; WASAPI em modo evento reduziria a latência atual (~60–80 ms).
+
 ## Bloqueios
 
 | # | Problema | Impacto | Saída |

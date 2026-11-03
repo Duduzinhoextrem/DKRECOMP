@@ -104,6 +104,8 @@ int dkr_vk_image_copy(DkrGfx *gfx, DkrVkImage *source, unsigned source_level, un
                       unsigned width, unsigned height);
 int dkr_vk_draw(DkrGfx *gfx, const DkrVkDraw *draw);
 int dkr_vk_image_present(DkrGfx *gfx, DkrVkImage *image, const char *capture_bmp);
+/* Presented images are stored bottom-up (lower-left window origin): flip them vertically on the way to the window. */
+void dkr_gfx_set_present_flip(DkrGfx *gfx, int flip);
 
 /* Backend implementation details shared with vk.c; callers use the opaque resource pointers above. */
 struct DkrVkImage {
@@ -125,7 +127,8 @@ struct DkrVkBuffer {
     VkBuffer buffer;
     VkDeviceMemory memory;
     size_t size;
-    int temporary;
+    int temporary;      /* 1: a slice of the batch upload arena, released when the next batch begins */
+    VkDeviceSize base;  /* byte offset of this buffer inside `buffer` (non-zero only for arena slices) */
 };
 void dkr_vk_resources_destroy(DkrGfx *gfx);
 int dkr_vk_image_ready(DkrGfx *gfx, DkrVkImage *image);
