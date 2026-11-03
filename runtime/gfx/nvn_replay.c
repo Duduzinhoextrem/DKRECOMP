@@ -560,13 +560,33 @@ static void draw(Replay *s, unsigned primitive, unsigned first, unsigned count, 
         d.depth_view = view(s, depth, &s->depth, 1); d.pipeline.depth = d.depth_view->info.format;
         if (!width) { width = d.depth->info.width >> s->depth.base_level; height = d.depth->info.height >> s->depth.base_level;
             if (!width) width = 1; if (!height) height = 1; } }
+    /* Rendering covers the intersection of all attachments (the backend checks the scissor against the smallest).
+     * Targets can differ in size: a depth buffer that is not eligible for the render scale stays unscaled. */
+    for (unsigned i = 1; i < d.pipeline.color_count; i++) {
+        unsigned tw = d.colors[i]->info.width >> s->colors[i].base_level, th = d.colors[i]->info.height >> s->colors[i].base_level;
+        if (!tw) tw = 1; if (!th) th = 1;
+        if (tw < width) width = tw; if (th < height) height = th;
+    }
+    if (depth && d.pipeline.color_count) {
+        unsigned tw = d.depth->info.width >> s->depth.base_level, th = d.depth->info.height >> s->depth.base_level;
+        if (!tw) tw = 1; if (!th) th = 1;
+        if (tw < width) width = tw; if (th < height) height = th;
+    }
     if (s->discard) width = height = 1;
     if (!width || !height) hos_stop(s->cpu, "NVN replay: draw without targets");
     float ts = targets[0] ? targets[0]->scale : depth ? depth->scale : 1;
-    for (unsigned i = 0; i < s->target_count; i++) if (targets[i] && targets[i]->scale != ts) { static int once; if (!once++) hos_log("replay: a draw mixes render targets of different scales\n"); }
+    int mixed = depth && depth->scale != ts;
+    for (unsigned i = 0; i < s->target_count; i++) if (targets[i] && targets[i]->scale != ts) mixed = 1;
+    if (mixed) {
+        static int once;
+        if (!once++) hos_log("replay: a draw mixes render targets of different scales (color %ux%u x%.2f, depth %ux%u x%.2f)\n",
+            s->colors[0].desc.width, s->colors[0].desc.height, ts, depth ? s->depth.desc.width : 0, depth ? s->depth.desc.height : 0,
+            depth ? depth->scale : 0.f);
+    }
     /* Guest viewport and scissor are in unscaled texels; a scaled target needs them multiplied. */
     float x = s->has_viewport ? s->viewport[0] * ts : 0, y = s->has_viewport ? s->viewport[1] * ts : 0;
     float w = s->has_viewport ? s->viewport[2] * ts : (float)width, h = s->has_viewport ? s->viewport[3] * ts : (float)height;
+    if (!(w > 0) || !(h != 0)) return; /* an empty viewport rasterizes nothing on the console either */
     /* NVN_WINDOW_ORIGIN_MODE_LOWER_LEFT (Tropical Freeze) is GL's convention: NDC y = -1 and window y = 0 are row 0 of
      * the target, exactly like a Vulkan viewport with positive height. Keeping that memory layout makes viewports,
      * scissors, gl_FragCoord and render targets later sampled as textures match the console; only presentation flips.

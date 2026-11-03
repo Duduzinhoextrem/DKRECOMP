@@ -1001,7 +1001,9 @@ int dkr_vk_draw(DkrGfx *g, const DkrVkDraw *draw) {
     if (!(draw->viewport.width > 0) || draw->viewport.height == 0 || draw->scissor.offset.x < 0 || draw->scissor.offset.y < 0 ||
         (uint64_t)draw->scissor.offset.x + draw->scissor.extent.width > width ||
         (uint64_t)draw->scissor.offset.y + draw->scissor.extent.height > height)
-        return dkr_vk_fail(g, "invalid viewport/scissor for target extent");
+        return dkr_vk_fail(g, "invalid viewport/scissor for target extent (viewport %.1fx%.1f, scissor %d,%d %ux%u, extent %ux%u)",
+            draw->viewport.width, draw->viewport.height, draw->scissor.offset.x, draw->scissor.offset.y,
+            draw->scissor.extent.width, draw->scissor.extent.height, width, height);
     for (unsigned i = 0; i < info->stream_count; i++) {
         unsigned binding = info->streams[i].binding;
         if (binding >= DKR_VK_VERTEX_SLOTS || !draw->vertices[binding] || draw->vertices[binding]->owner != g ||
