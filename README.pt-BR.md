@@ -92,7 +92,8 @@ Os testes nativos e de Vulkan usam CMake e estão em [docs/TESTING.md](docs/TEST
 Projetos de referência: TotK Recomp, LAS Recomp, SwitchRecomp e N64Recomp. O código vindo de outros projetos, com a
 respectiva licença, está listado em [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
-A licença do código do DKRecomp ainda não foi escolhida. Nenhuma licença deste repositório cobre o jogo.
+O código do DKRecomp é distribuído sob a [licença MIT](LICENSE). O código de terceiros mantém a própria licença.
+Nenhuma licença deste repositório cobre o jogo nem arquivos tirados dele ou gerados a partir dele.
 
 O DKRecomp é um projeto independente, sem afiliação com a Nintendo ou a Retro Studios. *Donkey Kong Country*,
 *Tropical Freeze* e *Nintendo Switch* são marcas da Nintendo.
