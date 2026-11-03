@@ -51,4 +51,5 @@ Comando de análise quando a ExeFS existir:
 
 ## Nunca necessários
 
-Chaves (`prod.keys`, `title.keys`), firmware do console, arquivos de outros jogos, saves de outras pessoas.
+Firmware do console, `title.keys`, arquivos de outros jogos, saves de outras pessoas. O `prod.keys` só é usado pelo
+seu próprio `nstool`, quando o launcher prepara o jogo a partir do NSP; o DKRecomp não abre esse arquivo.

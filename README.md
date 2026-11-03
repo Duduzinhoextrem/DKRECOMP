@@ -1,82 +1,99 @@
 # DKRecomp
 
-Ferramenta de **recompilação estática** que, a longo prazo, deve converter a versão Nintendo Switch de
-*Donkey Kong Country: Tropical Freeze* num programa nativo para Windows x86-64, sem emulador durante a execução.
+Português: [README.pt-BR.md](README.pt-BR.md)
 
-> **Ainda não há gráficos nem gameplay.** O executável nativo já inicializa o SDK, chega ao `nnMain`, executa
-> uma segunda thread e lê a RomFS. O boot para com relatório no primeiro recurso pendente.
-> Veja o estado medido em [docs/PROGRESS.md](docs/PROGRESS.md).
+DKRecomp turns the Nintendo Switch version of *Donkey Kong Country: Tropical Freeze* into a native Windows x86-64
+program. It is a static recompiler: the game's ARM64 code is translated to C once, on your own computer, and compiled
+with Clang. No emulator runs while you play.
 
-> **Nenhum arquivo do jogo está incluído**, e o DKRecomp não decripta nem baixa nada. Você precisa da sua própria
-> cópia legítima. Veja [docs/LEGAL.md](docs/LEGAL.md) e [docs/REQUIRED_FILES.md](docs/REQUIRED_FILES.md).
+This repository contains no game files. You need your own copy of the game, and you run the conversion yourself.
+DKRecomp does not decrypt anything, does not download game content and never opens your keys. The rules are in
+[docs/LEGAL.en.md](docs/LEGAL.en.md).
 
-## O que já funciona
+## Status
 
-- `dkrecomp.identify`: lê NSPs (contêiner PFS0, ticket, metadados), confere o SHA-256 de cada conteúdo e reconhece
-  a versão; lê ExeFS extraídas (NSO, NPDM, imports, SVCs, middleware).
-- Decodificador e recompilador ARM64 → C (inteiros, desvios, memória, atômicos, FP escalar e SIMD vetorial),
-  cobrindo as instruções das funções com símbolo de `main` e `subsdk0` da versão base 1.0.0.
-- Ligação estática dos módulos, loader e boot do código recompilado, threads do Windows, sincronização, IPC e
-  serviços iniciais do Horizon. Imagem RomFS gerada por streaming a partir dos arquivos já extraídos do usuário.
-- Testes diferenciais: o mesmo código ARM64 roda no Unicorn e recompilado, e precisa dar o mesmo resultado
-  (dezenas de milhares de instruções aleatórias e programas C inteiros em O0/O1/O2/Os).
+The game boots, plays its menus and video cutscenes, and its levels are playable, special stages included. On the
+maintainer's machine (RTX 5060 Ti) it runs at 60 fps, with an optional internal resolution of up to 4x. Bugs remain:
+see [docs/KNOWN_ISSUES.md](docs/KNOWN_ISSUES.md) and the measured history in [docs/PROGRESS.md](docs/PROGRESS.md).
+Most documents under `docs/` are in Portuguese.
 
-## Jogar
+Only the base game, version 1.0.0 (title `0100C1F0051B6000`, v0), is supported.
 
-Dê dois cliques em **`DKRecomp.bat`**. O launcher prepara o jogo a partir do **seu** NSP (com o seu `nstool` e as suas
-chaves), compila e abre o jogo, com opções de janela/tela cheia, resolução de renderização até 8K, limite de FPS,
-VSync e áudio. Guia: [docs/LAUNCHER_E_CONFIGURACOES.md](docs/LAUNCHER_E_CONFIGURACOES.md).
+## Requirements
 
-Prefere um executável? `.venv/Scripts/python tools/build_launcher_exe.py` cria **`DKRecomp.exe`** na raiz: ele abre o
-mesmo launcher, sem janela de console. Deixe-o nessa pasta (ou use um atalho para ele).
+- Windows 10 or 11, 64-bit, on a CPU with FMA (Intel Haswell, AMD Zen or newer).
+- A GPU whose driver supports Vulkan 1.3. Some scenes also use the `VK_EXT_depth_clip_control` and
+  `VK_EXT_transform_feedback` extensions.
+- About 20 GB of free disk space during setup. The extracted RomFS and the RomFS image take about 7 GB each.
+- Python 3.13, Git and the .NET 10 SDK.
+- From your own copy of the game: the base game NSP, your `nstool.exe` and your `prod.keys`. `nstool` does the
+  decryption on your machine; DKRecomp only passes it the file paths you pick.
 
-Para jogar em outro computador seu sem instalar nada além do driver de vídeo e do .NET 10 Runtime:
-`.venv/Scripts/python tools/make_portable.py` copia o jogo já compilado para `DKRecomp-Portatil/` (~7 GB, com
-`DKRecomp.exe` e um `LEIA-ME.txt`). Copie a pasta inteira; o `DKRecomp.exe` dela abre o jogo direto.
-
-## Começar (desenvolvimento)
-
-Requisitos: Windows 10/11 x86-64, Python 3.13, Git.
+## Setup
 
 ```bash
+git clone <this repository> DKRECOMP
+cd DKRECOMP
 python -m venv .venv
 .venv/Scripts/python -m pip install -r requirements-dev.txt
 ```
+
+The shader translator is built from a pinned revision of the TotK Recomp project, which carries the MIT-licensed
+Ryujinx shader compiler:
+
+```bash
+git clone https://github.com/valentderah/totk-pc-recomp refs/totk-pc-recomp
+git -C refs/totk-pc-recomp checkout c3b9a4e7f6ec3d1f0a8c84b66b1703b15639a784
+```
+
+Then double-click `DKRecomp.bat`. The launcher is in Portuguese:
+
+1. **Preparar a partir do NSP…** asks for your NSP, `nstool.exe` and `prod.keys`. It extracts the code and data,
+   generates the C code and compiles it. The first build takes about 10 minutes. The first run also downloads SDL3
+   (controllers) and the Vulkan headers from their official sources.
+2. **Jogar** starts the game.
+
+The other tabs edit the settings, which are saved to `config.local.toml`. The available keys are described in
+[docs/LAUNCHER_E_CONFIGURACOES.md](docs/LAUNCHER_E_CONFIGURACOES.md).
+
+To skip the console window, `.venv/Scripts/python tools/build_launcher_exe.py` builds `DKRecomp.exe`, which opens
+the same launcher. To play on another of your own computers without installing Python there,
+`.venv/Scripts/python tools/make_portable.py` copies the built game into `DKRecomp-Portatil/`. That folder holds data
+from your copy of the game, so keep it to yourself.
+
+## Controls
+
+Xbox, DualShock 4 and DualSense controllers work through SDL3, with XInput as a fallback. On the keyboard: WASD or
+the arrow keys to move, Space or K to jump, J or Q to attack and roll, L or E to confirm, Enter or Esc to pause,
+Alt+Enter or F11 for full screen.
+
+## How it works
+
+- `tools/dkrecomp/` reads NSP, NSO and NPDM files, decodes ARM64, lifts each function to C and links the modules.
+- `runtime/src/` implements the parts of Horizon OS the game calls: threads and synchronization, IPC, and the
+  services for input, audio, file system and saves. Video cutscenes are decoded with Windows Media Foundation.
+- `runtime/gfx/` records the game's NVN commands and replays them on Vulkan. Maxwell shaders are translated to
+  SPIR-V by Ryujinx's shader compiler, running as a separate process (`tools/shader_translator/`).
+- `tests/` checks the recompiler against the Unicorn CPU emulator: the same ARM64 code runs in both and must give
+  the same result.
+
+More detail in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+
+## Development
 
 ```bash
 .venv/Scripts/python -m pytest
 ```
 
-Identificar seus arquivos (relatório em `reports/`, ignorado pelo Git):
+Native and Vulkan tests use CMake and are described in [docs/TESTING.md](docs/TESTING.md). Before every push, run
+`.venv/Scripts/python tools/check_content.py`, which fails if a game file or anything derived from one is tracked.
 
-```bash
-PYTHONPATH=tools .venv/Scripts/python -m dkrecomp.identify "game original meu" --hash
-```
+## Credits and license
 
-Mais comandos em [docs/TESTING.md](docs/TESTING.md).
+Reference projects: TotK Recomp, LAS Recomp, SwitchRecomp and N64Recomp. Code taken from other projects, with its
+license, is listed in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
-## Documentação
+The license for DKRecomp's own code has not been chosen yet. No license in this repository covers the game.
 
-| Documento | Conteúdo |
-|---|---|
-| [docs/FEASIBILITY.md](docs/FEASIBILITY.md) | Viabilidade: fatos, hipóteses, incógnitas, comparação com o TotK Recomp |
-| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Modelo de execução e organização do código |
-| [docs/ROADMAP.md](docs/ROADMAP.md) | Marcos (MVP 1–6) e critérios de aceitação |
-| [docs/PROGRESS.md](docs/PROGRESS.md) | Progresso real, com evidências |
-| [docs/LAUNCHER_E_CONFIGURACOES.md](docs/LAUNCHER_E_CONFIGURACOES.md) | Launcher, configurações, resolução, FPS e vídeos |
-| [docs/TESTING.md](docs/TESTING.md) | Como testar e o que cada teste prova |
-| [docs/KNOWN_ISSUES.md](docs/KNOWN_ISSUES.md) | Limitações e bloqueios |
-| [docs/LEGAL.md](docs/LEGAL.md) | Regras sobre arquivos proprietários |
-| [docs/REQUIRED_FILES.md](docs/REQUIRED_FILES.md) | Arquivos do jogo necessários em cada fase |
-| [docs/REFERENCES_AUDIT.md](docs/REFERENCES_AUDIT.md) | Auditoria de confiabilidade dos repositórios sugeridos |
-
-## Créditos e licença
-
-Projetos de referência: TotK Recomp, LAS Recomp, SwitchRecomp, N64Recomp. A lista MIT de nomes públicos NVN foi
-incorporada; atribuição, licenças e ferramentas em [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
-
-Licença do código do DKRecomp: **a definir pelo mantenedor** (MIT é a opção compatível com os projetos de
-referência). Nenhuma licença do projeto cobre o jogo.
-
-Projeto independente, sem afiliação com a Nintendo ou a Retro Studios. *Donkey Kong Country*, *Tropical Freeze* e
-*Nintendo Switch* são marcas da Nintendo.
+DKRecomp is an independent project with no affiliation with Nintendo or Retro Studios. *Donkey Kong Country*,
+*Tropical Freeze* and *Nintendo Switch* are trademarks of Nintendo.
