@@ -1,6 +1,7 @@
 /* Persistent, hidden translator process. Requests use actual bound resource types; caches include compiler identity.
  * Paths/derived shader files stay in the configured local cache, default reports/nvn_shader_cache in this checkout. */
 #include "shader_client.h"
+#include "perf.h"
 #include "../src/hos.h"
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -51,6 +52,25 @@ static void string(Cpu *c, Json *j, const char *value) {
 static void directory(Cpu *c, const wchar_t *path) {
     if (!CreateDirectoryW(path, NULL) && GetLastError() != ERROR_ALREADY_EXISTS)
         hos_stop(c, "shader: cannot create local cache directory (%lu)", GetLastError());
+}
+/* <cache directory>/<name>, without stopping: callers that only want an optional file use this before any shader. */
+int nvn_shader_cache_file(const wchar_t *name, wchar_t *out, unsigned count) {
+    wchar_t root[4096], directory_path[4096];
+    DWORD n = GetEnvironmentVariableW(L"DKR_SHADER_CACHE", directory_path, 4096);
+    if (n >= 4096) return -1;
+    if (!n) {
+        if (!GetModuleFileNameW(NULL, root, 4096)) return -1;
+        for (unsigned i = 0; i < 3; i++) {
+            wchar_t *slash = wcsrchr(root, L'\\');
+            if (!slash) return -1;
+            *slash = 0;
+        }
+        swprintf(directory_path, 4096, L"%ls/reports", root); CreateDirectoryW(directory_path, NULL);
+        swprintf(directory_path, 4096, L"%ls/reports/nvn_shader_cache", root);
+    }
+    if (!CreateDirectoryW(directory_path, NULL) && GetLastError() != ERROR_ALREADY_EXISTS) return -1;
+    int written = swprintf(out, count, L"%ls/%ls", directory_path, name);
+    return written > 0 && (unsigned)written < count ? 0 : -1;
 }
 static void initialize(Cpu *c) {
     if (client.initialized) return;
@@ -184,7 +204,13 @@ static int load_compatible_variant(Cpu *c, const NvnShader *shader, const NvnSha
     return found;
 }
 
+static void translate(Cpu *c, const NvnShader *shader, const NvnShaderInputs *inputs, DkrShaderCache *cache);
 void nvn_shader_translate(Cpu *c, const NvnShader *shader, const NvnShaderInputs *inputs, DkrShaderCache *cache) {
+    int64_t t0 = dkr_perf_on ? dkr_perf_now() : 0;
+    translate(c, shader, inputs, cache);
+    DKR_PERF_ADD(shader, dkr_perf_now() - t0);
+}
+static void translate(Cpu *c, const NvnShader *shader, const NvnShaderInputs *inputs, DkrShaderCache *cache) {
     initialize(c);
     char key[66]; nvn_shader_variant_key(c, shader, inputs, key);
     wchar_t binary[4096], code_path[4096];
@@ -242,6 +268,7 @@ void nvn_shader_translate(Cpu *c, const NvnShader *shader, const NvnShaderInputs
         ld32((uint64_t)(uintptr_t)shader->control + 0x748), ld32((uint64_t)(uintptr_t)shader->control + 0x74c),
         ld32((uint64_t)(uintptr_t)shader->control + 0x750), ld32((uint64_t)(uintptr_t)shader->control + 0x754));
     append(c, &request, "}}\n");
+    DKR_PERF_ADD(shader_compiles, 1);
     start(c);
     DWORD written;
     if (!WriteFile(client.input, request.data, (DWORD)request.size, &written, NULL) || written != request.size)

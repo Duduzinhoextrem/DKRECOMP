@@ -31,7 +31,8 @@
     X(CmdBindPipeline) X(CmdBindDescriptorSets) X(CmdBindVertexBuffers) X(CmdBindIndexBuffer) \
     X(CmdDraw) X(CmdDrawIndexed) X(CmdSetViewport) X(CmdSetScissor) X(CmdSetBlendConstants) \
     X(CmdSetStencilReference) X(CmdSetStencilCompareMask) X(CmdSetStencilWriteMask) X(CmdSetDepthBias) \
-    X(CmdCopyBufferToImage) X(CmdCopyImage) X(CmdBlitImage) X(CmdClearAttachments)
+    X(CmdCopyBufferToImage) X(CmdCopyImage) X(CmdBlitImage) X(CmdClearAttachments) \
+    X(CreatePipelineCache) X(DestroyPipelineCache) X(GetPipelineCacheData)
 
 typedef struct DkrVkResources DkrVkResources;
 struct DkrGfx {
@@ -72,6 +73,10 @@ struct DkrGfx {
     PFN_vkCmdBeginTransformFeedbackEXT vkCmdBeginTransformFeedbackEXT;
     PFN_vkCmdEndTransformFeedbackEXT vkCmdEndTransformFeedbackEXT;
     DkrVkResources *resources;
+    VkPipelineCache pipeline_cache;   /* VK_NULL_HANDLE unless dkr_vk_pipeline_cache_open was called */
+    wchar_t *pipeline_cache_path;
+    int pipeline_cache_dirty;
+    ULONGLONG pipeline_cache_changed; /* GetTickCount64 of the last pipeline added to the cache */
     PFN_vkGetInstanceProcAddr get_instance_proc;
 #define DECLARE_PROC(name) PFN_vk##name vk##name;
     INSTANCE_PROCS(DECLARE_PROC)

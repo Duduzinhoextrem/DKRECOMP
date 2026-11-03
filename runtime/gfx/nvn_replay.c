@@ -1030,6 +1030,11 @@ void dkr_nvn_replay_present(Cpu *cpu, uint64_t texture, uint64_t frame) {
         }
     } while (dkr_gfx_frames(s->gfx) == before);
     if (frame == 1) hos_log("replay: first NVN texture presented through Vulkan\n");
+    /* New pipelines reach the disk cache once rendering has been quiet for a few seconds. */
+    if (dkr_vk_pipeline_cache_save(s->gfx, 1)) {
+        static int warned;
+        if (!warned++) hos_log("replay: cannot save the pipeline cache: %s\n", dkr_gfx_error(s->gfx));
+    }
     const char *trace = getenv("DKR_TRACE_DRAWS");
     uint64_t trace_frame = trace ? strtoull(trace, NULL, 10) : 0;
     if (g_trace_draws) hos_log("draw: end of traced frame\n");

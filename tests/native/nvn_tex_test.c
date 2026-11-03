@@ -7,6 +7,7 @@
 #include "../../runtime/gfx/nvn_tex.h"
 #include "../../runtime/gfx/astc.h"
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 typedef struct { unsigned format, width, height, levels, h; uint64_t size; } Case;
@@ -68,6 +69,22 @@ static int test_reading(void) {
     memcpy(bad, blocks[0], 16); bad[1] |= 2; /* HDR void extent is unavailable in LDR. */
     T(!astc_decode_block(bad, 5, 5, false, one));
     for (unsigned i = 0; i < 25; i++) T(!memcmp(one + i*4, magenta, 4));
+    { /* A texture large enough for the multi-threaded decode, with partial edge blocks: identical to block-by-block. */
+        const uint32_t w = 503, h = 301, bx = (w + 4) / 5, by = (h + 4) / 5;
+        uint8_t *image = malloc((size_t)bx * by * 16), *rgba = malloc((size_t)w * h * 4);
+        T(image && rgba);
+        if (image && rgba) {
+            for (uint32_t j = 0; j < by; j++) for (uint32_t i = 0; i < bx; i++)
+                memcpy(image + 16 * ((size_t)j * bx + i), (i * 7 + j * 3) % 5 == 4 ? bad : blocks[(i + j) % 4], 16);
+            astc_decode_ldr(image, w, h, 5, 5, false, rgba);
+            for (uint32_t j = 0; j < by; j++) for (uint32_t i = 0; i < bx; i++) {
+                astc_decode_block(image + 16 * ((size_t)j * bx + i), 5, 5, false, one);
+                for (uint32_t y = 0; y < 5 && j*5 + y < h; y++) for (uint32_t x = 0; x < 5 && i*5 + x < w; x++)
+                    T(!memcmp(rgba + 4 * ((size_t)(j*5 + y) * w + i*5 + x), one + 4 * (y*5 + x), 4));
+            }
+        }
+        free(image); free(rgba);
+    }
 #undef T
     return failures;
 }

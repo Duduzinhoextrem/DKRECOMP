@@ -7,6 +7,8 @@
 #include "nvn_internal.h"
 #include "nvn_replay.h"
 #include "perf.h"
+#include "shader_client.h"
+#include "vk_draw.h"
 #include "dkr/settings.h"
 #include "../src/hos.h"
 
@@ -280,6 +282,13 @@ void dkr_nvn_graphics_init(Cpu *c) {
                            settings->display_mode == DKR_DISPLAY_BORDERLESS, (int)settings->vsync, settings->linear_filter,
                            settings->keep_aspect};
     if (dkr_gfx_create(&g_graphics, &config)) hos_stop(c, "Vulkan initialization failed: %s", dkr_gfx_error(g_graphics));
+    /* Driver pipeline cache next to the translated shaders: a pipeline compiled once is not compiled again on the
+     * next run. DKR_PIPELINE_CACHE=0 turns it off. Failing to open it only costs that speed-up. */
+    const char *pipeline_cache = getenv("DKR_PIPELINE_CACHE");
+    wchar_t cache_path[4096];
+    if (!(pipeline_cache && !strcmp(pipeline_cache, "0")) && !nvn_shader_cache_file(L"pipelines.bin", cache_path, 4096) &&
+        dkr_vk_pipeline_cache_open(g_graphics, cache_path))
+        hos_log("nvn: pipeline cache unavailable: %s\n", dkr_gfx_error(g_graphics));
     hos_log("nvn: host Vulkan device ready, guest work memory %#llx +%#llx; no game frame submitted\n",
             (unsigned long long)g_work_memory, (unsigned long long)g_work_size);
 }

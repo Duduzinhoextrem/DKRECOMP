@@ -2,6 +2,7 @@
 #define DKR_SHADER_CLIENT_H
 #include "nvn_shaders.h"
 #include "shader_cache.h"
+#include <wchar.h>
 
 typedef struct NvnShaderInputs {
     uint32_t texture_mask, texture_targets[32], texture_formats[32];
@@ -13,4 +14,5 @@ typedef struct NvnShaderInputs {
 void nvn_shader_variant_key(Cpu *c, const NvnShader *shader, const NvnShaderInputs *inputs, char key[66]);
 void nvn_shader_translate(Cpu *c, const NvnShader *shader, const NvnShaderInputs *inputs, DkrShaderCache *cache);
 void nvn_shader_client_shutdown(void);
+int nvn_shader_cache_file(const wchar_t *name, wchar_t *out, unsigned count);
 #endif

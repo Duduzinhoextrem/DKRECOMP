@@ -10,6 +10,10 @@
 #include "astc.h"
 
 #include <string.h>
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#endif
 
 // Quantization levels QUANT_2 .. QUANT_256 (index 0..20): bits / trits / quints per level.
 static const uint8_t q_bits[21]   = {1, 0, 2, 0, 1, 3, 1, 2, 4, 2, 3, 5, 3, 4, 6, 4, 5, 7, 5, 6, 8};
@@ -505,12 +509,19 @@ error:
     return false;
 }
 
-void astc_decode_ldr(const uint8_t *blocks, uint32_t width, uint32_t height, uint32_t bw, uint32_t bh,
-                     bool srgb, uint8_t *rgba_out) {
-    if (bw < 4 || bh < 4 || bw > 12 || bh > 12) return;
-    uint32_t bx = (width + bw - 1) / bw, by = (height + bh - 1) / bh;
+/* DKRecomp: block rows [first, last) of one image. Blocks are independent, so rows can be split across threads. */
+typedef struct DecodeRows {
+    const uint8_t *blocks; uint8_t *rgba_out;
+    uint32_t width, height, bw, bh, first, last;
+    bool srgb;
+} DecodeRows;
+static void decode_rows(const DecodeRows *r) {
+    const uint8_t *blocks = r->blocks; uint8_t *rgba_out = r->rgba_out;
+    uint32_t width = r->width, height = r->height, bw = r->bw, bh = r->bh;
+    bool srgb = r->srgb;
+    uint32_t bx = (width + bw - 1) / bw;
     uint8_t tmp[12 * 12 * 4];
-    for (uint32_t j = 0; j < by; j++) {
+    for (uint32_t j = r->first; j < r->last; j++) {
         for (uint32_t i = 0; i < bx; i++) {
             const uint8_t *src = blocks + 16 * ((size_t)j * bx + i);
             uint32_t x0 = i * bw, y0 = j * bh;
@@ -524,4 +535,46 @@ void astc_decode_ldr(const uint8_t *blocks, uint32_t width, uint32_t height, uin
             }
         }
     }
+}
+
+#ifdef _WIN32
+static DWORD WINAPI decode_thread(void *rows) { decode_rows(rows); return 0; }
+#endif
+
+void astc_decode_ldr(const uint8_t *blocks, uint32_t width, uint32_t height, uint32_t bw, uint32_t bh,
+                     bool srgb, uint8_t *rgba_out) {
+    if (bw < 4 || bh < 4 || bw > 12 || bh > 12) return;
+    uint32_t by = (height + bh - 1) / bh;
+    DecodeRows all = {blocks, rgba_out, width, height, bw, bh, 0, by, srgb};
+#ifdef _WIN32
+    /* A large texture decoded on one thread stalls the frame that first samples it; split it across the cores.
+     * Small images (most mips) stay on the caller's thread, where starting threads would cost more. */
+    enum { MAX_WORKERS = 16 };
+    static LONG cores;
+    if (!cores) { SYSTEM_INFO info; GetSystemInfo(&info); InterlockedExchange(&cores, (LONG)info.dwNumberOfProcessors); }
+    uint32_t workers = (uint64_t)width * height >= 256 * 256 ? (uint32_t)cores : 1;
+    if (workers > MAX_WORKERS) workers = MAX_WORKERS;
+    if (workers > by) workers = by;
+    if (workers > 1) {
+        DecodeRows parts[MAX_WORKERS];
+        HANDLE threads[MAX_WORKERS];
+        uint32_t started = 0;
+        for (uint32_t w = 0; w < workers; w++) {
+            parts[w] = all;
+            parts[w].first = (uint32_t)((uint64_t)by * w / workers);
+            parts[w].last = (uint32_t)((uint64_t)by * (w + 1) / workers);
+        }
+        /* worker 0 is this thread; any thread that cannot start has its rows decoded here as well */
+        for (uint32_t w = 1; w < workers; w++) {
+            threads[started] = CreateThread(NULL, 64 * 1024, decode_thread, &parts[w], STACK_SIZE_PARAM_IS_A_RESERVATION, NULL);
+            if (threads[started]) started++;
+            else decode_rows(&parts[w]);
+        }
+        decode_rows(&parts[0]);
+        if (started) WaitForMultipleObjects(started, threads, TRUE, INFINITE);
+        for (uint32_t i = 0; i < started; i++) CloseHandle(threads[i]);
+        return;
+    }
+#endif
+    decode_rows(&all);
 }

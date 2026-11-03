@@ -3,6 +3,7 @@
 #define DKR_VK_DRAW_H
 #include "dkr/gfx.h"
 #include <vulkan/vulkan.h>
+#include <wchar.h>
 
 #define DKR_VK_STAGES 6
 #define DKR_VK_BINDINGS 128
@@ -115,6 +116,12 @@ int dkr_vk_image_copy(DkrGfx *gfx, DkrVkImage *source, unsigned source_level, un
 int dkr_vk_image_blit(DkrGfx *gfx, DkrVkImage *source, unsigned source_level, unsigned source_layer, const int32_t source_rect[4],
                       DkrVkImage *destination, unsigned destination_level, unsigned destination_layer, const int32_t destination_rect[4]);
 int dkr_vk_draw(DkrGfx *gfx, const DkrVkDraw *draw);
+/* Persistent driver pipeline cache. open loads `path` when its header matches this device (otherwise starts empty)
+ * and makes every later pipeline use the cache. save writes it back atomically when new pipelines were added;
+ * with `when_idle` it only does so after a few seconds without a new pipeline, so it never lands on a busy frame.
+ * dkr_gfx_destroy saves it one last time. Both return 0 on success and also when nothing had to be done. */
+int dkr_vk_pipeline_cache_open(DkrGfx *gfx, const wchar_t *path);
+int dkr_vk_pipeline_cache_save(DkrGfx *gfx, int when_idle);
 int dkr_vk_image_present(DkrGfx *gfx, DkrVkImage *image, const char *capture_bmp);
 /* Presented images are stored bottom-up (lower-left window origin): flip them vertically on the way to the window. */
 void dkr_gfx_set_present_flip(DkrGfx *gfx, int flip);

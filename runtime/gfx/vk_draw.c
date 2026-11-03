@@ -32,6 +32,7 @@ typedef struct Framebuffer {
     VkImageView views[9];
     VkFramebuffer framebuffer;
 } Framebuffer;
+typedef struct Snapshot { struct Snapshot *next; DkrVkImage *image; } Snapshot;
 typedef struct RenderPass {
     struct RenderPass *next;
     uint32_t color_count;
@@ -63,7 +64,7 @@ struct DkrVkResources {
     VkFramebuffer active_framebuffer;
     VkDescriptorPool descriptors;
     VkPhysicalDeviceProperties properties;
-    DkrVkImage *snapshot;
+    struct Snapshot *snapshots;  /* feedback-loop copies, one per image shape; they live as long as the context */
     Chunk *chunks;
     VkDeviceSize arena_align;
 };
@@ -132,7 +133,9 @@ int dkr_vk_image_create(DkrGfx *g, const DkrVkImageInfo *info, DkrVkImage **out)
     if (index == UINT32_MAX) return dkr_vk_fail(g, "no memory type for image");
     VkMemoryAllocateInfo allocate = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
         .allocationSize = required.size, .memoryTypeIndex = index};
+    int64_t t0 = dkr_perf_on ? dkr_perf_now() : 0;
     VK_TRY(g, g->vkAllocateMemory(g->device, &allocate, NULL, &image->memory));
+    DKR_PERF_ADD(alloc, dkr_perf_now() - t0); DKR_PERF_ADD(allocs, 1);
     VK_TRY(g, g->vkBindImageMemory(g->device, image->image, image->memory, 0));
     VkImageViewCreateInfo view = {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO, .image = image->image,
         .viewType = info->layers == 1 ? VK_IMAGE_VIEW_TYPE_2D : VK_IMAGE_VIEW_TYPE_2D_ARRAY, .format = info->format,
@@ -238,7 +241,10 @@ static Chunk *chunk_create(DkrGfx *g, VkDeviceSize size) {
     index = memory_type(g, required.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT, VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, &flags);
     if (index == UINT32_MAX) goto fail;
     VkMemoryAllocateInfo allocate = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, .allocationSize = required.size, .memoryTypeIndex = index};
-    if (g->vkAllocateMemory(g->device, &allocate, NULL, &k->memory) != VK_SUCCESS ||
+    int64_t t0 = dkr_perf_on ? dkr_perf_now() : 0;
+    VkResult allocated = g->vkAllocateMemory(g->device, &allocate, NULL, &k->memory);
+    DKR_PERF_ADD(alloc, dkr_perf_now() - t0); DKR_PERF_ADD(allocs, 1);
+    if (allocated != VK_SUCCESS ||
         g->vkBindBufferMemory(g->device, k->buffer, k->memory, 0) != VK_SUCCESS ||
         g->vkMapMemory(g->device, k->memory, 0, VK_WHOLE_SIZE, 0, (void **)&k->mapped) != VK_SUCCESS) goto fail;
     k->coherent = (flags & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) != 0;
@@ -280,6 +286,13 @@ int dkr_vk_buffer_temporary(DkrGfx *g, const void *data, size_t size, DkrVkBuffe
         if (offset <= k->size && size <= k->size - offset) break;
     }
     if (!k) {
+        /* The first batch also reserves a spare chunk: growing the arena later means a 64 MiB allocation in the
+         * middle of a frame, typically one that already uploads many textures. */
+        if (!r->chunks && size <= ARENA_CHUNK) {
+            Chunk *spare = chunk_create(g, ARENA_CHUNK);
+            if (!spare) return -1;
+            r->chunks = spare;
+        }
         VkDeviceSize want = size > ARENA_CHUNK ? (size + 0xffff) & ~0xffffull : ARENA_CHUNK;
         if (!(k = chunk_create(g, want))) return -1;
         k->next = r->chunks; r->chunks = k; offset = 0;
@@ -776,8 +789,79 @@ static int pipeline(DkrGfx *g, DkrVkProgram *program, const DkrVkPipelineInfo *i
         .pViewportState = &viewport, .pRasterizationState = &raster, .pMultisampleState = &samples,
         .pDepthStencilState = &depth, .pColorBlendState = &blend, .pDynamicState = &dynamic,
         .layout = program->layout, .renderPass = p->pass};
-    VK_TRY(g, g->vkCreateGraphicsPipelines(g->device, VK_NULL_HANDLE, 1, &create, NULL, &p->pipeline));
+    int64_t t0 = dkr_perf_on ? dkr_perf_now() : 0;
+    VK_TRY(g, g->vkCreateGraphicsPipelines(g->device, g->pipeline_cache, 1, &create, NULL, &p->pipeline));
+    DKR_PERF_ADD(pipeline, dkr_perf_now() - t0);
+    if (g->pipeline_cache) { g->pipeline_cache_dirty = 1; g->pipeline_cache_changed = GetTickCount64(); }
     return g->validation_errors ? dkr_vk_fail(g, "graphics pipeline reported Vulkan validation errors") : 0;
+}
+
+int dkr_vk_pipeline_cache_open(DkrGfx *g, const wchar_t *path) {
+    if (!g || !g->device || !path || g->pipeline_cache) return -1;
+    size_t length = wcslen(path) + 1;
+    if (!(g->pipeline_cache_path = malloc(length * sizeof *path))) return dkr_vk_fail(g, "out of memory for the pipeline cache path");
+    memcpy(g->pipeline_cache_path, path, length * sizeof *path);
+    /* VkPipelineCacheHeaderVersionOne: length, version, vendorID, deviceID, pipelineCacheUUID. Data from another
+     * GPU or driver is dropped here instead of trusting every driver to reject it. */
+    uint8_t *data = NULL; size_t size = 0;
+    FILE *file = _wfopen(path, L"rb");
+    if (file) {
+        if (!_fseeki64(file, 0, SEEK_END)) {
+            long long n = _ftelli64(file);
+            if (n >= 32 && n <= (256ll << 20) && !_fseeki64(file, 0, SEEK_SET) && (data = malloc((size_t)n)) &&
+                fread(data, 1, (size_t)n, file) == (size_t)n) size = (size_t)n;
+        }
+        fclose(file);
+    }
+    if (size) {
+        VkPhysicalDeviceProperties properties;
+        g->vkGetPhysicalDeviceProperties(g->physical, &properties);
+        uint32_t header[4]; memcpy(header, data, sizeof header);
+        if (header[0] < 32 || header[1] != VK_PIPELINE_CACHE_HEADER_VERSION_ONE || header[2] != properties.vendorID ||
+            header[3] != properties.deviceID || memcmp(data + 16, properties.pipelineCacheUUID, VK_UUID_SIZE)) size = 0;
+    }
+    VkPipelineCacheCreateInfo create = {.sType = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO,
+        .initialDataSize = size, .pInitialData = size ? data : NULL};
+    VkResult result = g->vkCreatePipelineCache(g->device, &create, NULL, &g->pipeline_cache);
+    if (result != VK_SUCCESS && size) { /* a damaged file: start empty */
+        create.initialDataSize = 0; create.pInitialData = NULL; size = 0;
+        result = g->vkCreatePipelineCache(g->device, &create, NULL, &g->pipeline_cache);
+    }
+    free(data);
+    if (result != VK_SUCCESS) { g->pipeline_cache = VK_NULL_HANDLE; return dkr_vk_fail(g, "vkCreatePipelineCache returned %d", result); }
+    fprintf(stderr, "vulkan: pipeline cache %s (%zu bytes)\n", size ? "loaded" : "started empty", size);
+    return 0;
+}
+
+int dkr_vk_pipeline_cache_save(DkrGfx *g, int when_idle) {
+    if (!g || !g->pipeline_cache || !g->pipeline_cache_dirty || !g->pipeline_cache_path) return 0;
+    if (when_idle && GetTickCount64() - g->pipeline_cache_changed < 3000) return 0;
+    g->pipeline_cache_dirty = 0;
+    size_t size = 0;
+    VkResult result = g->vkGetPipelineCacheData(g->device, g->pipeline_cache, &size, NULL);
+    if (result != VK_SUCCESS || !size) return result == VK_SUCCESS ? 0 : dkr_vk_fail(g, "vkGetPipelineCacheData returned %d", result);
+    void *data = malloc(size);
+    if (!data) return dkr_vk_fail(g, "out of memory saving the pipeline cache");
+    result = g->vkGetPipelineCacheData(g->device, g->pipeline_cache, &size, data);
+    if (result != VK_SUCCESS && result != VK_INCOMPLETE) { free(data); return dkr_vk_fail(g, "vkGetPipelineCacheData returned %d", result); }
+    /* Write a sibling file and swap it in, so an interrupted save never leaves a truncated cache behind. */
+    size_t length = wcslen(g->pipeline_cache_path);
+    wchar_t *temporary = malloc((length + 5) * sizeof *temporary);
+    int ok = 0;
+    if (temporary) {
+        memcpy(temporary, g->pipeline_cache_path, length * sizeof *temporary);
+        memcpy(temporary + length, L".tmp", 5 * sizeof *temporary);
+        FILE *file = _wfopen(temporary, L"wb");
+        if (file) {
+            ok = fwrite(data, 1, size, file) == size;
+            if (fclose(file)) ok = 0;
+            ok = ok && MoveFileExW(temporary, g->pipeline_cache_path, MOVEFILE_REPLACE_EXISTING);
+            if (!ok) DeleteFileW(temporary);
+        }
+        free(temporary);
+    }
+    free(data);
+    return ok ? 0 : dkr_vk_fail(g, "cannot write the pipeline cache file");
 }
 
 static int bind_descriptors(DkrGfx *g, const DkrVkDraw *draw, VkDescriptorSet sets[DKR_VK_STAGES]) {
@@ -842,11 +926,17 @@ static int bind_descriptors(DkrGfx *g, const DkrVkDraw *draw, VkDescriptorSet se
                 }
                 if (feedback) {
                     DkrVkResources *r = g->resources;
-                    if (!r->snapshot || memcmp(&r->snapshot->info, &src_image->info, sizeof src_image->info) != 0) {
+                    /* Reuse the copy made for this image shape before: creating one per format switch allocated
+                     * device memory mid-frame and leaked the previous copy. */
+                    Snapshot *found = r->snapshots;
+                    while (found && memcmp(&found->image->info, &src_image->info, sizeof src_image->info)) found = found->next;
+                    if (!found) {
+                        if (!(found = calloc(1, sizeof *found))) return dkr_vk_fail(g, "out of memory for a feedback snapshot");
                         DkrVkImageInfo snap_info = src_image->info;
-                        if (dkr_vk_image_create(g, &snap_info, &r->snapshot)) return -1;
+                        if (dkr_vk_image_create(g, &snap_info, &found->image)) { free(found); return -1; }
+                        found->next = r->snapshots; r->snapshots = found;
                     }
-                    DkrVkImage *snap = r->snapshot;
+                    DkrVkImage *snap = found->image;
                     for (unsigned lyr = 0; lyr < src_image->info.layers; lyr++) {
                         for (unsigned lvl = 0; lvl < src_image->info.levels; lvl++) {
                             unsigned w = src_image->info.width >> lvl, h = src_image->info.height >> lvl;
@@ -1002,6 +1092,7 @@ void dkr_vk_resources_destroy(DkrGfx *g) {
     }
     while (r->buffers) { DkrVkBuffer *b = r->buffers; r->buffers = b->next; destroy_buffer(g, b); }
     while (r->chunks) { Chunk *k = r->chunks; r->chunks = k->next; chunk_destroy(g, k); }
+    while (r->snapshots) { Snapshot *s = r->snapshots; r->snapshots = s->next; free(s); }
     while (r->images) dkr_vk_image_destroy(g, r->images);
     while (r->samplers) {
         DkrVkSampler *s = r->samplers; r->samplers = s->next;

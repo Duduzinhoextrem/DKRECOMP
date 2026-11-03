@@ -379,7 +379,9 @@ Ver `docs/PROGRESS.md`. Regra: resultado só entra na documentação se foi prod
 
 | Variável | Efeito |
 |---|---|
-| `DKR_PERF=1` | uma linha `perf:` por segundo (fps, ms por frame, replay, espera da GPU, draws, buffers temporários) e `perf audio:` (quadros/s, tempo de render, esvaziamentos do WinMM) |
+| `DKR_PERF=1` | uma linha `perf:` por segundo (fps, ms por frame, replay, espera da GPU, tradução de shader, criação de pipeline, upload de textura, alocações, draws, buffers temporários) e `perf audio:` (quadros/s, tempo de render, esvaziamentos do WinMM). Cada quadro acima do limite de travada gera uma linha `perf: hitch` com o tempo daquele quadro por etapa |
+| `DKR_PERF_HITCH_MS=25` | limite, em ms, para a linha `perf: hitch` (padrão 25) |
+| `DKR_PIPELINE_CACHE=0` | desliga o cache de pipelines do driver em `reports/nvn_shader_cache/pipelines.bin` (ligado por padrão; salvo após alguns segundos sem pipeline nova e ao fechar) |
 | `DKR_INPUT_SCRIPT="4-4.3:L+R;14-14.2:A"` | segura botões entre dois tempos em segundos (A B X Y L R ZL ZR PLUS MINUS LEFT UP RIGHT DOWN) |
 | `DKR_GFX_CAPTURE_EVERY=N` | salva também cada N-ésimo quadro como `<DKR_GFX_CAPTURE>.<quadro>.bmp` |
 | `DKR_TRACE_DRAWS=N` | registra no log cada draw do quadro N (alvo, viewport, scissor, blend, profundidade) |

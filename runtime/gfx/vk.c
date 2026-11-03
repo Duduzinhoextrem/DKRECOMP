@@ -635,6 +635,10 @@ uint32_t dkr_gfx_destroy(DkrGfx *g) {
     if (!g) return 0;
     if (g->device) {
         if (g->vkDeviceWaitIdle) g->vkDeviceWaitIdle(g->device);
+        if (g->pipeline_cache) {
+            if (dkr_vk_pipeline_cache_save(g, 0)) fprintf(stderr, "vulkan: %s\n", g->error);
+            g->vkDestroyPipelineCache(g->device, g->pipeline_cache, NULL);
+        }
         dkr_vk_resources_destroy(g);
         destroy_swapchain(g);
         if (g->command_pool) g->vkDestroyCommandPool(g->device, g->command_pool, NULL);
@@ -651,6 +655,7 @@ uint32_t dkr_gfx_destroy(DkrGfx *g) {
         CloseHandle(g->window_thread);
     }
     if (g->loader) FreeLibrary(g->loader);
+    free(g->pipeline_cache_path);
     uint32_t errors = (uint32_t)g->validation_errors;
     free(g);
     return errors;

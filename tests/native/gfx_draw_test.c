@@ -54,11 +54,16 @@ int main(int argc, char **argv) {
         else return 2;
     }
     char paths[2][4096];
+    wchar_t pipeline_cache[4096];
     if (snprintf(paths[0], sizeof paths[0], "%s-unorm.bmp", capture) >= (int)sizeof paths[0] ||
-        snprintf(paths[1], sizeof paths[1], "%s-float.bmp", capture) >= (int)sizeof paths[1]) return 2;
+        snprintf(paths[1], sizeof paths[1], "%s-float.bmp", capture) >= (int)sizeof paths[1] ||
+        swprintf(pipeline_cache, 4096, L"%hs-pipelines.bin", capture) < 0) return 2;
+    DeleteFileW(pipeline_cache);
     DkrGfx *gfx = NULL;
     DkrGfxConfig config = {320, 240, "DKRecomp synthetic GPU draw test", 0, validation};
     TRY(dkr_gfx_create(&gfx, &config));
+    /* Every pipeline below goes through a persistent cache that dkr_gfx_destroy writes to disk. */
+    TRY(dkr_vk_pipeline_cache_open(gfx, pipeline_cache));
     DkrVkImage *targets[2] = {NULL}, *mipped[2] = {NULL}, *texture = NULL, *copy = NULL, *depth = NULL;
     DkrVkView *mip_views[2] = {NULL};
     const VkFormat formats[] = {VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_R16G16B16A16_SFLOAT};
@@ -171,6 +176,15 @@ int main(int argc, char **argv) {
     if (dkr_gfx_frames(gfx) != 8 || pixels(paths[0], 0, 1) || pixels(paths[1], 1, 0)) failed = 1;
 done:
     if (dkr_gfx_destroy(gfx)) failed = 1;
+    if (!failed) { /* the saved cache carries a VkPipelineCacheHeaderVersionOne */
+        FILE *file = _wfopen(pipeline_cache, L"rb");
+        uint32_t header[2] = {0};
+        if (!file || fread(header, 1, sizeof header, file) != sizeof header || header[0] < 32 ||
+            header[1] != VK_PIPELINE_CACHE_HEADER_VERSION_ONE) {
+            fprintf(stderr, "pipeline cache was not saved\n"); failed = 1;
+        } else printf("pipeline cache: saved with a version-one header\n");
+        if (file) fclose(file);
+    }
     printf("%s: GPU draw integration (8 frames, 2 captures, distinct VS/PS uniforms, texture, indexed/instanced, blend/scissor)\n", failed ? "FAIL" : "PASS");
     return failed;
 }
