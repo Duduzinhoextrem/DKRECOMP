@@ -30,6 +30,10 @@ VSync e áudio. Guia: [docs/LAUNCHER_E_CONFIGURACOES.md](docs/LAUNCHER_E_CONFIGU
 Prefere um executável? `.venv/Scripts/python tools/build_launcher_exe.py` cria **`DKRecomp.exe`** na raiz: ele abre o
 mesmo launcher, sem janela de console. Deixe-o nessa pasta (ou use um atalho para ele).
 
+Para jogar em outro computador seu sem instalar nada além do driver de vídeo e do .NET 10 Runtime:
+`.venv/Scripts/python tools/make_portable.py` copia o jogo já compilado para `DKRecomp-Portatil/` (~7 GB, com
+`DKRecomp.exe` e um `LEIA-ME.txt`). Copie a pasta inteira; o `DKRecomp.exe` dela abre o jogo direto.
+
 ## Começar (desenvolvimento)
 
 Requisitos: Windows 10/11 x86-64, Python 3.13, Git.

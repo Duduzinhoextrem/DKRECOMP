@@ -39,3 +39,4 @@ config.local.toml
 
 # Local double-click shortcut, built by tools/build_launcher_exe.py
 /DKRecomp.exe
+/DKRecomp-Portatil/
