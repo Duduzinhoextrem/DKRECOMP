@@ -154,8 +154,13 @@ void dkr_gamepad_rumble(unsigned player, float low_amp, float high_amp) {
     uint16_t lo = (uint16_t)(low_amp * 65535.0f + 0.5f);
     uint16_t hi = (uint16_t)(high_amp * 65535.0f + 0.5f);
     const DkrSettings *settings = dkr_settings();
+    /* The game sends its neutral value many times per second: once a pad is stopped, leave the driver alone.
+     * Non-zero values are always forwarded, since SDL rumble ends by itself unless it is renewed. */
+    static int stopped[2];
     AcquireSRWLockExclusive(&g_pad_lock);
-    if (initialized && settings->input_backend != DKR_INPUT_KEYBOARD) {
+    int skip = !lo && !hi && stopped[player];
+    stopped[player] = !lo && !hi;
+    if (!skip && initialized && settings->input_backend != DKR_INPUT_KEYBOARD) {
         unsigned indices[2] = {settings->controller_index, settings->second_controller_index};
         if (indices[1] == indices[0]) indices[1] = 4;
         if (sdl_ready) {

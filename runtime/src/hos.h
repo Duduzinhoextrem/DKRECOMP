@@ -150,6 +150,8 @@ void hos_hid_handle(Cpu *c, Service *s, const IpcRequest *rq, IpcReply *rp);
 void hos_hid_tick(void);
 void hos_hid_set_test_input(uint64_t buttons, int32_t lx, int32_t ly, int32_t rx, int32_t ry);
 void hos_hid_clear_test_input(void);
+/* Host rumble strength (0..1) the game currently asks of a player's controller, low and high band. */
+void hos_hid_vibration_amplitude(unsigned player, float *low, float *high);
 void hos_hid_set_test_player_input(unsigned player, int connected, uint64_t buttons,
                                   int32_t lx, int32_t ly, int32_t rx, int32_t ry);
 void hos_vi_handle(Cpu *c, Service *s, const IpcRequest *rq, IpcReply *rp);

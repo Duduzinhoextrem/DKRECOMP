@@ -80,8 +80,13 @@ static uint64_t g_handheld_mode;
 static uint32_t g_supported_styles, g_supported_ids = 0x3ff;
 static uint32_t g_style_events[10];
 static int g_vibration_permitted = 1;
-/* Last VibrationValue sent by the game (amp_low, freq_low, amp_high, freq_high); starts as the neutral value. */
-static float g_vibration_value[4] = {0.f, 160.f, 0.f, 320.f};
+/* Last VibrationValue (amp_low, freq_low, amp_high, freq_high) per VibrationDeviceHandle. A handle is
+ * byte 0 device type, byte 1 NpadIdType (0..7 = No1..No8, 0x20 = Handheld), byte 2 device index (0 left, 1 right).
+ * The game drives up to 18 of them; neutral values sent to disconnected pads must not reach player 1's motors. */
+typedef struct VibrationDevice { uint32_t handle; float value[4]; } VibrationDevice;
+static VibrationDevice g_vibration_devices[64];
+static unsigned g_vibration_device_count;
+static const float g_vibration_neutral[4] = {0.f, 160.f, 0.f, 320.f};
 static uint64_t g_sampling_number = 0;
 
 static int g_test_input_override = 0;
@@ -117,6 +122,50 @@ static void vibration_list_handle(Cpu *c, Service *s, const IpcRequest *rq, IpcR
     if (list->count == sizeof list->handles / sizeof *list->handles) { rp->result = HOS_KERNEL(105); return; }
     /* This activates a device in the client's resource list; it does not claim a host rumble operation. */
     list->handles[list->count++] = handle;
+}
+
+/* Host player of a vibration handle: No1 and Handheld are player 1, No2 is player 2, other pads have no motor. */
+static int vibration_player(uint32_t handle) {
+    uint32_t npad = (handle >> 8) & 0xff;
+    return npad == 0 || npad == 0x20 ? 0 : npad == 1 ? 1 : -1;
+}
+static float vibration_amplitude(float value) { return value >= 0.f ? (value <= 1.f ? value : 1.f) : 0.f; } /* NaN -> 0 */
+
+static VibrationDevice *vibration_device(uint32_t handle, int create) {
+    for (unsigned i = 0; i < g_vibration_device_count; i++)
+        if (g_vibration_devices[i].handle == handle) return &g_vibration_devices[i];
+    if (!create || g_vibration_device_count == sizeof g_vibration_devices / sizeof *g_vibration_devices) return NULL;
+    VibrationDevice *d = &g_vibration_devices[g_vibration_device_count++];
+    d->handle = handle;
+    memcpy(d->value, g_vibration_neutral, sizeof d->value);
+    return d;
+}
+
+/* The strongest low/high band over all of a player's motors (left and right Joy-Con, or the Handheld pair). */
+void hos_hid_vibration_amplitude(unsigned player, float *low, float *high) {
+    *low = *high = 0.f;
+    if (!g_vibration_permitted) return;
+    for (unsigned i = 0; i < g_vibration_device_count; i++) {
+        const VibrationDevice *d = &g_vibration_devices[i];
+        if (vibration_player(d->handle) != (int)player) continue;
+        float a = vibration_amplitude(d->value[0]), b = vibration_amplitude(d->value[2]);
+        if (a > *low) *low = a;
+        if (b > *high) *high = b;
+    }
+}
+
+/* Non-zero values are re-sent on every update because SDL rumble expires on its own after a short time. */
+static void vibration_apply(unsigned player) {
+    float low, high;
+    hos_hid_vibration_amplitude(player, &low, &high);
+    dkr_gamepad_rumble(player, low, high);
+}
+
+static void vibration_send(uint32_t handle, const void *value) {
+    VibrationDevice *d = vibration_device(handle, 1);
+    if (d) memcpy(d->value, value, sizeof d->value);
+    int player = vibration_player(handle);
+    if (player >= 0) vibration_apply((unsigned)player);
 }
 
 static int npad_index(uint32_t id) {
@@ -611,31 +660,34 @@ void hos_hid_handle(Cpu *c, Service *s, const IpcRequest *rq, IpcReply *rp) {
         hos_reply_interface(rp, list);
         return;
     }
-    case 201: /* SendVibrationValue(u32 handle, pad, VibrationValue at +8, u64 aruid) */
-        if (rq->args_size < 24) { rp->result = HOS_KERNEL(103); return; }
-        memcpy(g_vibration_value, rq->args + 8, sizeof g_vibration_value);
-        if (g_vibration_permitted)
-            dkr_gamepad_rumble(0, g_vibration_value[0], g_vibration_value[2]);
+    case 201: /* SendVibrationValue(u32 handle at +0, VibrationValue at +4, pad, u64 aruid at +0x18): the SDK
+               * packs the 4-byte-aligned VibrationValue right after the handle (nn::hid SendVibrationValue). */
+        if (rq->args_size < 20) { rp->result = HOS_KERNEL(103); return; }
+        vibration_send(RQ_GET(rq, uint32_t, 0), rq->args + 4);
         return;
-    case 202: /* GetActualVibrationValue(u32 handle, pad, u64 aruid) -> VibrationValue */
+    case 202: { /* GetActualVibrationValue(u32 handle, pad, u64 aruid) -> VibrationValue of that motor */
         if (rq->args_size < 4) { rp->result = HOS_KERNEL(103); return; }
-        memcpy(rp->data + rp->data_size, g_vibration_value, sizeof g_vibration_value);
-        rp->data_size += sizeof g_vibration_value;
+        const VibrationDevice *d = vibration_device(RQ_GET(rq, uint32_t, 0), 0);
+        memcpy(rp->data + rp->data_size, d ? d->value : g_vibration_neutral, sizeof g_vibration_neutral);
+        rp->data_size += sizeof g_vibration_neutral;
         return;
-    case 206: /* SendVibrationValues(u64 aruid, A handles, A values) */
-        if (rq->na >= 2 && rq->a[1].size >= 16) {
-            memcpy(g_vibration_value, (const void *)(uintptr_t)rq->a[1].addr, sizeof g_vibration_value);
-            if (g_vibration_permitted)
-                dkr_gamepad_rumble(0, g_vibration_value[0], g_vibration_value[2]);
+    }
+    case 206: { /* SendVibrationValues(u64 aruid, handles[], values[]): the SDK passes two X (pointer) buffers */
+        const IpcBuf *buffers = rq->nx >= 2 ? rq->x : rq->na >= 2 ? rq->a : NULL;
+        if (!buffers) return;
+        uint64_t count = buffers[0].size / 4, values = buffers[1].size / 16;
+        if (values < count) count = values;
+        const uint8_t *handles = (const uint8_t *)(uintptr_t)buffers[0].addr, *data = (const uint8_t *)(uintptr_t)buffers[1].addr;
+        for (uint64_t i = 0; i < count && handles && data; i++) {
+            uint32_t handle; memcpy(&handle, handles + 4 * i, 4);
+            vibration_send(handle, data + 16 * i);
         }
         return;
+    }
     case 204: /* PermitVibration(bool) */
         if (!rq->args_size) { rp->result = HOS_KERNEL(103); return; }
         g_vibration_permitted = rq->args[0] != 0;
-        if (!g_vibration_permitted) {
-            dkr_gamepad_rumble(0, 0.f, 0.f);
-            dkr_gamepad_rumble(1, 0.f, 0.f);
-        }
+        vibration_apply(0); vibration_apply(1); /* stops both pads, or restores what the game last sent */
         return;
     case 205: /* IsVibrationPermitted -> bool */
         RP_PUT(rp, uint8_t, g_vibration_permitted);

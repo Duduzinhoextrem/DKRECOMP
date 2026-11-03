@@ -114,6 +114,67 @@ static uint32_t send_hid(Cpu *cpu, uint32_t session) {
     return get32(0x18);
 }
 
+/* SendVibrationValue exactly as nn::hid packs it: handle at +0, VibrationValue at +4, aruid at +0x18 (32 bytes). */
+static void vibration_request(uint32_t cmd, uint32_t handle, const float value[4]) {
+    memset(msg, 0, sizeof msg);
+    put32(0, 4); put32(4, 0x8000000f); put32(8, 1);
+    put32(0x20, 0x49434653); put32(0x28, cmd);
+    put32(0x30, handle);
+    if (value) memcpy(msg + 0x34, value, 16);
+    uint64_t aruid = 0x10; memcpy(msg + 0x48, &aruid, 8);
+}
+/* SendVibrationValues with the SDK's two X (pointer) descriptors: handles[] and VibrationValue[]. */
+static void put_x(int off, const void *buffer, uint32_t size) {
+    uint64_t addr = (uint64_t)(uintptr_t)buffer;
+    put32(off, size << 16 | (uint32_t)((addr >> 32) & 15) << 12 | (uint32_t)((addr >> 36) & 7) << 6);
+    put32(off + 4, (uint32_t)addr);
+}
+static void vibration_values_request(const uint32_t *handles, const float (*values)[4], unsigned count) {
+    memset(msg, 0, sizeof msg);
+    put32(0, 0x20004); put32(4, 0x80000009); put32(8, 1);
+    put_x(0x14, handles, count * 4); put_x(0x1c, values, count * 16);
+    put32(0x30, 0x49434653); put32(0x38, 206);
+    uint64_t aruid = 0x10; memcpy(msg + 0x40, &aruid, 8);
+}
+static int amplitude_is(unsigned player, float low, float high) {
+    float l, h; hos_hid_vibration_amplitude(player, &l, &h);
+    return l == low && h == high;
+}
+
+static void test_hid_vibration(Cpu *cpu, uint32_t session) {
+    const float neutral[4] = {0.f, 160.f, 0.f, 320.f}, strong[4] = {0.5f, 160.f, 0.25f, 320.f};
+    const uint32_t no1_left = 0x00000001, no1_right = 0x00010001, no2_left = 0x00000101, no3_left = 0x00000201;
+    /* The neutral value must stop the motors: reading it 4 bytes late took 160 Hz and 320 Hz as full amplitude. */
+    vibration_request(201, no1_left, neutral); CHECK(send_hid(cpu, session) == HOS_OK);
+    CHECK(amplitude_is(0, 0.f, 0.f));
+    vibration_request(201, no1_left, strong); CHECK(send_hid(cpu, session) == HOS_OK);
+    CHECK(amplitude_is(0, 0.5f, 0.25f));
+    /* Other pads and the other motor do not cancel player 1's vibration. */
+    vibration_request(201, no3_left, neutral); CHECK(send_hid(cpu, session) == HOS_OK);
+    vibration_request(201, no1_right, neutral); CHECK(send_hid(cpu, session) == HOS_OK);
+    vibration_request(201, no2_left, neutral); CHECK(send_hid(cpu, session) == HOS_OK);
+    CHECK(amplitude_is(0, 0.5f, 0.25f) && amplitude_is(1, 0.f, 0.f));
+    vibration_request(202, no1_left, NULL); CHECK(send_hid(cpu, session) == HOS_OK && !memcmp(msg + 0x20, strong, 16));
+    vibration_request(202, no1_right, NULL); CHECK(send_hid(cpu, session) == HOS_OK && !memcmp(msg + 0x20, neutral, 16));
+    /* PermitVibration(false) silences everything; true restores what the game last sent. */
+    hid_request(204, 0, 0, 0); CHECK(send_hid(cpu, session) == HOS_OK && amplitude_is(0, 0.f, 0.f));
+    hid_request(204, 1, 0, 0); CHECK(send_hid(cpu, session) == HOS_OK && amplitude_is(0, 0.5f, 0.25f));
+    /* A batch through X descriptors updates every handle in it. X addresses have 39 bits, like guest memory. */
+    uint8_t *batch = VirtualAlloc((void *)(uintptr_t)0x3a00000000ull, 0x1000, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+    CHECK(batch != NULL);
+    if (!batch) return;
+    uint32_t *handles = (uint32_t *)batch;
+    float (*values)[4] = (float (*)[4])(batch + 0x100);
+    handles[0] = no1_left; handles[1] = no1_right; handles[2] = no2_left;
+    memcpy(values[0], neutral, 16); memcpy(values[1], neutral, 16); memcpy(values[2], strong, 16);
+    vibration_values_request(handles, (const float (*)[4])values, 3); CHECK(send_hid(cpu, session) == HOS_OK);
+    CHECK(amplitude_is(0, 0.f, 0.f) && amplitude_is(1, 0.5f, 0.25f));
+    values[2][0] = values[2][2] = 0.f;
+    vibration_values_request(handles, (const float (*)[4])values, 3); CHECK(send_hid(cpu, session) == HOS_OK);
+    CHECK(amplitude_is(1, 0.f, 0.f));
+    VirtualFree(batch, 0, MEM_RELEASE);
+}
+
 static void test_hid_ipc(void) {
     Cpu cpu = {0};
     Service hid = {"hid", hos_hid_handle, NULL};
@@ -170,6 +231,7 @@ static void test_hid_ipc(void) {
     uint32_t vibration = get32(12);
     hid_request(0, 0x01000003, 0, 0); CHECK(send_hid(&cpu, vibration) == HOS_OK);
     hos_close_handle(vibration);
+    test_hid_vibration(&cpu, session);
     CHECK(hos_unmap_shared_memory(shared, first, size) == HOS_OK);
     CHECK(hos_close_handle(shared) == HOS_OK && !hos_shared_memory_data(shared, NULL));
     hos_close_handle(applet); hos_close_handle(session);
