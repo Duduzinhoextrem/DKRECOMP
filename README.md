@@ -27,6 +27,9 @@ Dê dois cliques em **`DKRecomp.bat`**. O launcher prepara o jogo a partir do **
 chaves), compila e abre o jogo, com opções de janela/tela cheia, resolução de renderização até 8K, limite de FPS,
 VSync e áudio. Guia: [docs/LAUNCHER_E_CONFIGURACOES.md](docs/LAUNCHER_E_CONFIGURACOES.md).
 
+Prefere um executável? `.venv/Scripts/python tools/build_launcher_exe.py` cria **`DKRecomp.exe`** na raiz: ele abre o
+mesmo launcher, sem janela de console. Deixe-o nessa pasta (ou use um atalho para ele).
+
 ## Começar (desenvolvimento)
 
 Requisitos: Windows 10/11 x86-64, Python 3.13, Git.
